@@ -1,0 +1,166 @@
+services:
+  
+  n8n:
+    image: n8nio/n8n
+    restart: unless-stopped
+    ports:
+      - "${CHAVE_N8N_PORT}:5678"
+    environment:
+      - N8N_BASIC_AUTH_ACTIVE=${CHAVE_N8N_BASIC_AUTH_ACTIVE}
+      - N8N_BASIC_AUTH_USER=${CHAVE_N8N_BASIC_AUTH_USER}
+      - N8N_BASIC_AUTH_PASSWORD=${CHAVE_N8N_BASIC_AUTH_PASSWORD}
+      - N8N_HOST=${CHAVE_N8N_HOST}
+      - N8N_PORT=${CHAVE_N8N_PORT}
+      - N8N_PROTOCOL=${CHAVE_N8N_PROTOCOL}
+    volumes:
+      - n8n_data:/home/node/.n8n
+    networks:
+      - private_network
+  
+  mysql:
+    image: mysql:latest
+    restart: unless-stopped
+    environment:
+      - TZ=America/Sao_Paulo
+      - MYSQL_ROOT_PASSWORD=${CHAVE_MYSQL_ROOT_PASSWORD}
+      - MYSQL_DATABASE=${CHAVE_MYSQL_DATABASE}
+    ports:
+      - "${CHAVE_MYSQL_PORT}:3306"
+    depends_on:
+      - n8n
+    networks:
+      - private_network
+
+  phpmyadmin:
+    image: phpmyadmin/phpmyadmin
+    container_name: phpmyadmin
+    restart: unless-stopped
+    ports:
+      - "${CHAVE_PHPMYADMIN_PORT}:80"
+    environment:
+      TZ: America/Sao_Paulo
+      PMA_HOST: ${CHAVE_PHPMYADMIN_HOST}
+      MYSQL_ROOT_PASSWORD: ${CHAVE_MYSQL_ROOT_PASSWORD}
+    depends_on:
+      - mysql
+      - n8n
+    networks:
+      - private_network
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    restart: unless-stopped
+    ports:
+      - "${CHAVE_RABBITMQ_PORT}:5672"
+      - "${CHAVE_RABBITMQ_MANAGEMENT_PORT}:15672"
+    environment:
+      - RABBITMQ_DEFAULT_USER=${CHAVE_RABBITMQ_DEFAULT_USER}
+      - RABBITMQ_DEFAULT_PASS=${CHAVE_RABBITMQ_DEFAULT_PASS}
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    depends_on:
+      - mysql
+      - phpmyadmin
+      - n8n
+    networks:
+      - private_network
+
+  evolution-api:
+    image: evoapicloud/evolution-api:latest
+    container_name: evolution-api
+    restart: unless-stopped
+    ports:
+      - "${CHAVE_EVOLUTION_API_PORT}:8080"
+    environment:
+      TZ: America/Sao_Paulo
+      SERVER_URL: ${CHAVE_SERVER_URL}
+      AUTHENTICATION_API_KEY: ${CHAVE_EVOLUTION_API_KEY}
+      DATABASE_ENABLED: "true"
+      DATABASE_PROVIDER: postgresql
+      DATABASE_CONNECTION_URI: postgresql://${CHAVE_POSTGRES_USER}:${CHAVE_POSTGRES_PASSWORD}@db-evolution:5432/${CHAVE_POSTGRES_DB}?schema=public
+      CACHE_REDIS_ENABLED: "true"
+      CACHE_REDIS_URI: redis://:${CHAVE_REDIS_PASSWORD}@redis-evolution:6379/6
+      CACHE_REDIS_PREFIX_KEY: evolution
+      CACHE_REDIS_SAVE_INSTANCES: "false"
+      LANGUAGE: pt-BR
+      CONFIG_SESSION_PHONE_VERSION: ${CHAVE_CONFIG_SESSION_PHONE_VERSION}
+      CORS_ORIGIN: ${CHAVE_CORS_ORIGIN}
+      CORS_METHODS: ${CHAVE_CORS_METHODS}
+      CORS_CREDENTIALS: ${CHAVE_CORS_CREDENTIALS}
+      WEBHOOK_GLOBAL_ENABLED: ${CHAVE_WEBHOOK_GLOBAL_ENABLED}
+      WEBHOOK_GLOBAL_URL: ${CHAVE_WEBHOOK_GLOBAL_URL}
+      WEBHOOK_EVENTS_MESSAGES_UPSERT: ${CHAVE_WEBHOOK_EVENTS_MESSAGES_UPSERT}
+      WEBHOOK_EVENTS_CONNECTION_UPDATE: ${CHAVE_WEBHOOK_EVENTS_CONNECTION_UPDATE}
+    volumes:
+      - vol-evolution-instances:/evolution/instances
+    depends_on:
+      - n8n
+      - mysql
+      - db-evolution
+      - redis-evolution
+    networks:
+      - private_network
+  
+  db-evolution:
+    image: postgres:15-alpine
+    container_name: db-evolution
+    restart: unless-stopped
+    environment:
+      TZ: America/Sao_Paulo
+      POSTGRES_DB: ${CHAVE_POSTGRES_DB}
+      POSTGRES_USER: ${CHAVE_POSTGRES_USER}
+      POSTGRES_PASSWORD: ${CHAVE_POSTGRES_PASSWORD}
+    volumes:
+      - vol-evolution-postgres:/var/lib/postgresql/data
+    depends_on:
+      - n8n
+    networks:
+      - private_network
+
+  redis-evolution:
+    image: redis:7-alpine
+    container_name: redis-evolution
+    restart: unless-stopped
+    command: redis-server --requirepass ${CHAVE_REDIS_PASSWORD} --appendonly yes
+    ports:
+      - "${CHAVE_REDIS_PORT}:6379"
+    environment:
+      TZ: America/Sao_Paulo
+      REDIS_HOST: localhost
+      REDIS_PORT: ${CHAVE_REDIS_PORT}
+      REDIS_URL: redis://localhost:${CHAVE_REDIS_PORT}
+      REDIS_PASSWORD: ${CHAVE_REDIS_PASSWORD}
+    volumes:
+      - vol-evolution-redis:/data
+    networks:
+      - private_network
+    depends_on:
+      - db-evolution
+      - n8n
+
+  redisinsight:
+    image: redis/redisinsight:latest
+    container_name: redisinsight
+    restart: unless-stopped
+    ports:
+      - "${CHAVE_REDIS_INSIGHT_PORT}:5540"
+    volumes:
+      - redisinsight_data:/db
+    depends_on:
+      - redis-evolution
+      - n8n
+    networks:
+      - private_network
+
+
+volumes:
+  vol-evolution-instances:
+  vol-evolution-postgres:
+  vol-evolution-redis:
+  redisinsight_data:
+  rabbitmq_data:
+  n8n_data:
+
+networks:
+  private_network:
+    driver: bridge

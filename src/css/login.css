@@ -1,0 +1,120 @@
+:root{
+    --verde: #90ee90;
+    --verde-escuro: #7bc27b;
+    --azul: #004aad;
+    --azul-escuro: #00338d;
+}
+.login {
+    align-items: center;
+    display: grid;
+    gap: 48px;
+    grid-template-columns: 1.1fr 0.9fr;
+    margin: 0 auto;
+    max-width: 1080px;
+    min-height: calc(100vh - 151px);
+    padding: 64px 8%;
+    font-family: 'Poppins', sans-serif;
+}
+
+.login__branding img{
+    width: 120px;
+    height: 120px;
+    margin-bottom: -32px;
+}
+
+.login__tag {
+    color: var(--azul-escuro);
+    display: block;
+    font-size: 14px;
+    font-weight: 700;
+    margin-bottom: 16px;
+    text-transform: uppercase;
+    font-family: 'N', sans-serif;
+}
+
+.login__texto h1 {
+    font-size: 44px;
+    font-weight: 700;
+    line-height: 1.12;
+    margin-bottom: 20px;
+}
+
+.login__texto p {
+    color: #4b5563;
+    font-size: 18px;
+    line-height: 1.6;
+    max-width: 560px;
+}
+
+.login__formulario {
+    background: #ffffff;
+    border: 1px solid #dfe5ee;
+    border-radius: 8px;
+    display: flex;
+    flex-direction: column;
+    padding: 32px;
+}
+
+.login__formulario h2 {
+    font-size: 26px;
+    font-weight: 700;
+    margin-bottom: 24px;
+}
+
+.login__formulario label {
+    color: #374151;
+    font-size: 14px;
+    font-weight: 700;
+    margin-bottom: 8px;
+    transition: color 0.3s ease-in-out;
+}
+
+.login__formulario input {
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    font-size: 16px;
+    margin-bottom: 18px;
+    outline: none;
+    padding: 13px 14px;
+    transition: border-color 0.3s ease-in-out, box-shadow 0.3s ease-in-out;
+}
+
+.login__formulario input:focus,
+.login__formulario input:active {
+    border-color: var(--azul);
+    box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.18);
+}
+
+.login__formulario input:hover {
+    border-color: var(--azul);
+}
+
+.login__formulario button {
+    background: var(--azul-escuro);
+    border: 0;
+    border-radius: 6px;
+    color: #ffffff;
+    cursor: pointer;
+    font-size: 16px;
+    font-weight: 700;
+    margin-top: 8px;
+    padding: 14px;
+    transition: all 0.3s ease-in-out;
+}
+
+.login__formulario button:hover {
+    background: var(--azul);
+}
+
+@media (max-width: 1080px) {
+    .login {
+        grid-template-columns: 1fr;
+        min-height: auto;
+        padding-bottom: 48px;
+        padding-top: 48px;
+    }
+
+    .login__texto h1 {
+        font-size: 34px;
+    }
+}
