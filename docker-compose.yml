@@ -1,7 +1,7 @@
 services:
   
   n8n:
-    image: n8nio/n8n
+    image: n8nio/n8n:2.27.4
     restart: unless-stopped
     ports:
       - "${CHAVE_N8N_PORT}:5678"
@@ -12,52 +12,53 @@ services:
       - N8N_HOST=${CHAVE_N8N_HOST}
       - N8N_PORT=${CHAVE_N8N_PORT}
       - N8N_PROTOCOL=${CHAVE_N8N_PROTOCOL}
+
+
+      - N8N_RUNNERS_STDLIB_ALLOW=*
+      - N8N_RUNNERS_EXTERNAL_ALLOW=*
     volumes:
-      - n8n_data:/home/node/.n8n
+      - ./dados/n8n:/home/node/.n8n
+      - ./files:/home/node/.n8n-files
     networks:
       - private_network
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"const http = require('http'); const req = http.request({ host: 'localhost', port: 5678, path: '/healthz', timeout: 2000 }, (res) => { process.exit(res.statusCode === 200 ? 0 : 1); }); req.on('error', () => { process.exit(1); }); req.end();\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   
   mysql:
-    image: mysql:latest
+    image: mysql:9.1
     restart: unless-stopped
     environment:
       - TZ=America/Sao_Paulo
       - MYSQL_ROOT_PASSWORD=${CHAVE_MYSQL_ROOT_PASSWORD}
       - MYSQL_DATABASE=${CHAVE_MYSQL_DATABASE}
     ports:
-      - "${CHAVE_MYSQL_PORT}:3306"
+      - "3306"
+    volumes:
+      - ./dados/mysql:/var/lib/mysql
     depends_on:
       - n8n
     networks:
       - private_network
 
-  phpmyadmin:
-    image: phpmyadmin/phpmyadmin
-    container_name: phpmyadmin
-    restart: unless-stopped
-    ports:
-      - "${CHAVE_PHPMYADMIN_PORT}:80"
-    environment:
-      TZ: America/Sao_Paulo
-      PMA_HOST: ${CHAVE_PHPMYADMIN_HOST}
-      MYSQL_ROOT_PASSWORD: ${CHAVE_MYSQL_ROOT_PASSWORD}
-    depends_on:
-      - mysql
-      - n8n
-    networks:
-      - private_network
+
 
   rabbitmq:
     image: rabbitmq:3-management
     restart: unless-stopped
+    hostname: rabbitmq-anne
     ports:
       - "${CHAVE_RABBITMQ_PORT}:5672"
       - "${CHAVE_RABBITMQ_MANAGEMENT_PORT}:15672"
     environment:
       - RABBITMQ_DEFAULT_USER=${CHAVE_RABBITMQ_DEFAULT_USER}
       - RABBITMQ_DEFAULT_PASS=${CHAVE_RABBITMQ_DEFAULT_PASS}
+      - RABBITMQ_ERLANG_COOKIE=${CHAVE_RABBITMQ_COOKIE}
     volumes:
-      - rabbitmq_data:/var/lib/rabbitmq
+      - ./dados/rabbitmq:/var/lib/rabbitmq
     depends_on:
       - mysql
       - phpmyadmin
@@ -66,7 +67,7 @@ services:
       - private_network
 
   evolution-api:
-    image: evoapicloud/evolution-api:latest
+    image: evoapicloud/evolution-api:v2.3.7
     container_name: evolution-api
     restart: unless-stopped
     ports:
@@ -79,7 +80,7 @@ services:
       DATABASE_PROVIDER: postgresql
       DATABASE_CONNECTION_URI: postgresql://${CHAVE_POSTGRES_USER}:${CHAVE_POSTGRES_PASSWORD}@db-evolution:5432/${CHAVE_POSTGRES_DB}?schema=public
       CACHE_REDIS_ENABLED: "true"
-      CACHE_REDIS_URI: redis://:${CHAVE_REDIS_PASSWORD}@redis-evolution:6379/6
+      CACHE_REDIS_URI: redis://:${CHAVE_REDIS_PASSWORD}@redis:6379/6
       CACHE_REDIS_PREFIX_KEY: evolution
       CACHE_REDIS_SAVE_INSTANCES: "false"
       LANGUAGE: pt-BR
@@ -92,12 +93,12 @@ services:
       WEBHOOK_EVENTS_MESSAGES_UPSERT: ${CHAVE_WEBHOOK_EVENTS_MESSAGES_UPSERT}
       WEBHOOK_EVENTS_CONNECTION_UPDATE: ${CHAVE_WEBHOOK_EVENTS_CONNECTION_UPDATE}
     volumes:
-      - vol-evolution-instances:/evolution/instances
+      - ./dados/evolution-api:/evolution/instances
     depends_on:
       - n8n
       - mysql
       - db-evolution
-      - redis-evolution
+      - redis
     networks:
       - private_network
   
@@ -111,19 +112,21 @@ services:
       POSTGRES_USER: ${CHAVE_POSTGRES_USER}
       POSTGRES_PASSWORD: ${CHAVE_POSTGRES_PASSWORD}
     volumes:
-      - vol-evolution-postgres:/var/lib/postgresql/data
+      - ./dados/postgresql:/var/lib/postgresql/data
     depends_on:
       - n8n
     networks:
       - private_network
 
-  redis-evolution:
+
+
+  redis:
     image: redis:7-alpine
-    container_name: redis-evolution
+    container_name: redis
     restart: unless-stopped
     command: redis-server --requirepass ${CHAVE_REDIS_PASSWORD} --appendonly yes
     ports:
-      - "${CHAVE_REDIS_PORT}:6379"
+      - "6379"
     environment:
       TZ: America/Sao_Paulo
       REDIS_HOST: localhost
@@ -131,35 +134,14 @@ services:
       REDIS_URL: redis://localhost:${CHAVE_REDIS_PORT}
       REDIS_PASSWORD: ${CHAVE_REDIS_PASSWORD}
     volumes:
-      - vol-evolution-redis:/data
+      - ./dados/redis:/data
     networks:
       - private_network
     depends_on:
       - db-evolution
       - n8n
 
-  redisinsight:
-    image: redis/redisinsight:latest
-    container_name: redisinsight
-    restart: unless-stopped
-    ports:
-      - "${CHAVE_REDIS_INSIGHT_PORT}:5540"
-    volumes:
-      - redisinsight_data:/db
-    depends_on:
-      - redis-evolution
-      - n8n
-    networks:
-      - private_network
 
-
-volumes:
-  vol-evolution-instances:
-  vol-evolution-postgres:
-  vol-evolution-redis:
-  redisinsight_data:
-  rabbitmq_data:
-  n8n_data:
 
 networks:
   private_network:
