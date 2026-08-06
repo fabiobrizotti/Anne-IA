@@ -12,8 +12,6 @@ services:
       - N8N_HOST=${CHAVE_N8N_HOST}
       - N8N_PORT=${CHAVE_N8N_PORT}
       - N8N_PROTOCOL=${CHAVE_N8N_PROTOCOL}
-
-
       - N8N_RUNNERS_STDLIB_ALLOW=*
       - N8N_RUNNERS_EXTERNAL_ALLOW=*
     volumes:
@@ -26,24 +24,6 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-
-  
-  mysql:
-    image: mysql:9.1
-    restart: unless-stopped
-    environment:
-      - TZ=America/Sao_Paulo
-      - MYSQL_ROOT_PASSWORD=${CHAVE_MYSQL_ROOT_PASSWORD}
-      - MYSQL_DATABASE=${CHAVE_MYSQL_DATABASE}
-    ports:
-      - "3306"
-    volumes:
-      - ./dados/mysql:/var/lib/mysql
-    depends_on:
-      - n8n
-    networks:
-      - private_network
-
 
 
   rabbitmq:
@@ -60,8 +40,6 @@ services:
     volumes:
       - ./dados/rabbitmq:/var/lib/rabbitmq
     depends_on:
-      - mysql
-      - phpmyadmin
       - n8n
     networks:
       - private_network
@@ -96,7 +74,6 @@ services:
       - ./dados/evolution-api:/evolution/instances
     depends_on:
       - n8n
-      - mysql
       - db-evolution
       - redis
     networks:
@@ -125,8 +102,6 @@ services:
     container_name: redis
     restart: unless-stopped
     command: redis-server --requirepass ${CHAVE_REDIS_PASSWORD} --appendonly yes
-    ports:
-      - "6379"
     environment:
       TZ: America/Sao_Paulo
       REDIS_HOST: localhost
