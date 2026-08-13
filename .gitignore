@@ -4,6 +4,7 @@
 docker-compose.override.txt
 .dockerignore
 .env
+.gitignore
 
 
 # Files and directories to ignore
