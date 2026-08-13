@@ -1,5 +1,16 @@
 .agents
 .codex
 .vscode
-#Environment
+docker-compose.override.txt
+.dockerignore
 .env
+
+
+# Files and directories to ignore
+data
+data/n8n/
+data/rabbitmq/
+data/evolution-api/
+data/redis/
+data/postgresql/
+files

@@ -6,6 +6,14 @@ services:
     ports:
       - "${CHAVE_N8N_PORT}:5678"
     environment:
+        # Database Configuration
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=db-evolution
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=${CHAVE_POSTGRES_DB}
+      - DB_POSTGRESDB_USER=${CHAVE_POSTGRES_USER}
+      - DB_POSTGRESDB_PASSWORD=${CHAVE_POSTGRES_PASSWORD}
+
       - N8N_BASIC_AUTH_ACTIVE=${CHAVE_N8N_BASIC_AUTH_ACTIVE}
       - N8N_BASIC_AUTH_USER=${CHAVE_N8N_BASIC_AUTH_USER}
       - N8N_BASIC_AUTH_PASSWORD=${CHAVE_N8N_BASIC_AUTH_PASSWORD}
@@ -14,9 +22,21 @@ services:
       - N8N_PROTOCOL=${CHAVE_N8N_PROTOCOL}
       - N8N_RUNNERS_STDLIB_ALLOW=*
       - N8N_RUNNERS_EXTERNAL_ALLOW=*
+
+      # n8n Instance Owner Configuration
+      - N8N_INSTANCE_OWNER_MANAGED_BY_ENV=true
+      - N8N_INSTANCE_OWNER_EMAIL=${KEY_N8N_INSTANCE_OWNER_EMAIL}
+      - N8N_INSTANCE_OWNER_FIRST_NAME=${KEY_N8N_INSTANCE_OWNER_FIRST_NAME}
+      - N8N_INSTANCE_OWNER_LAST_NAME=${KEY_N8N_INSTANCE_OWNER_LAST_NAME}
+      - N8N_INSTANCE_OWNER_PASSWORD_HASH=${KEY_N8N_INSTANCE_OWNER_PASSWORD_HASH}
+
+        # Instalação automática de nodes da comunidade:
+      - N8N_COMMUNITY_PACKAGES_MANAGED_BY_ENV=${KEY_N8N_COMMUNITY_PACKAGES_MANAGED_BY_ENV}
+      - N8N_COMMUNITY_PACKAGES=${KEY_N8N_COMMUNITY_PACKAGES}
     volumes:
-      - ./dados/n8n:/home/node/.n8n
+      - ./data/n8n:/home/node/.n8n
       - ./files:/home/node/.n8n-files
+      - ./data/workflows:/backup/workflows
     networks:
       - private_network
     healthcheck:
@@ -38,7 +58,9 @@ services:
       - RABBITMQ_DEFAULT_PASS=${CHAVE_RABBITMQ_DEFAULT_PASS}
       - RABBITMQ_ERLANG_COOKIE=${CHAVE_RABBITMQ_COOKIE}
     volumes:
-      - ./dados/rabbitmq:/var/lib/rabbitmq
+      - ./data/rabbitmq:/var/lib/rabbitmq
+      - ./data/rabbitmq-setup/definitions.json:/etc/rabbitmq/definitions.json:ro
+      - ./data/rabbitmq-setup/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
     depends_on:
       - n8n
     networks:
@@ -71,7 +93,7 @@ services:
       WEBHOOK_EVENTS_MESSAGES_UPSERT: ${CHAVE_WEBHOOK_EVENTS_MESSAGES_UPSERT}
       WEBHOOK_EVENTS_CONNECTION_UPDATE: ${CHAVE_WEBHOOK_EVENTS_CONNECTION_UPDATE}
     volumes:
-      - ./dados/evolution-api:/evolution/instances
+      - ./data/evolution-api:/evolution/instances
     depends_on:
       - n8n
       - db-evolution
@@ -89,7 +111,7 @@ services:
       POSTGRES_USER: ${CHAVE_POSTGRES_USER}
       POSTGRES_PASSWORD: ${CHAVE_POSTGRES_PASSWORD}
     volumes:
-      - ./dados/postgresql:/var/lib/postgresql/data
+      - ./data/postgresql:/var/lib/postgresql/data
     depends_on:
       - n8n
     networks:
@@ -109,7 +131,7 @@ services:
       REDIS_URL: redis://localhost:${CHAVE_REDIS_PORT}
       REDIS_PASSWORD: ${CHAVE_REDIS_PASSWORD}
     volumes:
-      - ./dados/redis:/data
+      - ./data/redis:/data
     networks:
       - private_network
     depends_on:
