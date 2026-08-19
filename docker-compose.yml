@@ -38,20 +38,19 @@ services:
       - ./files:/home/node/.n8n-files
       - ./data/workflows:/backup/workflows
     networks:
-      - private_network
+      - public_net
+      - data_net
     healthcheck:
       test: ["CMD-SHELL", "node -e \"const http = require('http'); const req = http.request({ host: 'localhost', port: 5678, path: '/healthz', timeout: 2000 }, (res) => { process.exit(res.statusCode === 200 ? 0 : 1); }); req.on('error', () => { process.exit(1); }); req.end();\""]
       interval: 10s
       timeout: 5s
       retries: 5
 
-
   rabbitmq:
     image: rabbitmq:3-management
     restart: unless-stopped
     hostname: rabbitmq-anne
     ports:
-      - "${CHAVE_RABBITMQ_PORT}:5672"
       - "${CHAVE_RABBITMQ_MANAGEMENT_PORT}:15672"
     environment:
       - RABBITMQ_DEFAULT_USER=${CHAVE_RABBITMQ_DEFAULT_USER}
@@ -64,7 +63,8 @@ services:
     depends_on:
       - n8n
     networks:
-      - private_network
+      - public_net
+      - data_net
 
   evolution-api:
     image: evoapicloud/evolution-api:v2.3.7
@@ -95,11 +95,10 @@ services:
     volumes:
       - ./data/evolution-api:/evolution/instances
     depends_on:
-      - n8n
       - db-evolution
-      - redis
     networks:
-      - private_network
+      - public_net
+      - data_net
   
   db-evolution:
     image: postgres:15-alpine
@@ -115,9 +114,7 @@ services:
     depends_on:
       - n8n
     networks:
-      - private_network
-
-
+      - data_net
 
   redis:
     image: redis:7-alpine
@@ -133,13 +130,13 @@ services:
     volumes:
       - ./data/redis:/data
     networks:
-      - private_network
+      - data_net
     depends_on:
       - db-evolution
       - n8n
 
-
-
 networks:
-  private_network:
+  public_net:
+    driver: bridge
+  data_net:
     driver: bridge
