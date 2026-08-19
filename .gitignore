@@ -2,6 +2,7 @@
 .codex
 .vscode
 docker-compose.override.txt
+docker-compose.override.yml
 .dockerignore
 .env
 .gitignore
