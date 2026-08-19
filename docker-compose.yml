@@ -71,27 +71,9 @@ services:
     container_name: evolution-api
     restart: unless-stopped
     ports:
-      - "${CHAVE_EVOLUTION_API_PORT}:8080"
-    environment:
-      TZ: America/Sao_Paulo
-      SERVER_URL: ${CHAVE_SERVER_URL}
-      AUTHENTICATION_API_KEY: ${CHAVE_EVOLUTION_API_KEY}
-      DATABASE_ENABLED: "true"
-      DATABASE_PROVIDER: postgresql
-      DATABASE_CONNECTION_URI: postgresql://${CHAVE_POSTGRES_USER}:${CHAVE_POSTGRES_PASSWORD}@db-evolution:5432/${CHAVE_POSTGRES_DB}?schema=public
-      CACHE_REDIS_ENABLED: "true"
-      CACHE_REDIS_URI: redis://:${CHAVE_REDIS_PASSWORD}@redis:6379/6
-      CACHE_REDIS_PREFIX_KEY: evolution
-      CACHE_REDIS_SAVE_INSTANCES: "false"
-      LANGUAGE: pt-BR
-      CONFIG_SESSION_PHONE_VERSION: ${CHAVE_CONFIG_SESSION_PHONE_VERSION}
-      CORS_ORIGIN: ${CHAVE_CORS_ORIGIN}
-      CORS_METHODS: ${CHAVE_CORS_METHODS}
-      CORS_CREDENTIALS: ${CHAVE_CORS_CREDENTIALS}
-      WEBHOOK_GLOBAL_ENABLED: ${CHAVE_WEBHOOK_GLOBAL_ENABLED}
-      WEBHOOK_GLOBAL_URL: ${CHAVE_WEBHOOK_GLOBAL_URL}
-      WEBHOOK_EVENTS_MESSAGES_UPSERT: ${CHAVE_WEBHOOK_EVENTS_MESSAGES_UPSERT}
-      WEBHOOK_EVENTS_CONNECTION_UPDATE: ${CHAVE_WEBHOOK_EVENTS_CONNECTION_UPDATE}
+      - "8081:8080"
+    env_file:
+      - .env
     volumes:
       - ./data/evolution-api:/evolution/instances
     depends_on:
