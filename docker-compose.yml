@@ -1,38 +1,11 @@
 services:
-  
   n8n:
     image: n8nio/n8n:2.27.4
     restart: unless-stopped
     ports:
-      - "${CHAVE_N8N_PORT}:5678"
-    environment:
-        # Database Configuration
-      - DB_TYPE=postgresdb
-      - DB_POSTGRESDB_HOST=db-evolution
-      - DB_POSTGRESDB_PORT=5432
-      - DB_POSTGRESDB_DATABASE=${CHAVE_POSTGRES_DB}
-      - DB_POSTGRESDB_USER=${CHAVE_POSTGRES_USER}
-      - DB_POSTGRESDB_PASSWORD=${CHAVE_POSTGRES_PASSWORD}
-
-      - N8N_BASIC_AUTH_ACTIVE=${CHAVE_N8N_BASIC_AUTH_ACTIVE}
-      - N8N_BASIC_AUTH_USER=${CHAVE_N8N_BASIC_AUTH_USER}
-      - N8N_BASIC_AUTH_PASSWORD=${CHAVE_N8N_BASIC_AUTH_PASSWORD}
-      - N8N_HOST=${CHAVE_N8N_HOST}
-      - N8N_PORT=${CHAVE_N8N_PORT}
-      - N8N_PROTOCOL=${CHAVE_N8N_PROTOCOL}
-      - N8N_RUNNERS_STDLIB_ALLOW=*
-      - N8N_RUNNERS_EXTERNAL_ALLOW=*
-
-      # n8n Instance Owner Configuration
-      - N8N_INSTANCE_OWNER_MANAGED_BY_ENV=true
-      - N8N_INSTANCE_OWNER_EMAIL=${KEY_N8N_INSTANCE_OWNER_EMAIL}
-      - N8N_INSTANCE_OWNER_FIRST_NAME=${KEY_N8N_INSTANCE_OWNER_FIRST_NAME}
-      - N8N_INSTANCE_OWNER_LAST_NAME=${KEY_N8N_INSTANCE_OWNER_LAST_NAME}
-      - N8N_INSTANCE_OWNER_PASSWORD_HASH=${KEY_N8N_INSTANCE_OWNER_PASSWORD_HASH}
-
-        # Instalação automática de nodes da comunidade:
-      - N8N_COMMUNITY_PACKAGES_MANAGED_BY_ENV=${KEY_N8N_COMMUNITY_PACKAGES_MANAGED_BY_ENV}
-      - N8N_COMMUNITY_PACKAGES=${KEY_N8N_COMMUNITY_PACKAGES}
+      - "${N8N_PORT}:5678"
+    env_file:
+      - .env
     volumes:
       - ./data/n8n:/home/node/.n8n
       - ./files:/home/node/.n8n-files
@@ -47,24 +20,27 @@ services:
       retries: 5
 
   rabbitmq:
-    image: rabbitmq:3-management
+    image: rabbitmq:3-management-alpine
+    container_name: rabbitmq
     restart: unless-stopped
     hostname: rabbitmq-anne
     ports:
-      - "${CHAVE_RABBITMQ_MANAGEMENT_PORT}:15672"
-    environment:
-      - RABBITMQ_DEFAULT_USER=${CHAVE_RABBITMQ_DEFAULT_USER}
-      - RABBITMQ_DEFAULT_PASS=${CHAVE_RABBITMQ_DEFAULT_PASS}
-      - RABBITMQ_ERLANG_COOKIE=${CHAVE_RABBITMQ_COOKIE}
+      - "${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+    env_file:
+      - .env
     volumes:
-      - ./data/rabbitmq:/var/lib/rabbitmq
-      - ./data/rabbitmq-setup/definitions.json:/etc/rabbitmq/definitions.json:ro
+      - ./data/rabbitmq:/var/lib/rabbitmq/mnesia
       - ./data/rabbitmq-setup/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
-    depends_on:
-      - n8n
+      - ./data/rabbitmq-setup/definitions.json:/etc/rabbitmq/definitions.json:ro
     networks:
       - public_net
       - data_net
+    healthcheck:
+      test: ["CMD-SHELL", "rabbitmq-diagnostics -q check_running && rabbitmq-diagnostics -q check_local_alarms"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 15s
 
   evolution-api:
     image: evoapicloud/evolution-api:v2.3.7
@@ -86,36 +62,49 @@ services:
     image: postgres:15-alpine
     container_name: db-evolution
     restart: unless-stopped
-    environment:
-      TZ: America/Sao_Paulo
-      POSTGRES_DB: ${CHAVE_POSTGRES_DB}
-      POSTGRES_USER: ${CHAVE_POSTGRES_USER}
-      POSTGRES_PASSWORD: ${CHAVE_POSTGRES_PASSWORD}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    env_file:
+      - .env
     volumes:
       - ./data/postgresql:/var/lib/postgresql/data
-    depends_on:
-      - n8n
+      - ./data/postgresql-setup/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
     networks:
       - data_net
+      - public_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-evolution} -d ${POSTGRES_DB:-evolution}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   redis:
     image: redis:7-alpine
     container_name: redis
     restart: unless-stopped
-    command: redis-server --requirepass ${CHAVE_REDIS_PASSWORD} --appendonly yes
-    environment:
-      TZ: America/Sao_Paulo
-      REDIS_HOST: localhost
-      REDIS_PORT: ${CHAVE_REDIS_PORT}
-      REDIS_URL: redis://localhost:${CHAVE_REDIS_PORT}
-      REDIS_PASSWORD: ${CHAVE_REDIS_PASSWORD}
+    command: >
+      redis-server 
+      --requirepass ${REDIS_PASSWORD}
+      --maxmemory ${REDIS_MAX_MEMORY:-256mb}
+      --maxmemory-policy ${REDIS_MAX_MEMORY_POLICY:-allkeys-lru}
+      --appendonly yes
+      --appendfsync everysec
+      --save 900 1
+      --save 300 10
+      --save 60 10000
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
     volumes:
       - ./data/redis:/data
     networks:
       - data_net
-    depends_on:
-      - db-evolution
-      - n8n
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"${REDIS_PASSWORD}\" ping | grep PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
 
 networks:
   public_net:
