@@ -1,6 +1,6 @@
 services:
   n8n:
-    image: n8nio/n8n:2.27.4
+    image: n8nio/n8n:2.36.5
     restart: unless-stopped
     ports:
       - "${N8N_PORT}:5678"
@@ -59,7 +59,7 @@ services:
       - data_net
   
   db-evolution:
-    image: postgres:15-alpine
+    image: pgvector/pgvector:pg15
     container_name: db-evolution
     restart: unless-stopped
     ports:
