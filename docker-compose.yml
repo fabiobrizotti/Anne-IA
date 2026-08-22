@@ -25,7 +25,7 @@ services:
     restart: unless-stopped
     hostname: rabbitmq-anne
     ports:
-      - "${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+      - "127.0.0.1:${RABBITMQ_MANAGEMENT_PORT:-15672}:${RABBITMQ_MANAGEMENT_PORT:-15672}"
     env_file:
       - .env
     volumes:
@@ -47,7 +47,7 @@ services:
     container_name: evolution-api
     restart: unless-stopped
     ports:
-      - "8081:8080"
+      - "127.0.0.1:8081:8080"
     env_file:
       - .env
     volumes:
