@@ -9,7 +9,7 @@ services:
     volumes:
       - ./data/n8n:/home/node/.n8n
       - ./files:/home/node/.n8n-files
-      - ./data/workflows:/backup/workflows
+      - ./workflows:/workflows:rw
     networks:
       - public_net
       - data_net
@@ -18,6 +18,28 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+  
+  # Importação de workflows para o n8n
+  n8n-import:
+    image: n8nio/n8n:2.36.5
+    container_name: n8n-import
+    profiles: ["setup"]   # <-- Só roda se você chamar explicitamente o perfil setup
+    env_file:
+      - .env
+    volumes:
+      - ./data/n8n:/home/node/.n8n
+      - ./workflows:/templates/workflows:ro
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        n8n import:workflow --separate --input=/templates/workflows
+    depends_on:
+      n8n:
+        condition: service_healthy
+    networks:
+      - data_net
+    restart: "no"
 
   rabbitmq:
     image: rabbitmq:3-management-alpine
