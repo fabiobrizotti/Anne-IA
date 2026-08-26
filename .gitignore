@@ -16,3 +16,4 @@ data/evolution-api/
 data/redis/
 data/postgresql/
 files
+workflows/

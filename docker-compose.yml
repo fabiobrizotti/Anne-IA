@@ -19,21 +19,22 @@ services:
       timeout: 5s
       retries: 5
   
-  # Importação de workflows para o n8n
+# Importação de workflows para o n8n
   n8n-import:
     image: n8nio/n8n:2.36.5
     container_name: n8n-import
-    profiles: ["setup"]   # <-- Só roda se você chamar explicitamente o perfil setup
+    profiles: ["setup"]   # Só roda quando você chamar manualmente
     env_file:
       - .env
     volumes:
       - ./data/n8n:/home/node/.n8n
-      - ./workflows:/templates/workflows:ro
+      - ./workflows:/workflows:ro   # <-- Mapeia a pasta raiz workflows em modo leitura
     entrypoint: /bin/sh
     command:
       - -c
       - |
-        n8n import:workflow --separate --input=/templates/workflows
+        echo "[n8n-import] Lendo fluxos da pasta raiz /workflows..."
+        n8n import:workflow --separate --input=/workflows
     depends_on:
       n8n:
         condition: service_healthy
