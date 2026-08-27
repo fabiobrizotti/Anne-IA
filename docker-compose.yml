@@ -19,22 +19,41 @@ services:
       timeout: 5s
       retries: 5
   
-# Importação de workflows para o n8n
+# Importador Automatizado direto do GitHub (com suporte a subpastas)
   n8n-import:
     image: n8nio/n8n:2.36.5
     container_name: n8n-import
-    profiles: ["setup"]   # Só roda quando você chamar manualmente
+    profiles: ["setup"]   # Executa apenas sob demanda
     env_file:
       - .env
     volumes:
       - ./data/n8n:/home/node/.n8n
-      - ./workflows:/workflows:ro   # <-- Mapeia a pasta raiz workflows em modo leitura
     entrypoint: /bin/sh
     command:
       - -c
       - |
-        echo "[n8n-import] Lendo fluxos da pasta raiz /workflows..."
-        n8n import:workflow --separate --input=/workflows
+        echo "[n8n-import] Instalando Git no container temporário..."
+        apk add --no-cache git
+
+        echo "[n8n-import] Baixando workflows do GitHub..."
+        mkdir -p /tmp/repo_workflows
+
+        if [ -n "$${GITHUB_TOKEN}" ]; then
+          git clone https://$${GITHUB_TOKEN}@github.com/fabiobrizotti/n8n_anneia_workflows.git /tmp/repo_workflows
+        else
+          git clone https://github.com/fabiobrizotti/n8n_anneia_workflows.git /tmp/repo_workflows
+        fi
+
+        echo "[n8n-import] Varrendo e importando todos os .json das subpastas..."
+        find /tmp/repo_workflows/workflows -type f -name "*.json" | while read -r file; do
+          echo "[n8n-import] Injetando: $$file"
+          n8n import:workflow --input="$$file"
+        done
+
+        echo "[n8n-import] Ativando todos os fluxos importados..."
+        n8n update:workflow --all --active=false
+
+        echo "[n8n-import] Concluído com sucesso!"
     depends_on:
       n8n:
         condition: service_healthy
