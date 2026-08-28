@@ -8,7 +8,7 @@ services:
       - .env
     volumes:
       - ./data/n8n:/home/node/.n8n
-      - ./files:/home/node/.n8n-files
+      - ./data:/home/node/.n8n-files
       - ./workflows:/workflows:rw
     networks:
       - public_net
@@ -19,11 +19,10 @@ services:
       timeout: 5s
       retries: 5
   
-# Importador Automatizado direto do GitHub (com suporte a subpastas)
   n8n-import:
     image: n8nio/n8n:2.36.5
     container_name: n8n-import
-    profiles: ["setup"]   # Executa apenas sob demanda
+    profiles: ["setup"]
     env_file:
       - .env
     volumes:
@@ -32,31 +31,29 @@ services:
     command:
       - -c
       - |
-        echo "[n8n-import] Instalando Git no container temporário..."
-        apk add --no-cache git
+        echo "[n8n-import] Baixando workflows..."
+        rm -rf /tmp/repo
+        git clone https://${GITHUB_TOKEN}@github.com/fabiobrizotti/n8n_anneia_workflows.git /tmp/repo
 
-        echo "[n8n-import] Baixando workflows do GitHub..."
-        mkdir -p /tmp/repo_workflows
-
-        if [ -n "$${GITHUB_TOKEN}" ]; then
-          git clone https://$${GITHUB_TOKEN}@github.com/fabiobrizotti/n8n_anneia_workflows.git /tmp/repo_workflows
-        else
-          git clone https://github.com/fabiobrizotti/n8n_anneia_workflows.git /tmp/repo_workflows
-        fi
-
-        echo "[n8n-import] Varrendo e importando todos os .json das subpastas..."
-        find /tmp/repo_workflows/workflows -type f -name "*.json" | while read -r file; do
-          echo "[n8n-import] Injetando: $$file"
-          n8n import:workflow --input="$$file"
+        echo "[n8n-import] Sanitizando workflows (removendo shared/activeVersion/versão ativa)..."
+        find /tmp/repo/workflows -type f -name "*.json" | while read -r f; do
+          node -e '
+            const fs = require("fs");
+            const p = process.argv[1];
+            const w = JSON.parse(fs.readFileSync(p, "utf8"));
+            delete w.shared;
+            delete w.activeVersion;
+            delete w.activeVersionId;
+            w.active = false;
+            fs.writeFileSync(p, JSON.stringify(w, null, 2));
+          ' "$$f"
         done
 
-        echo "[n8n-import] Ativando todos os fluxos importados..."
-        n8n update:workflow --all --active=false
+        echo "[n8n-import] Importando todos os workflows..."
+        find /tmp/repo/workflows -type f -name "*.json" -exec n8n import:workflow --input={} \;
 
-        echo "[n8n-import] Concluído com sucesso!"
-    depends_on:
-      n8n:
-        condition: service_healthy
+        echo "[n8n-import] Importação finalizada com sucesso!"
+        rm -rf /tmp/repo
     networks:
       - data_net
     restart: "no"
