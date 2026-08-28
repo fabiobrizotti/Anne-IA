@@ -9,7 +9,7 @@ services:
     volumes:
       - ./data/n8n:/home/node/.n8n
       - ./data:/home/node/.n8n-files
-      - ./workflows:/workflows:rw
+      - ./data/workflows:/workflows:rw
     networks:
       - public_net
       - data_net
