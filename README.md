@@ -49,6 +49,9 @@ sudo chown -R 1000:1000 ./data/n8n ./workflows
 
 # 4) Suba tudo com o perfil `setup` (bootstrap completo)
 docker compose --profile setup up -d
+
+# 5) Na PRIMEIRA subida, reinicie o n8n para carregar os workflows importados
+docker compose restart n8n
 ```
 
 O perfil `setup` executa **todo o provisionamento** em uma única chamada:
@@ -62,19 +65,22 @@ O perfil `setup` executa **todo o provisionamento** em uma única chamada:
 - `n8n-import` clona o repositório de workflows do GitHub, remove quaisquer workflows já
   existentes no `database.sqlite` (importação idempotente, via `setup/n8n/clean-workflows.js`),
   sanitiza cada workflow (remove `activeVersion`/`shared`, força `active=false`, via
-  `setup/n8n/sanitize-workflow.js`) e então os importa no n8n.
+  `setup/n8n/sanitize-workflow.js`) e então os importa no n8n. Ele só roda **depois** que o
+  `n8n` está saudável (`depends_on`) para não disputar as migrations do `database.sqlite`.
 
 > **Reimportação padrão** (o `n8n-import` é um container one-shot: roda e sai. Não reutilize
 > o container parado — remova-o antes e importe em um container novo):
 > ```bash
 > docker compose stop n8n                          # compartilha o mesmo database.sqlite
 > docker compose --profile setup rm -f n8n-import  # remove o container one-shot antigo
-> docker compose --profile setup run --rm n8n-import
+> docker compose --profile setup run --rm --no-deps n8n-import
 > docker compose start n8n
 > ```
-> > Evita o erro `failed to set up container networking: network ... not found`, que ocorre
-> > quando o `--profile setup up -d` tenta reutilizar o container one-shot parado ligado a
-> > uma rede que já foi recriada.
+> > - `--no-deps` impede o `run` de subir o `n8n` como dependência (o `n8n-import` aguarda o
+> >   `n8n` saudável via `depends_on`, mas na reimportação o `n8n` deve estar **parado**).
+> > - Evita o erro `failed to set up container networking: network ... not found`, que ocorre
+> >   quando o `--profile setup up -d` tenta reutilizar o container one-shot parado ligado a
+> >   uma rede que já foi recriada.
 
 ---
 
@@ -136,7 +142,7 @@ workflows/                          <- NÃO versionado (workflows são clonados 
    # Se houver novos workflows no repo GitHub, reimporte via container one-shot novo:
    docker compose stop n8n
    docker compose --profile setup rm -f n8n-import
-   docker compose --profile setup run --rm n8n-import
+   docker compose --profile setup run --rm --no-deps n8n-import
    docker compose start n8n
    ```
 3. O novo `init.sql` só roda no banco **se o volume `data/postgresql` for novo/vazio**.

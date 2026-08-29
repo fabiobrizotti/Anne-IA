@@ -18,6 +18,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 60s   # o 1º boot roda migrations no database.sqlite (pode passar de 50s)
   
 # Importador Automatizado direto do GitHub (com suporte a subpastas)
 # Idempotente: antes de importar, remove os workflows já existentes no
@@ -27,6 +28,9 @@ services:
     image: n8nio/n8n:2.36.5
     container_name: n8n-import
     profiles: ["setup"]   # Executa apenas sob demanda
+    depends_on:
+      n8n:
+        condition: service_healthy   # evita corrida de migrations no database.sqlite
     env_file:
       - .env
     volumes:
