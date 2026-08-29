@@ -43,19 +43,23 @@ services:
         mkdir -p /tmp/repo_workflows
 
         if [ -n "$${GITHUB_TOKEN}" ]; then
-          git clone https://$${GITHUB_TOKEN}@github.com/fabiobrizotti/n8n_anneia_workflows.git /tmp/repo_workflows
+          git clone "https://x-access-token:$${GITHUB_TOKEN}@github.com/fabiobrizotti/n8n_anneia_workflows.git" /tmp/repo_workflows
         else
-          git clone https://github.com/fabiobrizotti/n8n_anneia_workflows.git /tmp/repo_workflows
+          git clone "https://github.com/fabiobrizotti/n8n_anneia_workflows.git" /tmp/repo_workflows
         fi
 
         echo "[n8n-import] Varrendo e importando todos os .json das subpastas..."
         find /tmp/repo_workflows/workflows -type f -name "*.json" | while read -r file; do
-          echo "[n8n-import] Injetando: $$file"
-          n8n import:workflow --input="$$file"
+          echo "[n8n-import] Sanitizando e injetando: $$file"
+          node /setup-n8n/sanitize-workflow.js "$$file" /tmp/workflow-clean.json || {
+            echo "[n8n-import] WARNING: sanitização falhou, pulando $$file"
+            continue
+          }
+          n8n import:workflow --input="/tmp/workflow-clean.json"
         done
 
-        echo "[n8n-import] Desativando todos os fluxos importados..."
-        n8n update:workflow --all --active=false
+        echo "[n8n-import] Desativando (garantia) todos os fluxos importados..."
+        n8n unpublish:workflow --all
 
         echo "[n8n-import] Concluído! Reinicie o n8n para aplicar as mudanças."
     networks:

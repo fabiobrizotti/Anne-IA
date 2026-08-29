@@ -12,6 +12,7 @@ repositório) concentra os artefatos de inicialização:
 | `setup/rabbitmq/entrypoint.sh` | injeta `RABBITMQ_DEFAULT_PASS` no template e gera o `definitions.json` |
 | `setup/postgres/init.sql` | cria tabelas de negócio, memória da IA (LangChain) e base RAG (pgvector) |
 | `setup/n8n/clean-workflows.js` | limpeza idempotente dos workflows no `database.sqlite` antes de reimportar |
+| `setup/n8n/sanitize-workflow.js` | remove campos da instância de origem (`activeVersion`, `shared`, ...) que quebram o import e força `active=false` |
 
 Os **workflows do n8n não são versionados neste repositório** — eles vêm do repositório
 GitHub de workflows (`n8n_anneia_workflows`), clonado no bootstrap via `n8n-import`
@@ -59,17 +60,21 @@ O perfil `setup` executa **todo o provisionamento** em uma única chamada:
   `/docker-entrypoint-initdb.d`), criando as extensões `pg_trgm`/`vector` e as tabelas
   `produtos`, `movimentacoes_estoque`, `memorypostgreschat` e `base_conhecimento`.
 - `n8n-import` clona o repositório de workflows do GitHub, remove quaisquer workflows já
-  existentes no `database.sqlite` (importação idempotente, via `setup/n8n/clean-workflows.js`)
-  e então importa os workflows (inativos) no n8n.
+  existentes no `database.sqlite` (importação idempotente, via `setup/n8n/clean-workflows.js`),
+  sanitiza cada workflow (remove `activeVersion`/`shared`, força `active=false`, via
+  `setup/n8n/sanitize-workflow.js`) e então os importa no n8n.
 
-> O `n8n-import` roda uma única vez no provisionamento. Para reimportar manualmente,
-> **pare o n8n principal antes** (os dois compartilham o mesmo `database.sqlite`) e depois
-> reinicie-o:
+> **Reimportação padrão** (o `n8n-import` é um container one-shot: roda e sai. Não reutilize
+> o container parado — remova-o antes e importe em um container novo):
 > ```bash
-> docker compose stop n8n
+> docker compose stop n8n                          # compartilha o mesmo database.sqlite
+> docker compose --profile setup rm -f n8n-import  # remove o container one-shot antigo
 > docker compose --profile setup run --rm n8n-import
 > docker compose start n8n
 > ```
+> > Evita o erro `failed to set up container networking: network ... not found`, que ocorre
+> > quando o `--profile setup up -d` tenta reutilizar o container one-shot parado ligado a
+> > uma rede que já foi recriada.
 
 ---
 
@@ -81,7 +86,7 @@ O perfil `setup` executa **todo o provisionamento** em uma única chamada:
 | `POSTGRES_PASSWORD` | **sim** | Senha do Postgres (`db-evolution`). Use a mesma em `CHAVE_POSTGRES_PASSWORD` (`DATABASE_CONNECTION_URI`). |
 | `REDIS_PASSWORD` | **sim** | Senha do Redis. Use a mesma em `CHAVE_REDIS_PASSWORD`. |
 | `N8N_ENCRYPTION_KEY` | **sim** | Chave de criptografia das credenciais do n8n. |
-| `GITHUB_TOKEN` | **sim** | Token com acesso de leitura ao repo de workflows do n8n (`https://github.com/...@github.com/`). |
+| `GITHUB_TOKEN` | **sim** | Token com acesso de leitura ao repo de workflows do n8n. Usado no formato `x-access-token:<token>@github.com/...`. **Nunca exiba o token em logs/screenshots — se vazar, revogue-o e gere um novo.** |
 | `N8N_INSTANCE_OWNER_EMAIL` | sim | E-mail do usuário dono da instância n8n. |
 
 > **Importante**: `CHAVE_*` são usadas apenas para montar URIs de conexão. As variáveis
@@ -96,7 +101,7 @@ O perfil `setup` executa **todo o provisionamento** em uma única chamada:
 |---|---|
 | **RabbitMQ** | Usuário `root` (administrador) + filas quorum `client-infos`, `format-message` + policy `politica_quorum_padrao` (max-length 5000, TTL 30min). |
 | **PostgreSQL** | Extensões `pg_trgm` e `vector`; tabelas `produtos`, `movimentacoes_estoque`, `memorypostgreschat` (memória LangChain) e `base_conhecimento` (RAG com `embedding vector(3072)`). |
-| **n8n** | Workflows importados do repo GitHub (inativos, prontos para ativar) + pacote da comunidade `n8n-nodes-evolution-api`. Importação idempotente: reimportações limpam os workflows antigos antes de aplicar os novos. |
+| **n8n** | Workflows importados do repo GitHub (sanitizados e inativos, prontos para ativar) + pacote da comunidade `n8n-nodes-evolution-api`. Importação idempotente: reimportações limpam os workflows antigos antes de aplicar os novos. |
 
 ---
 
@@ -107,7 +112,8 @@ setup/                              <- VERSIONADO (configuração/infra de init)
 ├── postgres/
 │   └── init.sql                    # schema do banco (TCC)
 ├── n8n/
-│   └── clean-workflows.js          # limpeza idempotente dos workflows (n8n-import)
+│   ├── clean-workflows.js          # limpeza idempotente dos workflows (n8n-import)
+│   └── sanitize-workflow.js        # limpeza dos campos de instância de origem antes do import
 └── rabbitmq/
     ├── rabbitmq.conf               # load_definitions + limites
     ├── definitions.json.template   # filas/policy/usuário (senha via .env)
@@ -127,8 +133,10 @@ workflows/                          <- NÃO versionado (workflows são clonados 
    ```bash
    git pull
    docker compose --profile setup up -d --force-recreate rabbitmq db-evolution
+   # Se houver novos workflows no repo GitHub, reimporte via container one-shot novo:
    docker compose stop n8n
-   docker compose --profile setup run --rm n8n-import   # se houver novos workflows
+   docker compose --profile setup rm -f n8n-import
+   docker compose --profile setup run --rm n8n-import
    docker compose start n8n
    ```
 3. O novo `init.sql` só roda no banco **se o volume `data/postgresql` for novo/vazio**.
