@@ -39,7 +39,13 @@ cd Anne-IA
 cp .env.example .env
 #    -> preencha as senhas/chaves (veja "Variáveis importantes" abaixo)
 
-# 3) Suba tudo com o perfil `setup` (bootstrap completo)
+# 3) Ajuste as permissões das pastas de volume
+#    (o Docker cria pastas de volume como root por padrão; o n8n roda no container
+#     como usuário node - UID 1000 - e não consegue escrever em pastas de root)
+mkdir -p ./data/n8n ./workflows
+sudo chown -R 1000:1000 ./data/n8n ./workflows
+
+# 4) Suba tudo com o perfil `setup` (bootstrap completo)
 docker compose --profile setup up -d
 ```
 
@@ -59,7 +65,7 @@ O perfil `setup` executa **todo o provisionamento** em uma única chamada:
 
 ---
 
-## 2. Variáveis importantes
+## 3. Variáveis importantes
 
 | Variável | Obrigatória | Descrição |
 |---|---|---|
@@ -76,7 +82,7 @@ O perfil `setup` executa **todo o provisionamento** em uma única chamada:
 
 ---
 
-## 3. O que é criado automaticamente
+## 4. O que é criado automaticamente
 
 | Componente | O que o `setup/` cria |
 |---|---|
@@ -86,7 +92,7 @@ O perfil `setup` executa **todo o provisionamento** em uma única chamada:
 
 ---
 
-## 4. Estrutura de arquivos
+## 5. Estrutura de arquivos
 
 ```
 setup/                              <- VERSIONADO (configuração/infra de init)
@@ -104,7 +110,7 @@ workflows/                          <- NÃO versionado (workflows são clonados 
 
 ---
 
-## 5. Fluxo de atualização
+## 6. Fluxo de atualização
 
 1. Fazemos alterações em `setup/` (config do Rabbit, schema do banco, etc.) e versionamos.
 2. Num ambiente já existente, para aplicar:
@@ -119,3 +125,5 @@ workflows/                          <- NÃO versionado (workflows são clonados 
    docker compose down -v   # ATENÇÃO: apaga todos os dados dos containers
    docker compose --profile setup up -d
    ```
+   > Após `down -v` (que apaga os volumes e os recria como root), repita o passo de
+   > permissões antes de subir: `sudo chown -R 1000:1000 ./data/n8n ./workflows`.
