@@ -20,6 +20,9 @@ services:
       retries: 5
   
 # Importador Automatizado direto do GitHub (com suporte a subpastas)
+# Idempotente: antes de importar, remove os workflows já existentes no
+# database.sqlite (via setup/n8n/clean-workflows.js) para não falhar com
+# SQLITE_CONSTRAINT ao recriar workflows com o mesmo ID.
   n8n-import:
     image: n8nio/n8n:2.36.5
     container_name: n8n-import
@@ -28,12 +31,13 @@ services:
       - .env
     volumes:
       - ./data/n8n:/home/node/.n8n
+      - ./setup/n8n:/setup-n8n:ro
     entrypoint: /bin/sh
     command:
       - -c
       - |
-        echo "[n8n-import] Instalando Git no container temporário..."
-        apk add --no-cache git
+        echo "[n8n-import] Limpando workflows existentes (importação idempotente)..."
+        node /setup-n8n/clean-workflows.js || echo "[n8n-import] WARNING: limpeza não aplicada"
 
         echo "[n8n-import] Baixando workflows do GitHub..."
         mkdir -p /tmp/repo_workflows
@@ -50,13 +54,10 @@ services:
           n8n import:workflow --input="$$file"
         done
 
-        echo "[n8n-import] Ativando todos os fluxos importados..."
+        echo "[n8n-import] Desativando todos os fluxos importados..."
         n8n update:workflow --all --active=false
 
-        echo "[n8n-import] Concluído com sucesso!"
-    depends_on:
-      n8n:
-        condition: service_healthy
+        echo "[n8n-import] Concluído! Reinicie o n8n para aplicar as mudanças."
     networks:
       - data_net
     restart: "no"

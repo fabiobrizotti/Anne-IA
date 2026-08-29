@@ -11,6 +11,7 @@ repositório) concentra os artefatos de inicialização:
 | `setup/rabbitmq/definitions.json.template` | modelo com filas quorum, policy e usuário (senha via `.env`) |
 | `setup/rabbitmq/entrypoint.sh` | injeta `RABBITMQ_DEFAULT_PASS` no template e gera o `definitions.json` |
 | `setup/postgres/init.sql` | cria tabelas de negócio, memória da IA (LangChain) e base RAG (pgvector) |
+| `setup/n8n/clean-workflows.js` | limpeza idempotente dos workflows no `database.sqlite` antes de reimportar |
 
 Os **workflows do n8n não são versionados neste repositório** — eles vêm do repositório
 GitHub de workflows (`n8n_anneia_workflows`), clonado no bootstrap via `n8n-import`
@@ -57,11 +58,18 @@ O perfil `setup` executa **todo o provisionamento** em uma única chamada:
 - `db-evolution` executa o `setup/postgres/init.sql` na **primeira subida** (via
   `/docker-entrypoint-initdb.d`), criando as extensões `pg_trgm`/`vector` e as tabelas
   `produtos`, `movimentacoes_estoque`, `memorypostgreschat` e `base_conhecimento`.
-- `n8n-import` clona o repositório de workflows do GitHub, sanitiza (remove `shared`/
-  `activeVersion`, força `active=false`) e importa os workflows no n8n.
+- `n8n-import` clona o repositório de workflows do GitHub, remove quaisquer workflows já
+  existentes no `database.sqlite` (importação idempotente, via `setup/n8n/clean-workflows.js`)
+  e então importa os workflows (inativos) no n8n.
 
 > O `n8n-import` roda uma única vez no provisionamento. Para reimportar manualmente,
-> repita o passo `docker compose --profile setup run --rm n8n-import`.
+> **pare o n8n principal antes** (os dois compartilham o mesmo `database.sqlite`) e depois
+> reinicie-o:
+> ```bash
+> docker compose stop n8n
+> docker compose --profile setup run --rm n8n-import
+> docker compose start n8n
+> ```
 
 ---
 
@@ -88,7 +96,7 @@ O perfil `setup` executa **todo o provisionamento** em uma única chamada:
 |---|---|
 | **RabbitMQ** | Usuário `root` (administrador) + filas quorum `client-infos`, `format-message` + policy `politica_quorum_padrao` (max-length 5000, TTL 30min). |
 | **PostgreSQL** | Extensões `pg_trgm` e `vector`; tabelas `produtos`, `movimentacoes_estoque`, `memorypostgreschat` (memória LangChain) e `base_conhecimento` (RAG com `embedding vector(3072)`). |
-| **n8n** | Workflows importados do repo GitHub (inativos, prontos para ativar) + pacote da comunidade `n8n-nodes-evolution-api`. |
+| **n8n** | Workflows importados do repo GitHub (inativos, prontos para ativar) + pacote da comunidade `n8n-nodes-evolution-api`. Importação idempotente: reimportações limpam os workflows antigos antes de aplicar os novos. |
 
 ---
 
@@ -98,6 +106,8 @@ O perfil `setup` executa **todo o provisionamento** em uma única chamada:
 setup/                              <- VERSIONADO (configuração/infra de init)
 ├── postgres/
 │   └── init.sql                    # schema do banco (TCC)
+├── n8n/
+│   └── clean-workflows.js          # limpeza idempotente dos workflows (n8n-import)
 └── rabbitmq/
     ├── rabbitmq.conf               # load_definitions + limites
     ├── definitions.json.template   # filas/policy/usuário (senha via .env)
@@ -117,7 +127,9 @@ workflows/                          <- NÃO versionado (workflows são clonados 
    ```bash
    git pull
    docker compose --profile setup up -d --force-recreate rabbitmq db-evolution
+   docker compose stop n8n
    docker compose --profile setup run --rm n8n-import   # se houver novos workflows
+   docker compose start n8n
    ```
 3. O novo `init.sql` só roda no banco **se o volume `data/postgresql` for novo/vazio**.
    Para reaplicar o schema em um banco existente, remova o volume:
