@@ -70,10 +70,11 @@ services:
       - "127.0.0.1:${RABBITMQ_MANAGEMENT_PORT:-15672}:${RABBITMQ_MANAGEMENT_PORT:-15672}"
     env_file:
       - .env
+    entrypoint: /setup-rabbitmq/entrypoint.sh
     volumes:
       - ./data/rabbitmq:/var/lib/rabbitmq/mnesia
-      - ./data/rabbitmq-setup/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
-      - ./data/rabbitmq-setup/definitions.json:/etc/rabbitmq/definitions.json:ro
+      - ./setup/rabbitmq:/setup-rabbitmq:ro
+      - ./setup/rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
     networks:
       - public_net
       - data_net
@@ -110,7 +111,7 @@ services:
       - .env
     volumes:
       - ./data/postgresql:/var/lib/postgresql/data
-      - ./data/postgresql-setup/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+      - ./setup/postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
     networks:
       - data_net
       - public_net
