@@ -1,0 +1,121 @@
+# Anne-IA — Stack Docker (n8n + Evolution API + Postgres + Redis + RabbitMQ)
+
+Este documento descreve como subir esta stack do zero em uma nova instância/servidor.
+
+A stack é **auto-inicializável a partir de um clone limpo**. A pasta `setup/` (versionada no
+repositório) concentra os artefatos de inicialização:
+
+| Artefato | Papel |
+|---|---|
+| `setup/rabbitmq/rabbitmq.conf` | configuração do broker (definições + limites de memória/disco) |
+| `setup/rabbitmq/definitions.json.template` | modelo com filas quorum, policy e usuário (senha via `.env`) |
+| `setup/rabbitmq/entrypoint.sh` | injeta `RABBITMQ_DEFAULT_PASS` no template e gera o `definitions.json` |
+| `setup/postgres/init.sql` | cria tabelas de negócio, memória da IA (LangChain) e base RAG (pgvector) |
+
+Os **workflows do n8n não são versionados neste repositório** — eles vêm do repositório
+GitHub de workflows (`n8n_anneia_workflows`), clonado no bootstrap via `n8n-import`
+(segue a variável `GITHUB_TOKEN`). O usuário final não precisa manipular workflows.
+
+---
+
+## Pré-requisitos
+
+- Docker Engine **com Compose v2** instalado.
+- Portas liberadas (padrão): `5678` (n8n), `8081` (Evolution API), `5432` (Postgres),
+  `6379` (Redis), `5672`/`15672` (RabbitMQ).
+- Acesso de leitura ao repositório de workflows do n8n
+  (`fabiobrizotti/n8n_anneia_workflows`) para uso do `GITHUB_TOKEN`.
+
+---
+
+## 1. Instalação (um comando)
+
+```bash
+# 1) Clone o repositório
+git clone git@github.com:fabioluis0312/Anne-IA.git
+cd Anne-IA
+
+# 2) Configure o ambiente
+cp .env.example .env
+#    -> preencha as senhas/chaves (veja "Variáveis importantes" abaixo)
+
+# 3) Suba tudo com o perfil `setup` (bootstrap completo)
+docker compose --profile setup up -d
+```
+
+O perfil `setup` executa **todo o provisionamento** em uma única chamada:
+
+- `rabbitmq` sobe **pré-configurado**: o `entrypoint.sh` gera o `definitions.json` a partir
+  do template (injeta `RABBITMQ_DEFAULT_PASS`), criando o usuário `root`, as filas quorum
+  `client-infos` e `format-message`, e a policy `politica_quorum_padrao`.
+- `db-evolution` executa o `setup/postgres/init.sql` na **primeira subida** (via
+  `/docker-entrypoint-initdb.d`), criando as extensões `pg_trgm`/`vector` e as tabelas
+  `produtos`, `movimentacoes_estoque`, `memorypostgreschat` e `base_conhecimento`.
+- `n8n-import` clona o repositório de workflows do GitHub, sanitiza (remove `shared`/
+  `activeVersion`, força `active=false`) e importa os workflows no n8n.
+
+> O `n8n-import` roda uma única vez no provisionamento. Para reimportar manualmente,
+> repita o passo `docker compose --profile setup run --rm n8n-import`.
+
+---
+
+## 2. Variáveis importantes
+
+| Variável | Obrigatória | Descrição |
+|---|---|---|
+| `RABBITMQ_DEFAULT_PASS` | **sim** | Senha do usuário `root` do RabbitMQ. Também injetada no `definitions.json` (filas/policy). Use a mesma em `CHAVE_RABBITMQ_DEFAULT_PASS` (`RABBITMQ_URI`). |
+| `POSTGRES_PASSWORD` | **sim** | Senha do Postgres (`db-evolution`). Use a mesma em `CHAVE_POSTGRES_PASSWORD` (`DATABASE_CONNECTION_URI`). |
+| `REDIS_PASSWORD` | **sim** | Senha do Redis. Use a mesma em `CHAVE_REDIS_PASSWORD`. |
+| `N8N_ENCRYPTION_KEY` | **sim** | Chave de criptografia das credenciais do n8n. |
+| `GITHUB_TOKEN` | **sim** | Token com acesso de leitura ao repo de workflows do n8n (`https://github.com/...@github.com/`). |
+| `N8N_INSTANCE_OWNER_EMAIL` | sim | E-mail do usuário dono da instância n8n. |
+
+> **Importante**: `CHAVE_*` são usadas apenas para montar URIs de conexão. As variáveis
+> "reais" (`RABBITMQ_DEFAULT_PASS`, `POSTGRES_PASSWORD`, ...) são as que os containers
+> consomem de fato. Mantenha cada par coerente.
+
+---
+
+## 3. O que é criado automaticamente
+
+| Componente | O que o `setup/` cria |
+|---|---|
+| **RabbitMQ** | Usuário `root` (administrador) + filas quorum `client-infos`, `format-message` + policy `politica_quorum_padrao` (max-length 5000, TTL 30min). |
+| **PostgreSQL** | Extensões `pg_trgm` e `vector`; tabelas `produtos`, `movimentacoes_estoque`, `memorypostgreschat` (memória LangChain) e `base_conhecimento` (RAG com `embedding vector(3072)`). |
+| **n8n** | Workflows importados do repo GitHub (inativos, prontos para ativar) + pacote da comunidade `n8n-nodes-evolution-api`. |
+
+---
+
+## 4. Estrutura de arquivos
+
+```
+setup/                              <- VERSIONADO (configuração/infra de init)
+├── postgres/
+│   └── init.sql                    # schema do banco (TCC)
+└── rabbitmq/
+    ├── rabbitmq.conf               # load_definitions + limites
+    ├── definitions.json.template   # filas/policy/usuário (senha via .env)
+    └── entrypoint.sh               # injeta RABBITMQ_DEFAULT_PASS e gera definitions.json
+
+data/                               <- NÃO versionado (dados de runtime dos containers)
+files/                              <- NÃO versionado (backups/exportações)
+workflows/                          <- NÃO versionado (workflows são clonados do GitHub)
+```
+
+---
+
+## 5. Fluxo de atualização
+
+1. Fazemos alterações em `setup/` (config do Rabbit, schema do banco, etc.) e versionamos.
+2. Num ambiente já existente, para aplicar:
+   ```bash
+   git pull
+   docker compose --profile setup up -d --force-recreate rabbitmq db-evolution
+   docker compose --profile setup run --rm n8n-import   # se houver novos workflows
+   ```
+3. O novo `init.sql` só roda no banco **se o volume `data/postgresql` for novo/vazio**.
+   Para reaplicar o schema em um banco existente, remova o volume:
+   ```bash
+   docker compose down -v   # ATENÇÃO: apaga todos os dados dos containers
+   docker compose --profile setup up -d
+   ```
