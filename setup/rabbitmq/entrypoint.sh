@@ -30,6 +30,13 @@ sed "s|__RABBITMQ_DEFAULT_PASS__|${RABBITMQ_DEFAULT_PASS}|g" "${TEMPLATE}" > "${
 echo "[rabbitmq-entrypoint] definitions.json gerado com sucesso."
 
 # Delega ao entrypoint original da imagem RabbitMQ (que lê load_definitions).
+# Se nenhum comando foi passado (ex.: container sem `command` no compose),
+# usa `rabbitmq-server` como padrão - necessário porque o docker-entrypoint.sh
+# original lê $1 incondicionalmente (motor set -u).
+if [ "$#" -eq 0 ]; then
+    set -- rabbitmq-server
+fi
+
 if [ -x "/usr/local/bin/docker-entrypoint.sh" ]; then
     exec "/usr/local/bin/docker-entrypoint.sh" "$@"
 fi
