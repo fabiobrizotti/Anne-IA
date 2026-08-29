@@ -1,0 +1,61 @@
+{
+  "rabbit_version": "3.13.0",
+  "vhosts": [
+    {
+      "name": "/"
+    }
+  ],
+  "users": [
+    {
+      "name": "root",
+      "password": "__RABBITMQ_DEFAULT_PASS__",
+      "tags": [
+        "administrator"
+      ]
+    }
+  ],
+  "permissions": [
+    {
+      "user": "root",
+      "vhost": "/",
+      "configure": ".*",
+      "write": ".*",
+      "read": ".*"
+    }
+  ],
+  "queues": [
+    {
+      "name": "client-infos",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-queue-type": "quorum"
+      }
+    },
+    {
+      "name": "format-message",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-queue-type": "quorum"
+      }
+    }
+  ],
+  "exchanges": [],
+  "bindings": [],
+  "policies": [
+    {
+      "vhost": "/",
+      "name": "politica_quorum_padrao",
+      "pattern": ".*",
+      "apply-to": "queues",
+      "definition": {
+        "max-length": 5000,
+        "message-ttl": 1800000
+      },
+      "priority": 0
+    }
+  ]
+}

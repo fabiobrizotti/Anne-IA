@@ -8,8 +8,8 @@ services:
       - .env
     volumes:
       - ./data/n8n:/home/node/.n8n
-      - ./data:/home/node/.n8n-files
-      - ./data/workflows:/workflows:rw
+      - ./files:/home/node/.n8n-files
+      - ./workflows:/workflows:rw
     networks:
       - public_net
       - data_net
@@ -18,42 +18,54 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 60s   # o 1º boot roda migrations no database.sqlite (pode passar de 50s)
   
+# Importador Automatizado direto do GitHub (com suporte a subpastas)
+# Idempotente: antes de importar, remove os workflows já existentes no
+# database.sqlite (via setup/n8n/clean-workflows.js) para não falhar com
+# SQLITE_CONSTRAINT ao recriar workflows com o mesmo ID.
   n8n-import:
     image: n8nio/n8n:2.36.5
     container_name: n8n-import
-    profiles: ["setup"]
+    profiles: ["setup"]   # Executa apenas sob demanda
+    depends_on:
+      n8n:
+        condition: service_healthy   # evita corrida de migrations no database.sqlite
     env_file:
       - .env
     volumes:
       - ./data/n8n:/home/node/.n8n
+      - ./setup/n8n:/setup-n8n:ro
     entrypoint: /bin/sh
     command:
       - -c
       - |
-        echo "[n8n-import] Baixando workflows..."
-        rm -rf /tmp/repo
-        git clone https://${GITHUB_TOKEN}@github.com/fabiobrizotti/n8n_anneia_workflows.git /tmp/repo
+        echo "[n8n-import] Limpando workflows existentes (importação idempotente)..."
+        node /setup-n8n/clean-workflows.js || echo "[n8n-import] WARNING: limpeza não aplicada"
 
-        echo "[n8n-import] Sanitizando workflows (removendo shared/activeVersion/versão ativa)..."
-        find /tmp/repo/workflows -type f -name "*.json" | while read -r f; do
-          node -e '
-            const fs = require("fs");
-            const p = process.argv[1];
-            const w = JSON.parse(fs.readFileSync(p, "utf8"));
-            delete w.shared;
-            delete w.activeVersion;
-            delete w.activeVersionId;
-            w.active = false;
-            fs.writeFileSync(p, JSON.stringify(w, null, 2));
-          ' "$$f"
+        echo "[n8n-import] Baixando workflows do GitHub..."
+        mkdir -p /tmp/repo_workflows
+
+        if [ -n "$${GITHUB_TOKEN}" ]; then
+          git clone "https://x-access-token:$${GITHUB_TOKEN}@github.com/fabiobrizotti/n8n_anneia_workflows.git" /tmp/repo_workflows
+        else
+          git clone "https://github.com/fabiobrizotti/n8n_anneia_workflows.git" /tmp/repo_workflows
+        fi
+
+        echo "[n8n-import] Varrendo e importando todos os .json das subpastas..."
+        find /tmp/repo_workflows/workflows -type f -name "*.json" | while read -r file; do
+          echo "[n8n-import] Sanitizando e injetando: $$file"
+          node /setup-n8n/sanitize-workflow.js "$$file" /tmp/workflow-clean.json || {
+            echo "[n8n-import] WARNING: sanitização falhou, pulando $$file"
+            continue
+          }
+          n8n import:workflow --input="/tmp/workflow-clean.json"
         done
 
-        echo "[n8n-import] Importando todos os workflows..."
-        find /tmp/repo/workflows -type f -name "*.json" -exec n8n import:workflow --input={} \;
+        echo "[n8n-import] Desativando (garantia) todos os fluxos importados..."
+        n8n unpublish:workflow --all
 
-        echo "[n8n-import] Importação finalizada com sucesso!"
-        rm -rf /tmp/repo
+        echo "[n8n-import] Concluído! Reinicie o n8n para aplicar as mudanças."
     networks:
       - data_net
     restart: "no"
@@ -67,10 +79,11 @@ services:
       - "127.0.0.1:${RABBITMQ_MANAGEMENT_PORT:-15672}:${RABBITMQ_MANAGEMENT_PORT:-15672}"
     env_file:
       - .env
+    entrypoint: /setup-rabbitmq/entrypoint.sh
     volumes:
       - ./data/rabbitmq:/var/lib/rabbitmq/mnesia
-      - ./data/rabbitmq-setup/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
-      - ./data/rabbitmq-setup/definitions.json:/etc/rabbitmq/definitions.json:ro
+      - ./setup/rabbitmq:/setup-rabbitmq:ro
+      - ./setup/rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
     networks:
       - public_net
       - data_net
@@ -107,7 +120,7 @@ services:
       - .env
     volumes:
       - ./data/postgresql:/var/lib/postgresql/data
-      - ./data/postgresql-setup/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+      - ./setup/postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
     networks:
       - data_net
       - public_net

@@ -8,12 +8,20 @@ docker-compose.override.yml
 .gitignore
 
 
-# Files and directories to ignore
+# =============================================================================
+# DADOS E VOLUMES (EFÊMEROS - NUNCA VERSIONAR)
+# =============================================================================
+# A pasta setup/ (configuração/infra de init) É VERSIONADA.
+# As pastas abaixo são dados de runtime dos containers e backup - ficam fora.
+
+# Dados dos contêineres
 data
 data/n8n/
 data/rabbitmq/
 data/evolution-api/
 data/redis/
 data/postgresql/
+
+# Backups / exportações de workflows (não são o fonte dos workflows)
 files
 workflows/

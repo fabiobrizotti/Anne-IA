@@ -2,171 +2,154 @@
 
 Este documento descreve como subir esta stack do zero em uma nova instância/servidor.
 
-## Sumário
+A stack é **auto-inicializável a partir de um clone limpo**. A pasta `setup/` (versionada no
+repositório) concentra os artefatos de inicialização:
 
-- [Pré-requisitos](#pré-requisitos)
-- [1. Clonar o repositório](#1-clonar-o-repositório)
-- [2. Configurar o `.env`](#2-configurar-o-env)
-- [3. Ajustar permissões de pastas](#3-ajustar-permissões-de-pastas)
-- [4. Subir os containers](#4-subir-os-containers)
-- [5. Importar os workflows](#5-importar-os-workflows)
-- [6. Configurar credenciais dentro do n8n](#6-configurar-credenciais-dentro-do-n8n)
-- [7. Ativar os workflows](#7-ativar-os-workflows)
-- [Backup automático de workflows](#backup-automático-de-workflows)
-- [Exportação manual de workflows](#exportação-manual-de-workflows)
-- [Troubleshooting](#troubleshooting)
+| Artefato | Papel |
+|---|---|
+| `setup/rabbitmq/rabbitmq.conf` | configuração do broker (definições + limites de memória/disco) |
+| `setup/rabbitmq/definitions.json.template` | modelo com filas quorum, policy e usuário (senha via `.env`) |
+| `setup/rabbitmq/entrypoint.sh` | injeta `RABBITMQ_DEFAULT_PASS` no template e gera o `definitions.json` |
+| `setup/postgres/init.sql` | cria tabelas de negócio, memória da IA (LangChain) e base RAG (pgvector) |
+| `setup/n8n/clean-workflows.js` | limpeza idempotente dos workflows no `database.sqlite` antes de reimportar |
+| `setup/n8n/sanitize-workflow.js` | remove campos da instância de origem (`activeVersion`, `shared`, ...) que quebram o import e força `active=false` |
+
+Os **workflows do n8n não são versionados neste repositório** — eles vêm do repositório
+GitHub de workflows (`n8n_anneia_workflows`), clonado no bootstrap via `n8n-import`
+(segue a variável `GITHUB_TOKEN`). O usuário final não precisa manipular workflows.
 
 ---
 
 ## Pré-requisitos
 
-- Docker Engine instalado
-- Docker Compose v2 (`docker compose`, sem hífen)
-- `git`
-- Acesso de rede liberado nas portas usadas (ver `.env`): `N8N_PORT` (padrão 5678), `REDIS_PORT` (6379), `POSTGRES_PORT` (5432), `RABBITMQ_MANAGEMENT_PORT` (15672), porta da Evolution API (8081, já fixada em `127.0.0.1` no compose)
-- Um **Personal Access Token do GitHub** com permissão de `repo` (leitura/escrita), usado para importar/exportar os workflows do repositório [`n8n_anneia_workflows`](https://github.com/fabiobrizotti/n8n_anneia_workflows)
+- Docker Engine **com Compose v2** instalado.
+- Portas liberadas (padrão): `5678` (n8n), `8081` (Evolution API), `5432` (Postgres),
+  `6379` (Redis), `5672`/`15672` (RabbitMQ).
+- Acesso de leitura ao repositório de workflows do n8n
+  (`fabiobrizotti/n8n_anneia_workflows`) para uso do `GITHUB_TOKEN`.
 
-## 1. Clonar o repositório
+---
 
-```bash
-git clone <url-deste-repositorio>
-cd <pasta-do-repositorio>
-```
-
-## 2. Configurar o `.env`
-
-Copie o `.env.example` (ou o modelo abaixo) para `.env` e preencha os valores:
+## 1. Instalação (um comando)
 
 ```bash
+# 1) Clone o repositório
+git clone git@github.com:fabioluis0312/Anne-IA.git
+cd Anne-IA
+
+# 2) Configure o ambiente
 cp .env.example .env
+#    -> preencha as senhas/chaves (veja "Variáveis importantes" abaixo)
+
+# 3) Ajuste as permissões das pastas de volume
+#    (o Docker cria pastas de volume como root por padrão; o n8n roda no container
+#     como usuário node - UID 1000 - e não consegue escrever em pastas de root)
+mkdir -p ./data/n8n ./workflows
+sudo chown -R 1000:1000 ./data/n8n ./workflows
+
+# 4) Suba tudo com o perfil `setup` (bootstrap completo)
+docker compose --profile setup up -d
+
+# 5) Na PRIMEIRA subida, reinicie o n8n para carregar os workflows importados
+docker compose restart n8n
 ```
 
-### Variáveis obrigatórias
+O perfil `setup` executa **todo o provisionamento** em uma única chamada:
 
-| Variável | Descrição |
-|---|---|
-| `CHAVE_POSTGRES_PASSWORD` | Senha do Postgres usada pela Evolution API para conectar no `db-evolution` |
-| `POSTGRES_PASSWORD` | Senha do usuário do Postgres (deve bater com `CHAVE_POSTGRES_PASSWORD`) |
-| `CHAVE_RABBITMQ_DEFAULT_PASS` / `RABBITMQ_DEFAULT_PASS` | Senha do usuário `root` do RabbitMQ (devem ser iguais) |
-| `CHAVE_REDIS_PASSWORD` / `REDIS_PASSWORD` | Senha do Redis (devem ser iguais) |
-| `N8N_ENCRYPTION_KEY` | Chave usada pelo n8n para criptografar credenciais salvas no banco. **Gere uma vez e nunca mude** — trocar essa chave invalida todas as credenciais já salvas |
-| `GITHUB_TOKEN` | Token do GitHub (permissão `repo`) para importar/exportar workflows do repositório de backup |
-| `AUTHENTICATION_API_KEY` | Chave de autenticação da Evolution API |
-| `N8N_INSTANCE_OWNER_EMAIL` | E-mail do usuário administrador criado automaticamente no primeiro boot do n8n |
-| `N8N_INSTANCE_OWNER_PASSWORD_HASH` | Hash bcrypt da senha do administrador (já vem pré-preenchido no exemplo; senha em texto puro: `anneai` — **troque em produção**) |
+- `rabbitmq` sobe **pré-configurado**: o `entrypoint.sh` gera o `definitions.json` a partir
+  do template (injeta `RABBITMQ_DEFAULT_PASS`), criando o usuário `root`, as filas quorum
+  `client-infos` e `format-message`, e a policy `politica_quorum_padrao`.
+- `db-evolution` executa o `setup/postgres/init.sql` na **primeira subida** (via
+  `/docker-entrypoint-initdb.d`), criando as extensões `pg_trgm`/`vector` e as tabelas
+  `produtos`, `movimentacoes_estoque`, `memorypostgreschat` e `base_conhecimento`.
+- `n8n-import` clona o repositório de workflows do GitHub, remove quaisquer workflows já
+  existentes no `database.sqlite` (importação idempotente, via `setup/n8n/clean-workflows.js`),
+  sanitiza cada workflow (remove `activeVersion`/`shared`, força `active=false`, via
+  `setup/n8n/sanitize-workflow.js`) e então os importa no n8n. Ele só roda **depois** que o
+  `n8n` está saudável (`depends_on`) para não disputar as migrations do `database.sqlite`.
 
-> ⚠️ **Atenção ao formato:** `N8N_INSTANCE_OWNER_PASSWORD_HASH` contém `$` no valor (hash bcrypt). Mantenha entre aspas simples no `.env`, senão o Docker Compose tenta interpretar como variável.
+> **Reimportação padrão** (o `n8n-import` é um container one-shot: roda e sai. Não reutilize
+> o container parado — remova-o antes e importe em um container novo):
+> ```bash
+> docker compose stop n8n                          # compartilha o mesmo database.sqlite
+> docker compose --profile setup rm -f n8n-import  # remove o container one-shot antigo
+> docker compose --profile setup run --rm --no-deps n8n-import
+> docker compose start n8n
+> ```
+> > - `--no-deps` impede o `run` de subir o `n8n` como dependência (o `n8n-import` aguarda o
+> >   `n8n` saudável via `depends_on`, mas na reimportação o `n8n` deve estar **parado**).
+> > - Evita o erro `failed to set up container networking: network ... not found`, que ocorre
+> >   quando o `--profile setup up -d` tenta reutilizar o container one-shot parado ligado a
+> >   uma rede que já foi recriada.
 
-### Demais variáveis
+---
 
-O restante do `.env` já vem com valores padrão sensatos (timezone `America/Sao_Paulo`, portas, políticas de memória do Redis, eventos de webhook da Evolution API etc.). Normalmente não precisa alterar, exceto:
+## 3. Variáveis importantes
 
-- `N8N_HOST` / `WEBHOOK_URL` / `SERVER_URL` — ajuste para o domínio/IP público real se a instância não for acessada via `localhost`.
-
-## 3. Ajustar permissões de pastas
-
-O Docker cria pastas de volume novas como `root` por padrão. Como o n8n roda **dentro do container como usuário `node` (UID 1000)**, ele não consegue escrever em pastas que pertencem a `root` no host. Faça isso **antes** de subir os containers pela primeira vez:
-
-```bash
-mkdir -p ./data/n8n ./data/workflows
-sudo chown -R 1000:1000 ./data/n8n ./data/workflows
-```
-
-> Não rode `chown` recursivo na pasta `./data` inteira — ela também contém dados do Postgres e do RabbitMQ, que rodam com usuários diferentes dentro dos seus próprios containers. Aplique o `chown` só nas subpastas usadas pelo n8n.
-
-## 4. Subir os containers
-
-```bash
-docker compose up -d
-```
-
-Isso sobe: `n8n`, `rabbitmq`, `evolution-api`, `db-evolution`, `redis`. O serviço `n8n-import` **não** sobe aqui — ele só roda sob demanda (perfil `setup`, ver próximo passo).
-
-Confira se tudo subiu saudável:
-
-```bash
-docker ps
-```
-
-## 5. Importar os workflows
-
-Este passo baixa os workflows do repositório GitHub de backup e importa na instância nova:
-
-```bash
-docker compose --profile setup run --rm --no-deps n8n-import
-```
-
-O que esse comando faz:
-1. Clona o repositório `n8n_anneia_workflows` (usando `GITHUB_TOKEN`)
-2. Sanitiza os arquivos `.json` (remove campos internos de versionamento que causam erro de foreign key em instância diferente da origem, e força `active: false`)
-3. Importa cada workflow via `n8n import:workflow`
-
-Ao final, confira na UI do n8n (`http://<host>:<N8N_PORT>`) se os workflows aparecem.
-
-## 6. Configurar credenciais dentro do n8n
-
-**Credenciais nunca são exportadas** por segurança — elas precisam ser recriadas manualmente na UI do n8n (`Credentials` → `Add credential`) após o import. Pelo menos estas são usadas pelos workflows atuais:
-
-| Nome da credencial (como aparece nos workflows) | Tipo | Usada em |
+| Variável | Obrigatória | Descrição |
 |---|---|---|
-| `GitHub account` | GitHub API | Backup-n8n (ler/gravar arquivos no repo) |
-| `n8n account` | n8n API | Backup-n8n (`Get many workflows1`) |
-| `Postgres account` | Postgres | TOOL_GARBAGE_COLLECTOR (e possivelmente outros workflows de dados) |
+| `RABBITMQ_DEFAULT_PASS` | **sim** | Senha do usuário `root` do RabbitMQ. Também injetada no `definitions.json` (filas/policy). Use a mesma em `CHAVE_RABBITMQ_DEFAULT_PASS` (`RABBITMQ_URI`). |
+| `POSTGRES_PASSWORD` | **sim** | Senha do Postgres (`db-evolution`). Use a mesma em `CHAVE_POSTGRES_PASSWORD` (`DATABASE_CONNECTION_URI`). |
+| `REDIS_PASSWORD` | **sim** | Senha do Redis. Use a mesma em `CHAVE_REDIS_PASSWORD`. |
+| `N8N_ENCRYPTION_KEY` | **sim** | Chave de criptografia das credenciais do n8n. |
+| `GITHUB_TOKEN` | **sim** | Token com acesso de leitura ao repo de workflows do n8n. Usado no formato `x-access-token:<token>@github.com/...`. **Nunca exiba o token em logs/screenshots — se vazar, revogue-o e gere um novo.** |
+| `N8N_INSTANCE_OWNER_EMAIL` | sim | E-mail do usuário dono da instância n8n. |
 
-> ⚠️ Verifique se há mais credenciais usadas pelos demais workflows (`TOOL-ANNEIA-ESTOQUE`, `TOOL_ANNEIA_CHAMARATENDENTE`, `ANNE-AI-ORQUESTRAÇÃO`, `ANNE-AI-FATIAMENTO`, `ANNE-AI-PRELOADUSER`, `BASEDATA_ANNEIA`) — como chaves de LLM (OpenAI/Gemini/Anthropic) ou Evolution API — e adicione nesta tabela. Depois de recriar cada credencial, abra os nodes que usam `n8n-nodes-base.github`, `n8n-nodes-base.postgres` etc. (eles aparecem sem credencial vinculada após o import) e associe a credencial recriada.
-
-## 7. Ativar os workflows
-
-Os workflows são importados sempre **inativos**, de propósito (evita erro de FK e evita ativar triggers antes das credenciais estarem configuradas). Depois de configurar as credenciais:
-
-1. Abra cada workflow na UI
-2. Confirme que os nodes têm credencial associada
-3. Ative pelo toggle "Active" no canto superior direito
-
-Ative na ordem que fizer sentido para as dependências entre workflows (ex.: sub-workflows chamados por `Execute Workflow` antes dos workflows "pai").
+> **Importante**: `CHAVE_*` são usadas apenas para montar URIs de conexão. As variáveis
+> "reais" (`RABBITMQ_DEFAULT_PASS`, `POSTGRES_PASSWORD`, ...) são as que os containers
+> consomem de fato. Mantenha cada par coerente.
 
 ---
 
-## Backup automático de workflows
+## 4. O que é criado automaticamente
 
-O workflow **"Backup-n8n"** roda a cada 2 horas (`Schedule Trigger1`) e:
-1. Lista todos os workflows via API do n8n
-2. Remove campos internos de versionamento (`shared`, `activeVersion`, `activeVersionId`) e força `active: false` no JSON salvo
-3. Compara com o conteúdo já existente no GitHub — só commita se houver diferença
-4. Cria ou atualiza o arquivo em `workflows/<id>.json` no repositório `n8n_anneia_workflows`
-
-Não é necessário rodar nada manualmente para manter o backup atualizado — isso acontece sozinho enquanto o workflow "Backup-n8n" estiver ativo.
-
-## Exportação manual de workflows
-
-Caso precise gerar um export manual (fora do fluxo automático acima):
-
-```bash
-docker exec -it <nome-do-container-n8n> n8n export:workflow \
-  --backup \
-  --output=/home/node/.n8n-files/workflows \
-  --separate
-```
-
-Os arquivos aparecem em `./data/workflows` no host (mapeado via volume). Se der erro de permissão, revise o passo [3. Ajustar permissões de pastas](#3-ajustar-permissões-de-pastas).
+| Componente | O que o `setup/` cria |
+|---|---|
+| **RabbitMQ** | Usuário `root` (administrador) + filas quorum `client-infos`, `format-message` + policy `politica_quorum_padrao` (max-length 5000, TTL 30min). |
+| **PostgreSQL** | Extensões `pg_trgm` e `vector`; tabelas `produtos`, `movimentacoes_estoque`, `memorypostgreschat` (memória LangChain) e `base_conhecimento` (RAG com `embedding vector(3072)`). |
+| **n8n** | Workflows importados do repo GitHub (sanitizados e inativos, prontos para ativar) + pacote da comunidade `n8n-nodes-evolution-api`. Importação idempotente: reimportações limpam os workflows antigos antes de aplicar os novos. |
 
 ---
 
-## Troubleshooting
+## 5. Estrutura de arquivos
 
-**`EACCES: permission denied` ao exportar/importar workflows**
-A pasta de destino não pertence ao usuário `node` (UID 1000) dentro do container. Rode:
-```bash
-docker compose down
-sudo chown -R 1000:1000 ./data/n8n ./data/workflows
-docker compose up -d
+```
+setup/                              <- VERSIONADO (configuração/infra de init)
+├── postgres/
+│   └── init.sql                    # schema do banco (TCC)
+├── n8n/
+│   ├── clean-workflows.js          # limpeza idempotente dos workflows (n8n-import)
+│   └── sanitize-workflow.js        # limpeza dos campos de instância de origem antes do import
+└── rabbitmq/
+    ├── rabbitmq.conf               # load_definitions + limites
+    ├── definitions.json.template   # filas/policy/usuário (senha via .env)
+    └── entrypoint.sh               # injeta RABBITMQ_DEFAULT_PASS e gera definitions.json
+
+data/                               <- NÃO versionado (dados de runtime dos containers)
+files/                              <- NÃO versionado (backups/exportações)
+workflows/                          <- NÃO versionado (workflows são clonados do GitHub)
 ```
 
-**`SQLITE_CONSTRAINT: FOREIGN KEY constraint failed` ao importar**
-O JSON do workflow contém campos de versionamento (`shared`, `activeVersion`, `activeVersionId`) que só existem na instância de origem. O passo de sanitização do `n8n-import` (item 5) já trata isso automaticamente; se algum workflow novo continuar falhando, abra o `.json` dele e confirme se esses campos foram removidos.
+---
 
-**`apk: not found` / `jq: not found` ao tentar instalar pacotes no container do n8n**
-A partir do n8n 2.x, a imagem oficial não inclui gerenciador de pacotes (hardening de segurança). Use `node -e '...'` para scripts inline em vez de instalar ferramentas externas — o Node.js já está disponível no PATH por padrão.
+## 6. Fluxo de atualização
 
-**Warning `The "X" variable is not set` ao rodar `docker compose run`**
-O Docker Compose interpola `$variavel` no próprio arquivo `docker-compose.yml` antes de repassar ao container. Se o script dentro do `command:` usa variáveis de shell (não variáveis de ambiente do Compose), escape com `$$` no YAML — ex.: `"$$f"` em vez de `"$f"`.
+1. Fazemos alterações em `setup/` (config do Rabbit, schema do banco, etc.) e versionamos.
+2. Num ambiente já existente, para aplicar:
+   ```bash
+   git pull
+   docker compose --profile setup up -d --force-recreate rabbitmq db-evolution
+   # Se houver novos workflows no repo GitHub, reimporte via container one-shot novo:
+   docker compose stop n8n
+   docker compose --profile setup rm -f n8n-import
+   docker compose --profile setup run --rm --no-deps n8n-import
+   docker compose start n8n
+   ```
+3. O novo `init.sql` só roda no banco **se o volume `data/postgresql` for novo/vazio**.
+   Para reaplicar o schema em um banco existente, remova o volume:
+   ```bash
+   docker compose down -v   # ATENÇÃO: apaga todos os dados dos containers
+   docker compose --profile setup up -d
+   ```
+   > Após `down -v` (que apaga os volumes e os recria como root), repita o passo de
+   > permissões antes de subir: `sudo chown -R 1000:1000 ./data/n8n ./workflows`.
