@@ -1,10 +1,21 @@
 -- ============================================================================
--- ANNE IA - AUTO-PROVISIONAMENTO DO BANCO DE DADOS (schema do TCC)
+-- ANNE IA - PROVISIONAMENTO DO BANCO DE NEGÓCIO (schema do TCC)
 -- ============================================================================
 -- Roda automaticamente na primeira subida do container db-evolution
--- (mechanism /docker-entrypoint-initdb.d do Postgres).
--- Cria as 5 tabelas do ecossistema + extensões de IA/busca.
+-- (mecanismo /docker-entrypoint-initdb.d do Postgres).
+--
+-- IMPORTANTE: cria um banco DEDICADO `anneia` para o schema de negócio da
+-- Anne-IA. O banco `evolution` (default POSTGRES_DB) é controlado pelo Prisma
+-- da Evolution API e NÃO deve receber tabelas de negócio - do contrário o
+-- `prisma migrate deploy` falha com P3005 (schema not empty).
 -- ============================================================================
+
+-- Cria o banco de negócio dedicado da Anne-IA (se ainda não existir).
+SELECT 'CREATE DATABASE anneia'
+WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'anneia')\gexec
+
+-- Conecta ao banco de negócio.
+\connect anneia
 
 -- 1. Habilita as extensões de Inteligência Artificial e Busca
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
