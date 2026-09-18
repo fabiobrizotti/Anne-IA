@@ -44,13 +44,14 @@ CREATE TABLE movimentacoes_estoque (
 --    sessionId (sem underscore) para compatibilidade com o node do n8n.
 CREATE TABLE memorypostgreschat (
   id SERIAL PRIMARY KEY,
-  sessionId VARCHAR NOT NULL,
+  session_id VARCHAR NOT NULL,
   message JSONB NOT NULL
 );
 
 -- 5. Cria a Base de Conhecimento Institucional (RAG / pgvector)
 CREATE TABLE base_conhecimento (
   id SERIAL PRIMARY KEY,
-  conteudo TEXT NOT NULL,
+  text TEXT NOT NULL,
+  metadata JSONB NOT NULL,
   embedding VECTOR(3072)
 );
