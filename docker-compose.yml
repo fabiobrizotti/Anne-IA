@@ -158,6 +158,26 @@ services:
       retries: 5
       start_period: 5s
 
+  9router:
+    image: decolua/9router:${NINE_ROUTER_VERSION}
+    container_name: 9router
+    restart: unless-stopped
+    ports:
+      - "${NINE_ROUTER_HOST_BIND}:${NINE_ROUTER_PORT}:${NINE_ROUTER_PORT}"
+    env_file:
+      - .env
+    volumes:
+      - ./data/9router:/app/data
+    networks:
+      - public_net
+      - data_net
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"const http = require('http'); const req = http.request({ host: '127.0.0.1', port: process.env.PORT, path: '/', timeout: 2000 }, (res) => { process.exit(res.statusCode < 500 ? 0 : 1); }); req.on('error', () => { process.exit(1); }); req.end();\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
 networks:
   public_net:
     driver: bridge

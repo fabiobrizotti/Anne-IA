@@ -15,7 +15,7 @@ Os workflows do n8n não são versionados aqui. Eles vêm de `fabiobrizotti/n8n_
 
 ## 1. Pré-requisitos
 - Docker Engine com Compose v2.
-- Portas livres: `5678` (n8n), `8081` (Evolution), `5432` (Postgres), `6379` (Redis), `5672`/`15672` (RabbitMQ).
+- Portas livres: `5678` (n8n), `8081` (Evolution), `5432` (Postgres), `6379` (Redis), `5672`/`15672` (RabbitMQ), `20000` (9Router).
 - Conta no GitHub com acesso de leitura (token) ao repositório dos workflows.
 
 ## 2. Instalação
@@ -30,8 +30,8 @@ cd Anne-IA
 cp .env.example .env
 # Edite o .env com suas senhas e o GITHUB_TOKEN
 
-# O n8n roda como UID 1000 e precisa de permissão de escrita
-mkdir -p ./data/n8n ./workflows
+# O n8n roda como UID 1000 e precisa de permissão de escrita; 9Router persiste em ./data/9router
+mkdir -p ./data/n8n ./workflows ./data/9router
 sudo chown -R 1000:1000 ./data/n8n ./workflows
 
 # Sobe a stack rodando os scripts de setup
@@ -56,6 +56,7 @@ copy .env.example .env
 # Docker Desktop resolve permissões de usuário nativamente, basta criar as pastas:
 mkdir data\n8n
 mkdir workflows
+mkdir data\9router
 
 # Sobe a stack rodando os scripts de setup
 docker compose --profile setup up -d
@@ -80,17 +81,23 @@ docker compose start n8n
 - `RABBITMQ_DEFAULT_PASS`: Senha admin. Reflita em `CHAVE_RABBITMQ_DEFAULT_PASS`.
 - `POSTGRES_PASSWORD`: Senha banco. Reflita em `CHAVE_POSTGRES_PASSWORD`.
 - `REDIS_PASSWORD`: Senha Redis. Reflita em `CHAVE_REDIS_PASSWORD`.
+- `NINE_ROUTER_PASSWORD`: Senha admin dashboard do 9Router. Reflita em `CHAVE_NINE_ROUTER_PASSWORD`.
 - `N8N_ENCRYPTION_KEY`: Chave para credenciais internas do n8n.
 - `GITHUB_TOKEN`: Formato `x-access-token:<token>@github.com/...` para clonar os workflows.
 - `N8N_INSTANCE_OWNER_EMAIL`: E-mail owner da instância n8n.
 
 ## 4. Estrutura de Diretórios
 - `setup/`: Scripts de boot (versionado).
-- `data/`: Bancos e dados (ignorado via .gitignore).
+- `data/`: Bancos e dados — postgres, redis, rabbitmq, n8n, evolution-api e 9router (ignorado via .gitignore).
 - `files/`: Exports (ignorado).
 - `workflows/`: Clone local automático dos workflows do n8n (ignorado).
 
-## 5. Recriar Banco e RabbitMQ
+## 5. Roteamento de IA (9Router)
+O 9Router centraliza provedores de LLM e atua como gateway universal compatível com OpenAI/Anthropic:
+- **Dashboard Web**: `http://localhost:20000` (autentique com `NINE_ROUTER_PASSWORD`).
+- **Endpoint interno para n8n / LangChain**: `http://9router:20000/v1` (usar credencial OpenAI compatível com a chave de API gerada no dashboard do 9Router).
+
+## 6. Recriar Banco e RabbitMQ
 Se alterar os scripts em `setup/` (como uma nova tabela no `init.sql`), aplique forçando a recriação. 
 **Atenção:** o `init.sql` do Postgres só roda se a pasta de dados estiver vazia.
 
