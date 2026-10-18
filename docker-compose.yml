@@ -1,6 +1,6 @@
 services:
   n8n:
-    image: n8nio/n8n:2.36.5
+    image: n8nio/n8n:${N8N_VERSION:-2.36.5}
     restart: unless-stopped
     ports:
       - "${N8N_PORT}:5678"
@@ -25,7 +25,7 @@ services:
 # database.sqlite (via setup/n8n/clean-workflows.js) para não falhar com
 # SQLITE_CONSTRAINT ao recriar workflows com o mesmo ID.
   n8n-import:
-    image: n8nio/n8n:2.36.5
+    image: n8nio/n8n:${N8N_VERSION:-2.36.5}
     container_name: n8n-import
     profiles: ["setup"]   # Executa apenas sob demanda
     depends_on:
@@ -71,7 +71,7 @@ services:
     restart: "no"
 
   rabbitmq:
-    image: rabbitmq:3-management-alpine
+    image: rabbitmq:${RABBITMQ_VERSION:-3-management-alpine}
     container_name: rabbitmq
     restart: unless-stopped
     hostname: rabbitmq-anne
@@ -95,11 +95,11 @@ services:
       start_period: 15s
 
   evolution-api:
-    image: evoapicloud/evolution-api:v2.3.7
+    image: evoapicloud/evolution-api:${EVOLUTION_API_VERSION:-v2.3.7}
     container_name: evolution-api
     restart: unless-stopped
     ports:
-      - "127.0.0.1:8081:8080"
+      - "${EVOLUTION_HOST_BIND:-127.0.0.1}:${EVOLUTION_PORT:-8081}:${SERVER_PORT:-8080}"
     env_file:
       - .env
     volumes:
@@ -109,13 +109,13 @@ services:
     networks:
       - public_net
       - data_net
-  
+
   db-evolution:
-    image: pgvector/pgvector:pg15
+    image: pgvector/pgvector:${PGVECTOR_VERSION:-pg15}
     container_name: db-evolution
     restart: unless-stopped
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "${POSTGRES_HOST_BIND:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432"
     env_file:
       - .env
     volumes:
@@ -132,11 +132,11 @@ services:
       start_period: 10s
 
   redis:
-    image: redis:7-alpine
+    image: redis:${REDIS_VERSION:-7-alpine}
     container_name: redis
     restart: unless-stopped
     command: >
-      redis-server 
+      redis-server
       --requirepass ${REDIS_PASSWORD}
       --maxmemory ${REDIS_MAX_MEMORY:-256mb}
       --maxmemory-policy ${REDIS_MAX_MEMORY_POLICY:-allkeys-lru}
@@ -146,7 +146,7 @@ services:
       --save 300 10
       --save 60 10000
     ports:
-      - "${REDIS_PORT:-6379}:6379"
+      - "${REDIS_HOST_BIND:-127.0.0.1}:${REDIS_PORT:-6379}:6379"
     volumes:
       - ./data/redis:/data
     networks:

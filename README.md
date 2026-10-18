@@ -27,8 +27,12 @@ Os workflows do n8n não são versionados aqui. Eles vêm de `fabiobrizotti/n8n_
 git clone https://github.com/fabiobrizotti/Anne-IA
 cd Anne-IA
 
-cp .env.example .env
-# Edite o .env com suas senhas e o GITHUB_TOKEN
+# Gera o .env e preenche senhas fortes alfanuméricas (32 chars, Base62) sem quebrar URIs
+chmod +x scripts/generate-passwords.sh
+./scripts/generate-passwords.sh
+
+# Edite o .env para preencher seu GITHUB_TOKEN e N8N_INSTANCE_OWNER_EMAIL
+# (as senhas de banco, redis, rabbitmq e 9router já foram geradas com segurança)
 
 # O n8n roda como UID 1000 e precisa de permissão de escrita; 9Router persiste em ./data/9router
 mkdir -p ./data/n8n ./workflows ./data/9router
@@ -78,13 +82,15 @@ docker compose start n8n
 ```
 
 ## 3. Variáveis Obrigatórias (.env)
-- `RABBITMQ_DEFAULT_PASS`: Senha admin. Reflita em `CHAVE_RABBITMQ_DEFAULT_PASS`.
-- `POSTGRES_PASSWORD`: Senha banco. Reflita em `CHAVE_POSTGRES_PASSWORD`.
-- `REDIS_PASSWORD`: Senha Redis. Reflita em `CHAVE_REDIS_PASSWORD`.
-- `NINE_ROUTER_PASSWORD`: Senha admin dashboard do 9Router. Reflita em `CHAVE_NINE_ROUTER_PASSWORD`.
-- `N8N_ENCRYPTION_KEY`: Chave para credenciais internas do n8n.
-- `GITHUB_TOKEN`: Formato `x-access-token:<token>@github.com/...` para clonar os workflows.
-- `N8N_INSTANCE_OWNER_EMAIL`: E-mail owner da instância n8n.
+Todas as senhas da stack podem ser geradas automaticamente executando `./scripts/generate-passwords.sh` (Base62 alfanumérico, sem símbolos que quebrem URIs ou Docker Compose):
+- `RABBITMQ_DEFAULT_PASS`: Senha admin do RabbitMQ (sincronizada em `CHAVE_RABBITMQ_DEFAULT_PASS`).
+- `POSTGRES_PASSWORD`: Senha do PostgreSQL (sincronizada em `CHAVE_POSTGRES_PASSWORD`).
+- `REDIS_PASSWORD`: Senha do Redis (sincronizada em `CHAVE_REDIS_PASSWORD`).
+- `NINE_ROUTER_PASSWORD`: Senha admin do 9Router (sincronizada em `CHAVE_NINE_ROUTER_PASSWORD`).
+- `N8N_ENCRYPTION_KEY`: Chave para criptografia de credenciais internas do n8n.
+- `AUTHENTICATION_API_KEY`: Chave de autenticação da Evolution API.
+- `GITHUB_TOKEN`: Formato `ghp_...` ou token pessoal para clonar os workflows no n8n-import.
+- `N8N_INSTANCE_OWNER_EMAIL`: E-mail do owner da instância n8n.
 
 ## 4. Estrutura de Diretórios
 - `setup/`: Scripts de boot (versionado).

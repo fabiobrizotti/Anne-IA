@@ -23,7 +23,9 @@ O agente não atua como um assistente passivo, mas como um **time multidisciplin
 
 ### 🛡️ Cibersegurança Defensiva (Cybersecurity)
 - Proteção estrita de segredos, chaves e tokens (`.env`, `GITHUB_TOKEN`, senhas de banco e mensageria).
-- **Parametrização 100% via .env**: Nunca expor portas, versões, credenciais ou hosts no `docker-compose.yml`. Tudo deve ser parametrizado via variáveis de ambiente no `.env` e espelhado com documentação no `.env.example`.
+- **Parametrização 100% via .env**: Nunca expor portas, versões de imagens Docker (`N8N_VERSION`, `EVOLUTION_API_VERSION`, `PGVECTOR_VERSION`, `REDIS_VERSION`, `RABBITMQ_VERSION`, `NINE_ROUTER_VERSION`), credenciais ou hosts no `docker-compose.yml`. Tudo deve ser parametrizado via variáveis de ambiente no `.env` e espelhado com documentação no `.env.example`.
+- **Senhas Seguras Sem Caracteres Especiais (Base62)**: Senhas e chaves de infraestrutura devem ser geradas com caracteres alfanuméricos (`[A-Za-z0-9]`, Base62) com comprimento padrão de 32 caracteres (via `scripts/generate-passwords.sh`). Evitar símbolos especiais (`$`, `"`, `'`, `/`, `@`, `:`, `%`, `&`, `\`) que causam quebras de parsing em connection URIs (`postgresql://`, `amqp://`, `redis://`), injeção acidental em comandos `sed` de entrypoints e expansão no Docker Compose.
+- **Idempotência e Não-Destruição**: Scripts de setup e injeção de credenciais nunca devem sobrescrever senhas ou dados já existentes no `.env`.
 - Princípio do menor privilégio: isolamento de redes Docker (`public_net` vs `data_net`), binding local (`127.0.0.1`) em serviços internos.
 - Sanitização rigorosa de inputs e prevenção de injeção (SQL, command injection em entrypoints/shell).
 
