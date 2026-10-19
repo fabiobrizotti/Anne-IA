@@ -6,9 +6,9 @@
 # substituindo o placeholder "__RABBITMQ_DEFAULT_PASS__" pela senha real
 # definida via RABBITMQ_DEFAULT_PASS (vinda do .env do projeto).
 #
-# Isso permite que o RabbitMQ suba já pré-configurado (usuário + filas quorum
-# "client-infos" e "format-message" + policy) sem depender de arquivos externos
-# ao repositório e sem expor a senha em texto fixo no código fonte.
+# Isso permite que o RabbitMQ suba já pré-configurado (usuário + topologia quorum
+# com pipeline em 3 etapas anne.inbound / anne.ai / anne.outbound + DLX/DLQ + policies)
+# sem depender de arquivos externos ao repositório e sem expor a senha em texto fixo.
 # =============================================================================
 
 set -e

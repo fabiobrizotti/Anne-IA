@@ -4,8 +4,8 @@ A stack é auto-inicializável a partir de um clone limpo. A pasta `setup/` conc
 
 | Artefato | Papel |
 |---|---|
-| `setup/rabbitmq/rabbitmq.conf` | Limites de memória/disco e instrução para carregar definições. |
-| `setup/rabbitmq/definitions.json.template` | Modelo com filas quorum, policy e usuário (senha via `.env`). |
+| `setup/rabbitmq/rabbitmq.conf` | Limites de memória/disco, paginação, timeout de LLM e carga de definições. |
+| `setup/rabbitmq/definitions.json.template` | Topologia padrão industrial: exchanges diretas, pipeline em 3 etapas com Quorum Queues e DLX/DLQ (senha via `.env`). |
 | `setup/rabbitmq/entrypoint.sh` | Injeta a senha no template e gera o `definitions.json`. |
 | `setup/postgres/init.sql` | Schema do negócio, memória LangChain (`memorypostgreschat`) e base RAG (`base_conhecimento`). |
 | `setup/pgadmin/servers.json` | Auto-provisionamento da conexão do PostgreSQL no pgAdmin 4. |
@@ -116,7 +116,81 @@ O pgAdmin 4 oferece interface gráfica para gerenciar esquemas, tabelas e vetore
   - Senha: `PGADMIN_DEFAULT_PASSWORD` (gerada automaticamente no `.env`).
 - **Auto-Provisionamento**: A conexão com o banco `db-evolution` é importada automaticamente no boot a partir de `setup/pgadmin/servers.json`.
 
-## 7. Recriar Banco e RabbitMQ
+## 7. Mensageria e Filas Industriais (RabbitMQ)
+
+O RabbitMQ opera como o barramento assíncrono de alta confiabilidade da Anne-IA. O sistema adota topologia padrão de mercado, baseada em **Direct Exchanges**, **Quorum Queues** (persistência em disco via algoritmo Raft WAL) e **Dead Lettering isolado por estágio**.
+
+### 7.1. Acesso ao Painel Management
+- **URL**: `http://127.0.0.1:15672` (restrito ao host local).
+- **Usuário**: `${RABBITMQ_DEFAULT_USER}` (padrão: `root`).
+- **Senha**: `${RABBITMQ_DEFAULT_PASS}` (gerada no `.env`).
+
+---
+
+### 7.2. Pipeline em 3 Estágios do Projeto
+
+```text
+[Evolution API / Webhooks]
+             │
+             ▼
+  [EXCHANGE: anne.direct.work] (Direct / Durable)
+             │
+   ┌─────────┼─────────┐
+   │ (rk: inbound.received)
+   ▼
+[FILA 1: anne.inbound.raw.q] ──(n8n validação)──┐
+                                                │
+   ┌────────────────────────────────────────────┘
+   │ (rk: ai.process)
+   ▼
+[FILA 2: anne.ai.process.q] ──(n8n RAG / LLM)───┐
+                                                │
+   ┌────────────────────────────────────────────┘
+   │ (rk: outbound.dispatch)
+   ▼
+[FILA 3: anne.outbound.dispatch.q] ──(n8n humanização / envio WhatsApp)
+```
+
+| Estágio | Finalidade | Exchange de Trabalho | Routing Key | Fila Quorum Principal | DLX | Routing Key DLQ | Fila Dead Letter (DLQ) |
+|---|---|---|---|---|---|---|
+| **1. Inbound** | Recepção de conversas e dados brutos do cliente (WhatsApp/Evolution) | `anne.direct.work` | `inbound.received` | `anne.inbound.raw.q` | `anne.direct.dlx` | `dlq.inbound` | `anne.inbound.raw.dlq` |
+| **2. Core IA** | Motor principal de raciocínio, contexto, RAG e chamadas de LLM | `anne.direct.work` | `ai.process` | `anne.ai.process.q` | `anne.direct.dlx` | `dlq.ai` | `anne.ai.process.dlq` |
+| **3. Outbound**| Humanização, formatação e despacho das respostas ao cliente | `anne.direct.work` | `outbound.dispatch`| `anne.outbound.dispatch.q` | `anne.direct.dlx` | `dlq.outbound` | `anne.outbound.dispatch.dlq` |
+
+---
+
+### 7.3. Estratégias de Resiliência e Prevenção de Perdas
+
+1. **Persistência Total (Quorum Queues)**:
+   - Todas as filas operam com `x-queue-type: quorum`, mantendo Write-Ahead Log (WAL) no disco. Em caso de queda de energia ou reinicialização do computador, nenhuma mensagem é perdida.
+2. **Proteção contra Mensagens Venenosas (`x-delivery-limit`)**:
+   - `anne.inbound.raw.q`: `3` tentativas antes de desviar para DLQ.
+   - `anne.ai.process.q`: `2` tentativas antes de desviar para DLQ (impede loops caros ou infinitos de chamadas à LLM).
+   - `anne.outbound.dispatch.q`: `3` tentativas antes de desviar para DLQ.
+3. **Backpressure e Estabilidade no Servidor Local**:
+   - `vm_memory_high_watermark.relative = 0.6`: ativa backpressure aos 60% de RAM.
+   - `vm_memory_high_watermark_paging_ratio = 0.5`: inicia paginação para disco aos 30% da RAM total, impedindo estouro de memória local.
+   - `disk_free_limit.absolute = 2GB`: bloqueia novos envios se o disco livre for menor que 2GB.
+   - `overflow: reject-publish`: filas de trabalho rejeitam novas mensagens se atingirem 10.000 itens (protege a máquina física de exaustão).
+   - `consumer_timeout = 3600000`: timeout estendido para 1 hora, impedindo que tarefas demoradas de LLM derrubem o canal AMQP.
+
+---
+
+### 7.4. Boas Práticas para Workflows no n8n
+
+- **Nós RabbitMQ Trigger (Consumidores)**:
+  - Definir modo de **Acknowledge**: `Manual / Only on complete` (garante reprocessamento seguro se o workflow falhar).
+  - **Prefetch Count**:
+    - `anne.inbound.raw.q`: `10` a `20` (I/O leve).
+    - `anne.ai.process.q`: `1` ou `2` (tarefa pesada de IA; impede acúmulo de mensagens não processadas em um único worker).
+    - `anne.outbound.dispatch.q`: `5` a `10` (requisições HTTP à Evolution API).
+- **Nós RabbitMQ (Publicadores)**:
+  - Exchange: `anne.direct.work`.
+  - Delivery Mode: `2 - Persistent`.
+
+---
+
+## 8. Recriar Banco e RabbitMQ
 Se alterar os scripts em `setup/` (como uma nova tabela no `init.sql`), aplique forçando a recriação. 
 **Atenção:** o `init.sql` do Postgres só roda se a pasta de dados estiver vazia.
 
