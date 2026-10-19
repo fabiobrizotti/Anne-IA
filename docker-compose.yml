@@ -40,6 +40,9 @@ services:
     command:
       - -c
       - |
+        echo "[n8n-import] Aguardando estabilização do banco do n8n..."
+        sleep 3
+
         echo "[n8n-import] Limpando workflows existentes (importação idempotente)..."
         node /setup-n8n/clean-workflows.js || echo "[n8n-import] WARNING: limpeza não aplicada"
 
@@ -47,25 +50,57 @@ services:
         mkdir -p /tmp/repo_workflows
 
         if [ -n "$${GITHUB_TOKEN}" ]; then
-          git clone "https://x-access-token:$${GITHUB_TOKEN}@github.com/fabiobrizotti/n8n_anneia_workflows.git" /tmp/repo_workflows
+          git clone -q "https://x-access-token:$${GITHUB_TOKEN}@github.com/fabiobrizotti/n8n_anneia_workflows.git" /tmp/repo_workflows 2>/dev/null || {
+            echo "[n8n-import] ERRO: Falha ao clonar repositório de workflows (verifique o GITHUB_TOKEN)"
+            exit 1
+          }
         else
-          git clone "https://github.com/fabiobrizotti/n8n_anneia_workflows.git" /tmp/repo_workflows
+          git clone -q "https://github.com/fabiobrizotti/n8n_anneia_workflows.git" /tmp/repo_workflows || {
+            echo "[n8n-import] ERRO: Falha ao clonar repositório de workflows"
+            exit 1
+          }
         fi
 
         echo "[n8n-import] Varrendo e importando todos os .json das subpastas..."
-        find /tmp/repo_workflows/workflows -type f -name "*.json" | while read -r file; do
+        failed=0
+        imported=0
+
+        for file in $$(find /tmp/repo_workflows/workflows -type f -name "*.json"); do
           echo "[n8n-import] Sanitizando e injetando: $$file"
-          node /setup-n8n/sanitize-workflow.js "$$file" /tmp/workflow-clean.json || {
-            echo "[n8n-import] WARNING: sanitização falhou, pulando $$file"
+          if ! node /setup-n8n/sanitize-workflow.js "$$file" /tmp/workflow-clean.json; then
+            echo "[n8n-import] ERRO: Sanitização falhou, pulando $$file"
+            failed=$$((failed + 1))
             continue
-          }
-          n8n import:workflow --input="/tmp/workflow-clean.json"
+          fi
+
+          success=0
+          attempt=1
+          while [ $$attempt -le 3 ]; do
+            if n8n import:workflow --input="/tmp/workflow-clean.json"; then
+              success=1
+              imported=$$((imported + 1))
+              break
+            fi
+            echo "[n8n-import] AVISO: Tentativa $$attempt falhou para $$file. Aguardando lock SQLite (2s)..."
+            sleep 2
+            attempt=$$((attempt + 1))
+          done
+
+          if [ $$success -eq 0 ]; then
+            echo "[n8n-import] ERRO CRÍTICO: Falha definitiva ao importar $$file"
+            failed=$$((failed + 1))
+          fi
         done
+
+        if [ $$failed -gt 0 ]; then
+          echo "[n8n-import] ERRO: Houve $$failed falha(s) na importação de workflows!"
+          exit 1
+        fi
 
         echo "[n8n-import] Desativando (garantia) todos os fluxos importados..."
         n8n unpublish:workflow --all
 
-        echo "[n8n-import] Concluído! Reinicie o n8n para aplicar as mudanças."
+        echo "[n8n-import] Concluído com sucesso ($$imported workflows importados)! Reinicie o n8n para aplicar as mudanças."
     networks:
       - data_net
     restart: "no"

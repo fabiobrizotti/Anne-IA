@@ -15,7 +15,7 @@ A stack é auto-inicializável a partir de um clone limpo. A pasta `setup/` conc
 Os workflows do n8n não são versionados aqui. Eles vêm de `fabiobrizotti/n8n_anneia_workflows`. O container `n8n-import` usa o `GITHUB_TOKEN` para clonar e aplicar automaticamente.
 
 ## 1. Pré-requisitos
-- Docker Engine com Compose v2.
+- Docker Engine com Compose v2 (usuário no grupo `docker`: `sudo usermod -aG docker $USER && newgrp docker`).
 - Portas livres: `5678` (n8n), `8081` (Evolution), `5432` (Postgres), `6379` (Redis), `5672`/`15672` (RabbitMQ), `20000` (9Router), `5050` (pgAdmin).
 - Conta no GitHub com acesso de leitura (token) ao repositório dos workflows.
 

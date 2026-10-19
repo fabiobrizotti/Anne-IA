@@ -12,10 +12,42 @@
 // legítimos do usuário (execution_entity, webhook_entity, etc.) são mantidas.
 // =============================================================================
 
-const path = process.argv[2] || '/home/node/.n8n/database.sqlite';
+const fs = require('fs');
+const path = require('path');
+const { createRequire } = require('module');
 
-const { Database } = require('/usr/local/lib/node_modules/n8n/node_modules/.pnpm/sqlite3@5.1.7/node_modules/sqlite3');
-const db = new Database(path);
+const dbPath = process.argv[2] || '/home/node/.n8n/database.sqlite';
+
+if (!fs.existsSync(dbPath)) {
+  console.log('[clean-workflows] Banco de dados ainda não existe (' + dbPath + '). Nada a limpar.');
+  process.exit(0);
+}
+
+function loadSqlite3() {
+  try {
+    return require('sqlite3');
+  } catch (_) {}
+
+  try {
+    const n8nRequire = createRequire('/usr/local/lib/node_modules/n8n/package.json');
+    return n8nRequire('sqlite3');
+  } catch (_) {}
+
+  try {
+    const pnpmDir = '/usr/local/lib/node_modules/n8n/node_modules/.pnpm';
+    if (fs.existsSync(pnpmDir)) {
+      const match = fs.readdirSync(pnpmDir).find((d) => d.startsWith('sqlite3@'));
+      if (match) {
+        return require(path.join(pnpmDir, match, 'node_modules', 'sqlite3'));
+      }
+    }
+  } catch (_) {}
+
+  throw new Error('Módulo sqlite3 não encontrado no container n8n');
+}
+
+const { Database } = loadSqlite3();
+const db = new Database(dbPath);
 
 function q(t) {
   return '"' + t.replace(/"/g, '""') + '"';
@@ -36,26 +68,31 @@ function cleanup() {
 
     // Filhas primeiro; workflow_entity por último (raiz das relações).
     const ordered = targets.filter((t) => t !== 'workflow_entity');
-    let j = 0;
 
-    const delNext = () => {
-      if (j < ordered.length) {
-        const t = ordered[j++];
-        db.run('DELETE FROM ' + q(t), (dErr) => {
-          if (dErr) {
-            console.error('[clean-workflows] WARNING ao limpar ' + t + ':', dErr.message);
+    db.serialize(() => {
+      db.run('PRAGMA foreign_keys = OFF;');
+      db.run('BEGIN TRANSACTION;');
+
+      for (const t of ordered) {
+        db.run('DELETE FROM ' + q(t));
+      }
+
+      if (targets.includes('workflow_entity')) {
+        db.run('DELETE FROM "workflow_entity"');
+      }
+
+      db.run('COMMIT;', (commitErr) => {
+        db.run('PRAGMA foreign_keys = ON;', () => {
+          if (commitErr) {
+            console.error('[clean-workflows] ERRO no commit:', commitErr.message);
+            db.close();
+            process.exit(1);
           }
-          delNext();
-        });
-      } else {
-        db.run('DELETE FROM "workflow_entity"', () => {
           console.log('[clean-workflows] OK. Workflows removidos. (tabelas: ' + targets.join(', ') + ')');
           db.close();
         });
-      }
-    };
-
-    delNext();
+      });
+    });
   });
 }
 
