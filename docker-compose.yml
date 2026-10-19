@@ -1,9 +1,9 @@
 services:
   n8n:
-    image: n8nio/n8n:${N8N_VERSION:-2.36.5}
+    image: n8nio/n8n:${N8N_VERSION}
     restart: unless-stopped
     ports:
-      - "${N8N_PORT}:5678"
+      - "${N8N_PORT}:${N8N_PORT}"
     env_file:
       - .env
     volumes:
@@ -14,7 +14,7 @@ services:
       - public_net
       - data_net
     healthcheck:
-      test: ["CMD-SHELL", "node -e \"const http = require('http'); const req = http.request({ host: 'localhost', port: 5678, path: '/healthz', timeout: 2000 }, (res) => { process.exit(res.statusCode === 200 ? 0 : 1); }); req.on('error', () => { process.exit(1); }); req.end();\""]
+      test: ["CMD-SHELL", "node -e \"const http = require('http'); const req = http.request({ host: 'localhost', port: process.env.N8N_PORT, path: '/healthz', timeout: 2000 }, (res) => { process.exit(res.statusCode === 200 ? 0 : 1); }); req.on('error', () => { process.exit(1); }); req.end();\""]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -25,7 +25,7 @@ services:
 # database.sqlite (via setup/n8n/clean-workflows.js) para não falhar com
 # SQLITE_CONSTRAINT ao recriar workflows com o mesmo ID.
   n8n-import:
-    image: n8nio/n8n:${N8N_VERSION:-2.36.5}
+    image: n8nio/n8n:${N8N_VERSION}
     container_name: n8n-import
     profiles: ["setup"]   # Executa apenas sob demanda
     depends_on:
@@ -71,12 +71,12 @@ services:
     restart: "no"
 
   rabbitmq:
-    image: rabbitmq:${RABBITMQ_VERSION:-3-management-alpine}
+    image: rabbitmq:${RABBITMQ_VERSION}
     container_name: rabbitmq
     restart: unless-stopped
     hostname: rabbitmq-anne
     ports:
-      - "127.0.0.1:${RABBITMQ_MANAGEMENT_PORT:-15672}:${RABBITMQ_MANAGEMENT_PORT:-15672}"
+      - "${RABBITMQ_HOST_BIND}:${RABBITMQ_MANAGEMENT_PORT}:${RABBITMQ_MANAGEMENT_CONTAINER_PORT}"
     env_file:
       - .env
     entrypoint: /setup-rabbitmq/entrypoint.sh
@@ -95,11 +95,11 @@ services:
       start_period: 15s
 
   evolution-api:
-    image: evoapicloud/evolution-api:${EVOLUTION_API_VERSION:-v2.3.7}
+    image: evoapicloud/evolution-api:${EVOLUTION_API_VERSION}
     container_name: evolution-api
     restart: unless-stopped
     ports:
-      - "${EVOLUTION_HOST_BIND:-127.0.0.1}:${EVOLUTION_PORT:-8081}:${SERVER_PORT:-8080}"
+      - "${EVOLUTION_HOST_BIND}:${EVOLUTION_PORT}:${SERVER_PORT}"
     env_file:
       - .env
     volumes:
@@ -111,11 +111,11 @@ services:
       - data_net
 
   db-evolution:
-    image: pgvector/pgvector:${PGVECTOR_VERSION:-pg15}
+    image: pgvector/pgvector:${PGVECTOR_VERSION}
     container_name: db-evolution
     restart: unless-stopped
     ports:
-      - "${POSTGRES_HOST_BIND:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432"
+      - "${POSTGRES_HOST_BIND}:${POSTGRES_PORT}:${POSTGRES_CONTAINER_PORT}"
     env_file:
       - .env
     volumes:
@@ -125,28 +125,28 @@ services:
       - data_net
       - public_net
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-evolution} -d ${POSTGRES_DB:-evolution}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
       retries: 5
       start_period: 10s
 
   redis:
-    image: redis:${REDIS_VERSION:-7-alpine}
+    image: redis:${REDIS_VERSION}
     container_name: redis
     restart: unless-stopped
     command: >
       redis-server
       --requirepass ${REDIS_PASSWORD}
-      --maxmemory ${REDIS_MAX_MEMORY:-256mb}
-      --maxmemory-policy ${REDIS_MAX_MEMORY_POLICY:-allkeys-lru}
+      --maxmemory ${REDIS_MAX_MEMORY}
+      --maxmemory-policy ${REDIS_MAX_MEMORY_POLICY}
       --appendonly yes
       --appendfsync everysec
       --save 900 1
       --save 300 10
       --save 60 10000
     ports:
-      - "${REDIS_HOST_BIND:-127.0.0.1}:${REDIS_PORT:-6379}:6379"
+      - "${REDIS_HOST_BIND}:${REDIS_PORT}:${REDIS_CONTAINER_PORT}"
     volumes:
       - ./data/redis:/data
     networks:
@@ -163,7 +163,7 @@ services:
     container_name: 9router
     restart: unless-stopped
     ports:
-      - "${NINE_ROUTER_HOST_BIND}:${NINE_ROUTER_PORT}:${NINE_ROUTER_PORT}"
+      - "${NINE_ROUTER_HOST_BIND}:${NINE_ROUTER_PORT}:${NINE_ROUTER_CONTAINER_PORT}"
     env_file:
       - .env
     volumes:
