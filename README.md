@@ -1,4 +1,4 @@
-# Anne-IA — Stack Docker (n8n, Evolution API, Postgres, Redis, RabbitMQ, pgAdmin)
+# Anne-IA — Stack Docker (n8n, Evolution API, Postgres, Redis, RabbitMQ, pgAdmin, Dashboard)
 
 A stack é auto-inicializável a partir de um clone limpo. A pasta `setup/` concentra as configurações de infraestrutura:
 
@@ -16,7 +16,7 @@ Os workflows do n8n não são versionados aqui. Eles vêm de `fabiobrizotti/n8n_
 
 ## 1. Pré-requisitos
 - Docker Engine com Compose v2 (usuário no grupo `docker`: `sudo usermod -aG docker $USER && newgrp docker`).
-- Portas livres: `5678` (n8n), `8081` (Evolution), `5432` (Postgres), `6379` (Redis), `5672`/`15672` (RabbitMQ), `20000` (9Router), `5050` (pgAdmin).
+- Portas livres: `5678` (n8n), `8081` (Evolution), `5432` (Postgres), `6379` (Redis), `5672`/`15672` (RabbitMQ), `20000` (9Router), `5050` (pgAdmin), `3000` (Dashboard).
 - Conta no GitHub com acesso de leitura (token) ao repositório dos workflows.
 
 ## 2. Instalação
@@ -103,6 +103,7 @@ A infraestrutura utiliza o `.env.example` como fonte única da verdade estrutura
 - `AUTHENTICATION_API_KEY`: Chave de autenticação da Evolution API.
 - `PGADMIN_DEFAULT_EMAIL`: E-mail de login no pgAdmin 4.
 - `PGADMIN_DEFAULT_PASSWORD`: Senha de acesso admin ao pgAdmin 4.
+- `DASHBOARD_PASSWORD`: Senha do painel administrativo de instâncias (usuário: `admin`).
 - `GITHUB_TOKEN`: Formato `ghp_...` ou token pessoal para clonar os workflows no n8n-import.
 - `N8N_INSTANCE_OWNER_EMAIL`: E-mail do owner da instância n8n.
 
@@ -200,7 +201,32 @@ O RabbitMQ opera como o barramento assíncrono de alta confiabilidade da Anne-IA
 
 ---
 
-## 8. Recriar Banco e RabbitMQ
+## 8. Painel Administrativo Vanilla (Gestão de Instâncias e Clientes)
+
+O Dashboard administrativo é uma aplicação web ultra-leve construída em **Vanilla HTML5, CSS puro e JavaScript nativo** (com backend enxuto em Node.js 20 Alpine). Ele consome menos de 30MB de memória RAM no servidor e inicia automaticamente junto ao Docker Compose.
+
+### 8.1. Acesso ao Painel
+- **URL**: `http://127.0.0.1:3000` (restrito ao host local por segurança).
+- **Autenticação**:
+  - Usuário: `DASHBOARD_USERNAME` (padrão: `admin`).
+  - Senha: `DASHBOARD_PASSWORD` (gerada automaticamente no `.env`).
+
+### 8.2. Funcionalidades Principais
+1. **Gestão Centralizada de Clientes e Instâncias**:
+   - Tabela `clientes` no PostgreSQL (`anneia`), onde o campo `id` é idêntico ao `instanceName`/`instanceId` da Evolution API.
+   - Listagem com busca em tempo real por nome, ID ou telefone.
+   - Monitoramento de status em tempo real (`Conectado`, `Conectando`, `Desconectado`).
+2. **Conexão ao WhatsApp sem Complicações**:
+   - **Código de Pareamento (Pairing Code)**: Informe o número com DDD e receba um código de 8 dígitos para digitar no celular diretamente, sem depender de câmera.
+   - **QR Code**: Exibição visual com auto-polling até a conclusão da conexão.
+3. **Ajuste de Comportamento (Settings)**:
+   - Rejeição automática de chamadas de voz e vídeo com mensagem explicativa customizável.
+   - Ignorar mensagens em grupos para focar apenas no atendimento privado.
+   - Manter status sempre online, recibo de leitura (tique azul), visualização de status e sincronização de histórico.
+
+---
+
+## 9. Recriar Banco e RabbitMQ
 Se alterar os scripts em `setup/` (como uma nova tabela no `init.sql`), aplique forçando a recriação. 
 **Atenção:** o `init.sql` do Postgres só roda se a pasta de dados estiver vazia.
 

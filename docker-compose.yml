@@ -234,6 +234,40 @@ services:
       db-evolution:
         condition: service_healthy
 
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    image: anne-ia/dashboard:${DASHBOARD_VERSION}
+    container_name: dashboard
+    restart: unless-stopped
+    ports:
+      - "${DASHBOARD_HOST_BIND}:${DASHBOARD_PORT}:${DASHBOARD_CONTAINER_PORT}"
+    env_file:
+      - .env
+    environment:
+      PORT: ${DASHBOARD_CONTAINER_PORT}
+      EVOLUTION_API_URL: http://evolution-api:${SERVER_PORT}
+      EVOLUTION_API_KEY: ${AUTHENTICATION_API_KEY}
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${CHAVE_POSTGRES_PASSWORD}@db-evolution:${POSTGRES_CONTAINER_PORT}/anneia
+      DASHBOARD_AUTH_ENABLED: ${DASHBOARD_AUTH_ENABLED}
+      DASHBOARD_USERNAME: ${DASHBOARD_USERNAME}
+      DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD}
+    networks:
+      - public_net
+      - data_net
+    depends_on:
+      evolution-api:
+        condition: service_started
+      db-evolution:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:${DASHBOARD_CONTAINER_PORT}/api/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
 networks:
   public_net:
     driver: bridge

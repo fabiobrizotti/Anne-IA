@@ -35,6 +35,7 @@ PASSWORD_FIELDS=(
   "N8N_ENCRYPTION_KEY"
   "AUTHENTICATION_API_KEY"
   "PGADMIN_DEFAULT_PASSWORD"
+  "DASHBOARD_PASSWORD"
 )
 
 # Pares de variáveis espelhadas que devem possuir o mesmo valor.

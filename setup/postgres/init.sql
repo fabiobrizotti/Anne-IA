@@ -55,3 +55,20 @@ CREATE TABLE base_conhecimento (
   metadata JSONB NOT NULL,
   embedding VECTOR(3072)
 );
+
+-- 6. Tabela de Clientes (Multi-tenant vinculado às Instâncias Evolution API)
+--    O campo id é a chave primária e corresponde ao instanceId / instanceName da Evolution API
+CREATE TABLE IF NOT EXISTS clientes (
+  id VARCHAR(100) PRIMARY KEY,
+  nome VARCHAR(255) NOT NULL,
+  telefone VARCHAR(30),
+  email VARCHAR(255),
+  ativo BOOLEAN NOT NULL DEFAULT true,
+  configuracoes JSONB NOT NULL DEFAULT '{}',
+  criado_em TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+  atualizado_em TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_clientes_nome ON clientes (nome);
+CREATE INDEX IF NOT EXISTS idx_clientes_ativo ON clientes (ativo);
+

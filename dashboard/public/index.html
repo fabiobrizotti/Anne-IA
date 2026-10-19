@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Anne-IA — Gestão de Instâncias</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="layout">
+    <!-- Barra Superior -->
+    <header class="header">
+      <div class="brand">
+        <span class="logo-dot"></span>
+        <div>
+          <h1>Anne-IA</h1>
+          <p class="subtitle">Gestão de Instâncias e Clientes</p>
+        </div>
+      </div>
+      <div class="actions">
+        <button id="btn-refresh" class="btn btn-secondary">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+          Atualizar
+        </button>
+        <button id="btn-new-instance" class="btn btn-primary">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          Nova Instância
+        </button>
+      </div>
+    </header>
+
+    <!-- Resumo de Métricas -->
+    <section class="metrics">
+      <div class="card metric-card">
+        <span class="metric-label">Total de Clientes</span>
+        <span id="metric-total" class="metric-value">0</span>
+      </div>
+      <div class="card metric-card">
+        <span class="metric-label">Instâncias Conectadas</span>
+        <span id="metric-open" class="metric-value text-success">0</span>
+      </div>
+      <div class="card metric-card">
+        <span class="metric-label">Aguardando Conexão</span>
+        <span id="metric-close" class="metric-value text-warning">0</span>
+      </div>
+    </section>
+
+    <!-- Tabela Principal -->
+    <main class="card table-card">
+      <div class="table-header">
+        <h2>Instâncias Ativas</h2>
+        <input type="text" id="search-input" placeholder="Buscar por cliente, ID ou telefone..." class="search-field">
+      </div>
+
+      <div class="table-responsive">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Cliente</th>
+              <th>ID da Instância</th>
+              <th>WhatsApp</th>
+              <th>Status</th>
+              <th>Criado em</th>
+              <th class="text-right">Ações</th>
+            </tr>
+          </thead>
+          <tbody id="instances-tbody">
+            <tr>
+              <td colspan="6" class="text-center py-8 text-muted">Carregando instâncias...</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </main>
+  </div>
+
+  <!-- Modal: Nova Instância / Cliente -->
+  <div id="modal-new" class="modal-backdrop hidden">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>Criar Nova Instância</h3>
+        <button class="btn-close" data-close="modal-new">&times;</button>
+      </div>
+      <form id="form-new-instance">
+        <div class="modal-body">
+          <p class="modal-help">
+            Cadastre os dados do cliente. O identificador da instância será o mesmo ID usado em toda a Anne-IA.
+          </p>
+
+          <div class="form-group">
+            <label for="new-nome">Nome do Cliente ou Empresa *</label>
+            <input type="text" id="new-nome" required placeholder="Ex: Mercado São José" class="input">
+          </div>
+
+          <div class="form-group">
+            <label for="new-id">Identificador da Instância (ID único) *</label>
+            <input type="text" id="new-id" required placeholder="Ex: mercado-sao-jose" class="input">
+            <small class="field-hint">Apenas letras minúsculas, números e traços. Esse valor é a chave do cliente no banco.</small>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label for="new-telefone">Número do WhatsApp</label>
+              <input type="tel" id="new-telefone" placeholder="5511999999999" class="input">
+              <small class="field-hint">Com DDI e DDD (somente dígitos).</small>
+            </div>
+            <div class="form-group">
+              <label for="new-email">E-mail de Contato</label>
+              <input type="email" id="new-email" placeholder="contato@empresa.com" class="input">
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-close="modal-new">Cancelar</button>
+          <button type="submit" class="btn btn-primary" id="btn-submit-new">Criar e Salvar</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Conexão WhatsApp (Pairing Code e QR Code) -->
+  <div id="modal-connect" class="modal-backdrop hidden">
+    <div class="modal modal-md">
+      <div class="modal-header">
+        <div>
+          <h3>Conectar WhatsApp</h3>
+          <p id="connect-instance-subtitle" class="text-muted text-sm"></p>
+        </div>
+        <button class="btn-close" data-close="modal-connect">&times;</button>
+      </div>
+
+      <div class="tabs">
+        <button class="tab-btn active" data-tab="tab-pairing">Código de Pareamento</button>
+        <button class="tab-btn" data-tab="tab-qrcode">QR Code</button>
+      </div>
+
+      <div class="modal-body">
+        <!-- Aba: Código de Pareamento -->
+        <div id="tab-pairing" class="tab-content active">
+          <p class="modal-help">
+            Digite o número do celular com DDI e DDD. O WhatsApp vai gerar um código de 8 dígitos para você digitar no celular sem precisar de câmera.
+          </p>
+
+          <div class="form-row">
+            <div class="form-group flex-1">
+              <label for="pairing-number">Número com DDD e país</label>
+              <input type="tel" id="pairing-number" placeholder="5511999999999" class="input">
+            </div>
+            <button id="btn-request-pairing" class="btn btn-primary self-end">
+              Gerar Código
+            </button>
+          </div>
+
+          <div id="pairing-result-box" class="pairing-box hidden">
+            <span class="pairing-title">Código de pareamento gerado:</span>
+            <div class="pairing-code-wrapper">
+              <span id="pairing-code-display" class="pairing-code">--------</span>
+              <button id="btn-copy-pairing" class="btn btn-sm btn-secondary">Copiar</button>
+            </div>
+            <ol class="pairing-steps">
+              <li>Abra o WhatsApp no aparelho celular.</li>
+              <li>Toque nos três pontos (ou Ajustes) e abra <strong>Aparelhos conectados</strong>.</li>
+              <li>Toque em <strong>Conectar um aparelho</strong>.</li>
+              <li>Selecione <strong>Conectar com número de telefone</strong> na parte inferior.</li>
+              <li>Digite o código de 8 dígitos acima.</li>
+            </ol>
+          </div>
+        </div>
+
+        <!-- Aba: QR Code -->
+        <div id="tab-qrcode" class="tab-content">
+          <p class="modal-help">
+            Aponte a câmera do WhatsApp para o QR Code abaixo para conectar a instância.
+          </p>
+          <div class="qrcode-wrapper">
+            <div id="qrcode-container" class="qrcode-placeholder">
+              <span>Carregando QR Code...</span>
+            </div>
+            <button id="btn-refresh-qrcode" class="btn btn-sm btn-secondary mt-3">Atualizar QR Code</button>
+          </div>
+        </div>
+
+        <!-- Feedback de status em tempo real -->
+        <div id="connection-status-pill" class="status-pill status-pill-waiting">
+          <span class="status-dot"></span>
+          <span id="connection-status-text">Aguardando confirmação do WhatsApp...</span>
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-close="modal-connect">Fechar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Configurações da Instância (Settings) -->
+  <div id="modal-settings" class="modal-backdrop hidden">
+    <div class="modal modal-md">
+      <div class="modal-header">
+        <div>
+          <h3>Configurações da Instância</h3>
+          <p id="settings-instance-subtitle" class="text-muted text-sm"></p>
+        </div>
+        <button class="btn-close" data-close="modal-settings">&times;</button>
+      </div>
+      <form id="form-settings">
+        <div class="modal-body">
+          <p class="modal-help">
+            Ajuste o comportamento do WhatsApp para esta instância. As opções têm efeito imediato.
+          </p>
+
+          <div class="settings-list">
+            <!-- Rejeitar Chamadas -->
+            <div class="setting-item">
+              <div class="setting-info">
+                <strong>Rejeitar chamadas de voz e vídeo</strong>
+                <p>Desliga automaticamente qualquer ligação recebida no número da instância.</p>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="setting-rejectCall">
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <!-- Mensagem para Chamada Recusada -->
+            <div class="form-group setting-conditional" id="box-msgCall">
+              <label for="setting-msgCall">Mensagem para chamadas recusadas</label>
+              <input type="text" id="setting-msgCall" placeholder="Ex: Este número atende apenas por mensagens de texto." class="input">
+            </div>
+
+            <!-- Ignorar Grupos -->
+            <div class="setting-item">
+              <div class="setting-info">
+                <strong>Ignorar mensagens de grupos</strong>
+                <p>Não processa mensagens enviadas em grupos, focando apenas em conversas privadas.</p>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="setting-groupsIgnore">
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <!-- Manter Sempre Online -->
+            <div class="setting-item">
+              <div class="setting-info">
+                <strong>Manter sempre online</strong>
+                <p>Mantém o status online ativo mesmo sem interação recente.</p>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="setting-alwaysOnline">
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <!-- Recibo de Leitura -->
+            <div class="setting-item">
+              <div class="setting-info">
+                <strong>Recibo de leitura (tique azul)</strong>
+                <p>Marca as mensagens recebidas como lidas quando forem entregues à IA.</p>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="setting-readMessages">
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <!-- Ver Status de Contatos -->
+            <div class="setting-item">
+              <div class="setting-info">
+                <strong>Ver status de contatos</strong>
+                <p>Visualiza automaticamente as atualizações de status publicadas pelos contatos.</p>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="setting-readStatus">
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <!-- Sincronizar Histórico Completo -->
+            <div class="setting-item">
+              <div class="setting-info">
+                <strong>Sincronizar histórico completo</strong>
+                <p>Transfere mensagens antigas do celular para a Evolution API na primeira conexão.</p>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="setting-syncFullHistory">
+                <span class="slider"></span>
+              </label>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-close="modal-settings">Cancelar</button>
+          <button type="submit" class="btn btn-primary" id="btn-save-settings">Salvar Alterações</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Toast de Notificação -->
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

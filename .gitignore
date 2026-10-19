@@ -27,3 +27,8 @@ data/pgadmin/
 # Backups / exportações de workflows (não são o fonte dos workflows)
 files/
 workflows/
+
+# Dependências locais
+node_modules/
+dashboard/node_modules/
+
