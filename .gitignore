@@ -4,23 +4,26 @@
 docker-compose.override.txt
 docker-compose.override.yml
 .dockerignore
+*.bak
+*.tmp
 .env
-.gitignore
+.env.*
+!.env.example
 
 # =============================================================================
 # DADOS E VOLUMES (EFÊMEROS - NUNCA VERSIONAR)
 # =============================================================================
 # A pasta setup/ (configuração/infra de init) É VERSIONADA.
-# As pastas abaixo são dados de runtime dos containers e backup - ficam fora.
-
-# Dados dos contêineres
-data
+# Volumes de persistência e runtime dos 7 serviços:
+data/
 data/n8n/
 data/rabbitmq/
 data/evolution-api/
 data/redis/
 data/postgresql/
+data/9router/
+data/pgadmin/
 
 # Backups / exportações de workflows (não são o fonte dos workflows)
-files
+files/
 workflows/

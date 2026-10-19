@@ -28,9 +28,12 @@ Os workflows do n8n não são versionados aqui. Eles vêm de `fabiobrizotti/n8n_
 git clone https://github.com/fabiobrizotti/Anne-IA
 cd Anne-IA
 
-# Gera o .env e preenche senhas fortes alfanuméricas (32 chars, Base62) sem quebrar URIs
-chmod +x scripts/generate-passwords.sh
-./scripts/generate-passwords.sh
+# Gera o .env, sincroniza chaves novas e preenche senhas fortes Base62 (32 chars)
+chmod +x scripts/*.sh
+./scripts/sync-env.sh
+
+# (Opcional) Ativa sincronização automática do .env após 'git pull'
+git config core.hooksPath .githooks
 
 # Edite o .env para preencher seu GITHUB_TOKEN e N8N_INSTANCE_OWNER_EMAIL
 # (as senhas de banco, redis, rabbitmq e 9router já foram geradas com segurança)
@@ -84,8 +87,14 @@ docker compose --profile setup run --rm --no-deps n8n-import
 docker compose start n8n
 ```
 
-## 3. Variáveis Obrigatórias (.env)
-Todas as senhas da stack podem ser geradas automaticamente executando `./scripts/generate-passwords.sh` (Base62 alfanumérico, sem símbolos que quebrem URIs ou Docker Compose):
+## 3. Gestão e Sincronização de Ambiente (.env)
+A infraestrutura utiliza o `.env.example` como fonte única da verdade estrutural (schema).
+
+- **Sincronizar variáveis e gerar senhas**: Execute `./scripts/sync-env.sh` (ou `./scripts/generate-passwords.sh`). Ele insere novas variáveis adicionadas ao `.env.example`, preserva todos os valores e senhas locais já configurados, cria backup atômico (`.env.bak`) e gera senhas Base62 (32 caracteres alfanuméricos) para credenciais vazias.
+- **Auditoria de divergências (Diff)**: Execute `./scripts/sync-env.sh --diff` para visualizar chaves ausentes, chaves órfãs e valores customizados localmente vs defaults do `.env.example` (com máscara automática em credenciais).
+- **Automação pós-`git pull`**: Execute `git config core.hooksPath .githooks` uma única vez. Sempre que um `git pull` trouxer alterações no `.env.example`, o `.env` local será sincronizado automaticamente.
+
+### Variáveis Críticas de Autenticação:
 - `RABBITMQ_DEFAULT_PASS`: Senha admin do RabbitMQ (sincronizada em `CHAVE_RABBITMQ_DEFAULT_PASS`).
 - `POSTGRES_PASSWORD`: Senha do PostgreSQL (sincronizada em `CHAVE_POSTGRES_PASSWORD`).
 - `REDIS_PASSWORD`: Senha do Redis (sincronizada em `CHAVE_REDIS_PASSWORD`).

@@ -108,6 +108,11 @@ set_env_val() {
 # FLUXO PRINCIPAL
 # ------------------------------------------------------------------------------
 
+# Se invocado diretamente, delega ao sync-env.sh para garantir reconciliação de schema
+if [[ "${ANNE_SYNCED:-0}" != "1" && -x "${PROJECT_ROOT}/scripts/sync-env.sh" ]]; then
+  exec "${PROJECT_ROOT}/scripts/sync-env.sh" "${ENV_FILE}"
+fi
+
 echo "==================================================================="
 echo "  Anne-IA — Provisionamento Seguro de Senhas (.env)"
 echo "==================================================================="
