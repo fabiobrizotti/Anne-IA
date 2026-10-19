@@ -25,6 +25,15 @@
   ],
   "exchanges": [
     {
+      "name": "evolution",
+      "vhost": "/",
+      "type": "topic",
+      "durable": true,
+      "auto_delete": false,
+      "internal": false,
+      "arguments": {}
+    },
+    {
       "name": "anne.direct.work",
       "vhost": "/",
       "type": "direct",
@@ -110,6 +119,14 @@
   ],
   "bindings": [
     {
+      "source": "evolution",
+      "vhost": "/",
+      "destination": "anne.inbound.raw.q",
+      "destination_type": "queue",
+      "routing_key": "MESSAGES_UPSERT",
+      "arguments": {}
+    },
+    {
       "source": "anne.direct.work",
       "vhost": "/",
       "destination": "anne.inbound.raw.q",
@@ -162,13 +179,25 @@
     {
       "vhost": "/",
       "name": "anne_quorum_limits",
-      "pattern": "^anne\\..*\\.q$",
+      "pattern": "^(anne\\..*\\.q|evolution\\.messages\\.upsert)$",
       "apply-to": "queues",
       "definition": {
         "overflow": "reject-publish",
         "max-length": 10000
       },
       "priority": 1
+    },
+    {
+      "vhost": "/",
+      "name": "evolution_ingress_dlx",
+      "pattern": "^evolution\\.messages\\.upsert$",
+      "apply-to": "queues",
+      "definition": {
+        "delivery-limit": 3,
+        "dead-letter-exchange": "anne.direct.dlx",
+        "dead-letter-routing-key": "dlq.inbound"
+      },
+      "priority": 2
     },
     {
       "vhost": "/",
