@@ -130,15 +130,16 @@ O RabbitMQ opera como o barramento assíncrono de alta confiabilidade da Anne-IA
 ### 7.2. Pipeline em 3 Estágios do Projeto
 
 ```text
-[Evolution API / Webhooks]
+[Evolution API (AMQP Global)]
+             │
+             ▼ (rk: MESSAGES_UPSERT)
+   [EXCHANGE: evolution] (Topic / Durable)
              │
              ▼
-  [EXCHANGE: anne.direct.work] (Direct / Durable)
-             │
-   ┌─────────┼─────────┐
-   │ (rk: inbound.received)
-   ▼
 [FILA 1: anne.inbound.raw.q] ──(n8n validação)──┐
+  (Quorum Queue + DLX + DLQ)                    │
+                                                ▼
+                                  [EXCHANGE: anne.direct.work] (Direct / Durable)
                                                 │
    ┌────────────────────────────────────────────┘
    │ (rk: ai.process)
@@ -151,9 +152,9 @@ O RabbitMQ opera como o barramento assíncrono de alta confiabilidade da Anne-IA
 [FILA 3: anne.outbound.dispatch.q] ──(n8n humanização / envio WhatsApp)
 ```
 
-| Estágio | Finalidade | Exchange de Trabalho | Routing Key | Fila Quorum Principal | DLX | Routing Key DLQ | Fila Dead Letter (DLQ) |
-|---|---|---|---|---|---|---|
-| **1. Inbound** | Recepção de conversas e dados brutos do cliente (WhatsApp/Evolution) | `anne.direct.work` | `inbound.received` | `anne.inbound.raw.q` | `anne.direct.dlx` | `dlq.inbound` | `anne.inbound.raw.dlq` |
+| Estágio | Finalidade | Exchange de Ingress / Trabalho | Routing Key | Fila Quorum Principal | DLX | Routing Key DLQ | Fila Dead Letter (DLQ) |
+|---|---|---|---|---|---|---|---|
+| **1. Inbound** | Recepção de conversas e dados brutos do cliente (WhatsApp/Evolution) | `evolution` (Topic) / `anne.direct.work` | `MESSAGES_UPSERT` / `inbound.received` | `anne.inbound.raw.q` | `anne.direct.dlx` | `dlq.inbound` | `anne.inbound.raw.dlq` |
 | **2. Core IA** | Motor principal de raciocínio, contexto, RAG e chamadas de LLM | `anne.direct.work` | `ai.process` | `anne.ai.process.q` | `anne.direct.dlx` | `dlq.ai` | `anne.ai.process.dlq` |
 | **3. Outbound**| Humanização, formatação e despacho das respostas ao cliente | `anne.direct.work` | `outbound.dispatch`| `anne.outbound.dispatch.q` | `anne.direct.dlx` | `dlq.outbound` | `anne.outbound.dispatch.dlq` |
 
