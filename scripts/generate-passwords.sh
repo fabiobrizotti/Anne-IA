@@ -34,6 +34,7 @@ PASSWORD_FIELDS=(
   "NINE_ROUTER_PASSWORD"
   "N8N_ENCRYPTION_KEY"
   "AUTHENTICATION_API_KEY"
+  "PGADMIN_DEFAULT_PASSWORD"
 )
 
 # Pares de variáveis espelhadas que devem possuir o mesmo valor.
@@ -53,7 +54,8 @@ SYNC_PAIRS=(
 generate_password() {
   local len="${1:-${DEFAULT_LENGTH}}"
   # LC_ALL=C garante leitura correta de bytes em /dev/urandom sem falha de locale
-  LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c "${len}"
+  # '|| true' evita encerramento precoce por SIGPIPE (código 141) sob pipefail quando head fecha o pipe
+  (LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom || true) | head -c "${len}"
 }
 
 # Obtém o valor atual de uma variável no arquivo .env

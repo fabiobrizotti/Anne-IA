@@ -178,6 +178,27 @@ services:
       retries: 5
       start_period: 15s
 
+  pgadmin:
+    image: dpage/pgadmin4:${PGADMIN_VERSION}
+    container_name: pgadmin
+    restart: unless-stopped
+    ports:
+      - "${PGADMIN_HOST_BIND}:${PGADMIN_PORT}:${PGADMIN_CONTAINER_PORT}"
+    env_file:
+      - .env
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD}
+      PGADMIN_CONFIG_SERVER_MODE: ${PGADMIN_CONFIG_SERVER_MODE}
+    volumes:
+      - ./data/pgadmin:/var/lib/pgadmin
+      - ./setup/pgadmin/servers.json:/pgadmin4/servers.json:ro
+    networks:
+      - data_net
+    depends_on:
+      db-evolution:
+        condition: service_healthy
+
 networks:
   public_net:
     driver: bridge
