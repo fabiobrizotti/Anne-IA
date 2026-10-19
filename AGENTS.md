@@ -23,15 +23,16 @@ O agente não atua como um assistente passivo, mas como um **time multidisciplin
 
 ### 🛡️ Cibersegurança Defensiva (Cybersecurity)
 - Proteção estrita de segredos, chaves e tokens (`.env`, `GITHUB_TOKEN`, senhas de banco e mensageria).
-- **Parametrização 100% via .env**: Nunca expor portas, versões de imagens Docker (`N8N_VERSION`, `EVOLUTION_API_VERSION`, `PGVECTOR_VERSION`, `REDIS_VERSION`, `RABBITMQ_VERSION`, `NINE_ROUTER_VERSION`), credenciais ou hosts no `docker-compose.yml`. Tudo deve ser parametrizado via variáveis de ambiente no `.env` e espelhado com documentação no `.env.example`.
+- **Parametrização Absoluta 100% via .env (Zero Hardcode no Compose)**: Proibido expor portas (tanto do host quanto do container), versões de imagens Docker (`N8N_VERSION`, `EVOLUTION_API_VERSION`, `PGVECTOR_VERSION`, `REDIS_VERSION`, `RABBITMQ_VERSION`, `NINE_ROUTER_VERSION`, `PGADMIN_VERSION`), credenciais, bindings ou hosts no `docker-compose.yml`. Não utilizar valores padrão ou fallbacks hardcoded diretamente no compose quando a variável deve vir do ambiente. Tudo deve ser parametrizado via `.env` e espelhado com documentação no `.env.example`.
 - **Senhas Seguras Sem Caracteres Especiais (Base62)**: Senhas e chaves de infraestrutura devem ser geradas com caracteres alfanuméricos (`[A-Za-z0-9]`, Base62) com comprimento padrão de 32 caracteres (via `scripts/generate-passwords.sh`). Evitar símbolos especiais (`$`, `"`, `'`, `/`, `@`, `:`, `%`, `&`, `\`) que causam quebras de parsing em connection URIs (`postgresql://`, `amqp://`, `redis://`), injeção acidental em comandos `sed` de entrypoints e expansão no Docker Compose.
 - **Idempotência e Não-Destruição**: Scripts de setup e injeção de credenciais nunca devem sobrescrever senhas ou dados já existentes no `.env`.
 - Princípio do menor privilégio: isolamento de redes Docker (`public_net` vs `data_net`), binding local (`127.0.0.1`) em serviços internos.
 - Sanitização rigorosa de inputs e prevenção de injeção (SQL, command injection em entrypoints/shell).
 
-### 🌿 Fluxo Git & Branching
-- Sempre verificar se está na branch `dev` antes de iniciar qualquer modificação no código. Todo trabalho em andamento deve ser desenvolvido e commitado na `dev`.
-- Commits semânticos e rastreáveis: todo commit gerado deve ser registrado com hash e mensagem no Segundo Cérebro.
+### 🌿 Fluxo Git, Branching & Documentação
+- **Verificação Obrigatória de Branch**: Sempre verificar se está na branch `dev` antes de iniciar qualquer modificação no código ou infraestrutura. Todo trabalho em andamento deve ser desenvolvido e commitado na `dev`.
+- **Commits Semânticos nos Padrões de Mercado**: Seguir Conventional Commits estritamente (`feat`, `fix`, `docs`, `refactor`, `chore`, etc). Todo commit gerado deve ser registrado com hash e mensagem no Segundo Cérebro.
+- **Alinhamento Contínuo do README.md**: Qualquer inclusão, alteração ou remoção de serviço, porta, variável ou requisito de infraestrutura deve ser refletida de imediato no `README.md`.
 
 ### 🚀 Produção & Grande Escala (Production-Readiness)
 - Desenhar e avaliar soluções para alta disponibilidade, volume e concorrência.
