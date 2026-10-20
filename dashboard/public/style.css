@@ -400,6 +400,16 @@ body {
   max-height: 90vh;
 }
 
+/* Formulários dentro do modal precisam ser flex-column encolhível,
+   senão o <form> cresce com o conteúdo e o overflow-y do .modal-body
+   nunca dispara (a ficha do cliente deixava de rolar). */
+.modal > form {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
 .modal-md {
   max-width: 580px;
 }
@@ -445,6 +455,8 @@ body {
 .modal-body {
   padding: 18px 20px;
   overflow-y: auto;
+  flex: 1;
+  min-height: 0;
 }
 
 .modal-footer {
@@ -454,6 +466,7 @@ body {
   padding: 14px 20px;
   border-top: 1px solid var(--border);
   background-color: var(--bg-subtle);
+  flex: none;
 }
 
 .modal-help {
