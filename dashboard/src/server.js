@@ -515,6 +515,10 @@ app.put('/api/v1/instances/:id/prompt', async (req, res) => {
 
     res.json({ success: true, prompt: r.rows[0] });
   } catch (err) {
+    // 23503 = foreign_key_violation: cliente não existe em `clientes`
+    if (err.code === '23503') {
+      return res.status(404).json({ success: false, error: 'Cliente não encontrado para este ID' });
+    }
     console.error('[api] Erro ao salvar prompt:', err);
     res.status(500).json({ success: false, error: 'Falha ao salvar prompt' });
   }
