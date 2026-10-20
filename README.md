@@ -211,18 +211,39 @@ O Dashboard administrativo é uma aplicação web ultra-leve construída em **Va
   - Usuário: `DASHBOARD_USERNAME` (padrão: `admin`).
   - Senha: `DASHBOARD_PASSWORD` (gerada automaticamente no `.env`).
 
-### 8.2. Funcionalidades Principais
-1. **Gestão Centralizada de Clientes e Instâncias**:
-   - Tabela `clientes` no PostgreSQL (`anneia`), onde o campo `id` é idêntico ao `instanceName`/`instanceId` da Evolution API.
-   - Listagem com busca em tempo real por nome, ID ou telefone.
-   - Monitoramento de status em tempo real (`Conectado`, `Conectando`, `Desconectado`).
+### 8.2. Interface e Experiência Neutra
+- **Design Monocromático Neutro**: Visual preto e branco sóbrio, livre de neons, gradientes coloridos ou elementos visuais decorativos supérfluos.
+- **Tema Claro/Escuro do Sistema**: Adaptação automática e instantânea às preferências do sistema operacional (`prefers-color-scheme: light/dark`) com `color-scheme: light dark`.
+- **Rastreabilidade Temporal**: Indicador global "Atualizado em" no cabeçalho com horário da última sincronização, coluna dedicada na tabela e registros tabulares (`tabular-nums`) de criação e modificação.
+
+### 8.3. Funcionalidades Principais
+1. **Gestão Centralizada e Ficha do Cliente (Dossier)**:
+   - Tabela `clientes` no PostgreSQL (`anneia`), onde o campo `id` é estritamente imutável e idêntico ao `instanceName`/`instanceId` da Evolution API.
+   - **Prontuário Completo**: Modal administrativo para consulta e edição de dados do cliente (Nome, E-mail, Status Ativo).
+   - **Histórico Persistente de Telefones**: Mudanças de número registram automaticamente o número anterior, novo número, data (ISO 8601) e motivo da alteração em coluna `JSONB` (`historico_telefones`) com auditoria.
+   - **Conexão Direta**: Botão para disparar o fluxo de conexão do WhatsApp com o número preenchido na ficha.
 2. **Conexão ao WhatsApp sem Complicações**:
    - **Código de Pareamento (Pairing Code)**: Informe o número com DDD e receba um código de 8 dígitos para digitar no celular diretamente, sem depender de câmera.
-   - **QR Code**: Exibição visual com auto-polling até a conclusão da conexão.
+   - **QR Code em Alta Resolução**: Renderização confiável de imagens base64 geradas pelo Baileys na Evolution API, com atualização manual e auto-polling de status.
 3. **Ajuste de Comportamento (Settings)**:
    - Rejeição automática de chamadas de voz e vídeo com mensagem explicativa customizável.
    - Ignorar mensagens em grupos para focar apenas no atendimento privado.
    - Manter status sempre online, recibo de leitura (tique azul), visualização de status e sincronização de histórico.
+
+### 8.4. Endpoints da API REST (v1)
+
+| Método | Endpoint | Descrição |
+|---|---|---|
+| `GET` | `/api/health` | Healthcheck simples da aplicação |
+| `GET` | `/api/v1/instances` | Lista clientes e status em tempo real da Evolution API |
+| `POST` | `/api/v1/instances` | Cria nova instância na Evolution e cadastra no PostgreSQL |
+| `PUT` | `/api/v1/instances/:id` | Atualiza dados do cliente e anexa histórico de telefones no PostgreSQL |
+| `GET` | `/api/v1/instances/:id/connect` | Gera Pairing Code (via query `?number=`) ou QR Code em base64 |
+| `GET` | `/api/v1/instances/:id/status` | Retorna estado de conexão em tempo real (`open`, `connecting`, `close`) |
+| `GET` | `/api/v1/instances/:id/settings` | Obtém configurações comportamentais da instância |
+| `POST` | `/api/v1/instances/:id/settings` | Salva configurações comportamentais na Evolution e no banco |
+| `POST` | `/api/v1/instances/:id/restart` | Reinicia a conexão da instância |
+| `DELETE` | `/api/v1/instances/:id` | Remove a instância na Evolution API e no banco de dados |
 
 ---
 
