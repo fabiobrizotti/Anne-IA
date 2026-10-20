@@ -18,6 +18,7 @@
         </div>
       </div>
       <div class="actions">
+        <span id="last-sync-time" class="last-sync">Atualizado em: --:--:--</span>
         <button id="btn-refresh" class="btn btn-secondary">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
           Atualizar
@@ -60,7 +61,7 @@
               <th>ID da Instância</th>
               <th>WhatsApp</th>
               <th>Status</th>
-              <th>Criado em</th>
+              <th>Atualizado em</th>
               <th class="text-right">Ações</th>
             </tr>
           </thead>
@@ -72,6 +73,97 @@
         </table>
       </div>
     </main>
+  </div>
+
+  <!-- Modal: Ficha do Cliente / Instância -->
+  <div id="modal-ficha" class="modal-backdrop hidden">
+    <div class="modal modal-lg">
+      <div class="modal-header">
+        <div>
+          <div class="modal-header-top">
+            <h3 id="ficha-title">Ficha do Cliente</h3>
+            <span id="ficha-status-badge" class="badge">--</span>
+          </div>
+          <p class="subtitle text-sm">Prontuário administrativo e gestão cadastral da instância.</p>
+        </div>
+        <button class="btn-close" data-close="modal-ficha">&times;</button>
+      </div>
+
+      <form id="form-ficha">
+        <div class="modal-body">
+          <!-- Identificador Imutável -->
+          <div class="ficha-readonly-banner">
+            <div>
+              <span class="ficha-label">ID da Instância (Chave Imutável)</span>
+              <div class="ficha-id-row">
+                <code id="ficha-id" class="ficha-code">--</code>
+                <button type="button" id="btn-copy-ficha-id" class="btn btn-xs btn-secondary">Copiar ID</button>
+              </div>
+            </div>
+            <div class="ficha-meta-dates">
+              <div><span class="ficha-label">Criado em:</span> <span id="ficha-criado-em">--</span></div>
+              <div><span class="ficha-label">Atualizado em:</span> <span id="ficha-atualizado-em">--</span></div>
+            </div>
+          </div>
+
+          <!-- Dados Cadastrais Editáveis -->
+          <div class="ficha-section">
+            <h4 class="ficha-section-title">Dados Cadastrais</h4>
+            <div class="form-row">
+              <div class="form-group flex-1">
+                <label for="ficha-nome">Nome do Cliente / Empresa *</label>
+                <input type="text" id="ficha-nome" required class="input" placeholder="Ex: Mercado São José">
+              </div>
+              <div class="form-group flex-1">
+                <label for="ficha-email">E-mail de Contato</label>
+                <input type="email" id="ficha-email" class="input" placeholder="contato@empresa.com">
+              </div>
+            </div>
+            <div class="form-group">
+              <label class="switch-row">
+                <input type="checkbox" id="ficha-ativo" checked>
+                <span>Instância e cliente ativos no sistema</span>
+              </label>
+            </div>
+          </div>
+
+          <!-- WhatsApp e Histórico de Números -->
+          <div class="ficha-section">
+            <h4 class="ficha-section-title">Conexão WhatsApp & Números</h4>
+            <div class="form-row">
+              <div class="form-group flex-1">
+                <label for="ficha-telefone">Número Atual do WhatsApp</label>
+                <input type="tel" id="ficha-telefone" class="input" placeholder="5511999999999">
+                <small class="field-hint">Com DDI e DDD (somente dígitos).</small>
+              </div>
+              <div class="form-group flex-1">
+                <label for="ficha-motivo">Motivo da Alteração (Auditoria)</label>
+                <input type="text" id="ficha-motivo" class="input" placeholder="Ex: Novo chip corporativo">
+              </div>
+            </div>
+            <div class="ficha-actions-row">
+              <button type="button" id="btn-ficha-connect" class="btn btn-secondary">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+                Conectar WhatsApp neste número
+              </button>
+            </div>
+
+            <!-- Histórico Salvo de Números -->
+            <div class="ficha-history-box">
+              <span class="ficha-label">Histórico de Números Salvos</span>
+              <div id="ficha-history-list" class="ficha-history-list">
+                <p class="text-muted text-xs">Nenhum histórico registrado.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-close="modal-ficha">Fechar</button>
+          <button type="submit" id="btn-save-ficha" class="btn btn-primary">Salvar Ficha</button>
+        </div>
+      </form>
+    </div>
   </div>
 
   <!-- Modal: Nova Instância / Cliente -->
