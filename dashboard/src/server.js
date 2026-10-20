@@ -16,35 +16,9 @@ if (DATABASE_URL) {
   pool.on('error', (err) => {
     console.error('[db] Erro inesperado no pool do Postgres:', err.message);
   });
+} else {
+  console.error('[db] DATABASE_URL não configurada. Schema deve ser provisionado por setup/postgres/init.sql.');
 }
-
-// Garante tabela clientes no banco anneia
-async function initDb() {
-  if (!pool) return;
-  try {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS clientes (
-        id VARCHAR(100) PRIMARY KEY,
-        nome VARCHAR(255) NOT NULL,
-        telefone VARCHAR(30),
-        email VARCHAR(255),
-        ativo BOOLEAN NOT NULL DEFAULT true,
-        configuracoes JSONB NOT NULL DEFAULT '{}',
-        historico_telefones JSONB NOT NULL DEFAULT '[]',
-        criado_em TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-        atualizado_em TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-      );
-      ALTER TABLE clientes ADD COLUMN IF NOT EXISTS historico_telefones JSONB NOT NULL DEFAULT '[]';
-      ALTER TABLE clientes ADD COLUMN IF NOT EXISTS atualizado_em TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP;
-      CREATE INDEX IF NOT EXISTS idx_clientes_nome ON clientes (nome);
-      CREATE INDEX IF NOT EXISTS idx_clientes_ativo ON clientes (ativo);
-    `);
-    console.log('[db] Tabela clientes verificada com sucesso.');
-  } catch (err) {
-    console.warn('[db] Aviso ao verificar tabela clientes:', err.message);
-  }
-}
-initDb();
 
 // Middlewares
 app.use(express.json());
