@@ -30,9 +30,12 @@ async function initDb() {
         email VARCHAR(255),
         ativo BOOLEAN NOT NULL DEFAULT true,
         configuracoes JSONB NOT NULL DEFAULT '{}',
+        historico_telefones JSONB NOT NULL DEFAULT '[]',
         criado_em TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
         atualizado_em TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
       );
+      ALTER TABLE clientes ADD COLUMN IF NOT EXISTS historico_telefones JSONB NOT NULL DEFAULT '[]';
+      ALTER TABLE clientes ADD COLUMN IF NOT EXISTS atualizado_em TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP;
       CREATE INDEX IF NOT EXISTS idx_clientes_nome ON clientes (nome);
       CREATE INDEX IF NOT EXISTS idx_clientes_ativo ON clientes (ativo);
     `);
@@ -146,6 +149,7 @@ app.get('/api/v1/instances', async (req, res) => {
         email: c.email,
         ativo: c.ativo,
         configuracoes: c.configuracoes || {},
+        historico_telefones: Array.isArray(c.historico_telefones) ? c.historico_telefones : [],
         status,
         profilePicUrl,
         criado_em: c.criado_em,
@@ -162,6 +166,7 @@ app.get('/api/v1/instances', async (req, res) => {
         email: '',
         ativo: true,
         configuracoes: {},
+        historico_telefones: [],
         status: evo.connectionStatus || evo.instance?.status || evo.status || 'close',
         profilePicUrl: evo.profilePicUrl || evo.instance?.profilePicUrl || null,
         criado_em: evo.createdAt || new Date().toISOString(),
@@ -223,13 +228,19 @@ app.post('/api/v1/instances', async (req, res) => {
 
     // 3. Salva no banco de dados
     if (pool) {
+      const initialHistory = telefone ? [{
+        telefone: telefone.trim(),
+        data: new Date().toISOString(),
+        motivo: 'Número inicial cadastrado'
+      }] : [];
+
       await pool.query(
-        `INSERT INTO clientes (id, nome, telefone, email, configuracoes, atualizado_em)
-         VALUES ($1, $2, $3, $4, $5, NOW())
+        `INSERT INTO clientes (id, nome, telefone, email, configuracoes, historico_telefones, atualizado_em)
+         VALUES ($1, $2, $3, $4, $5, $6, NOW())
          ON CONFLICT (id) DO UPDATE
          SET nome = EXCLUDED.nome, telefone = EXCLUDED.telefone, email = EXCLUDED.email,
              configuracoes = EXCLUDED.configuracoes, atualizado_em = NOW()`,
-        [cleanId, nome.trim(), telefone ? telefone.trim() : null, email ? email.trim() : null, JSON.stringify(defaultSettings)]
+        [cleanId, nome.trim(), telefone ? telefone.trim() : null, email ? email.trim() : null, JSON.stringify(defaultSettings), JSON.stringify(initialHistory)]
       );
     }
 
@@ -249,7 +260,65 @@ app.post('/api/v1/instances', async (req, res) => {
   }
 });
 
-// 3. Conectar WhatsApp (Pairing Code ou QR Code)
+// 3. Atualizar Dados do Cliente / Instância (Ficha)
+app.put('/api/v1/instances/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { nome, email, telefone, ativo, motivoTroca } = req.body;
+
+    if (!nome || typeof nome !== 'string' || !nome.trim()) {
+      return res.status(400).json({ success: false, error: 'Nome do cliente é obrigatório' });
+    }
+
+    if (!pool) {
+      return res.status(503).json({ success: false, error: 'Banco de dados não conectado' });
+    }
+
+    const currentClientRes = await pool.query('SELECT * FROM clientes WHERE id = $1', [id]);
+    if (currentClientRes.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Instância ou cliente não encontrado' });
+    }
+
+    const currentClient = currentClientRes.rows[0];
+    const cleanNome = nome.trim();
+    const cleanEmail = email ? email.trim() : null;
+    const cleanTelefone = telefone ? String(telefone).trim() : null;
+    const isAtivo = ativo !== undefined ? Boolean(ativo) : currentClient.ativo;
+
+    let historico = Array.isArray(currentClient.historico_telefones) ? [...currentClient.historico_telefones] : [];
+
+    // Se o telefone foi alterado ou novo telefone informado
+    const currentTelDigits = (currentClient.telefone || '').replace(/\D/g, '');
+    const newTelDigits = (cleanTelefone || '').replace(/\D/g, '');
+
+    if (newTelDigits && newTelDigits !== currentTelDigits) {
+      historico.push({
+        telefone: cleanTelefone,
+        telefone_anterior: currentClient.telefone || null,
+        data: new Date().toISOString(),
+        motivo: motivoTroca || 'Alteração cadastral de número'
+      });
+    }
+
+    const updateRes = await pool.query(
+      `UPDATE clientes
+       SET nome = $1, email = $2, telefone = $3, ativo = $4, historico_telefones = $5, atualizado_em = NOW()
+       WHERE id = $6
+       RETURNING *`,
+      [cleanNome, cleanEmail, cleanTelefone, isAtivo, JSON.stringify(historico), id]
+    );
+
+    res.json({
+      success: true,
+      data: updateRes.rows[0]
+    });
+  } catch (err) {
+    console.error('[api] Erro ao atualizar cliente:', err);
+    res.status(500).json({ success: false, error: 'Falha ao atualizar dados do cliente' });
+  }
+});
+
+// 4. Conectar WhatsApp (Pairing Code ou QR Code)
 app.get('/api/v1/instances/:id/connect', async (req, res) => {
   try {
     const { id } = req.params;
@@ -268,11 +337,16 @@ app.get('/api/v1/instances/:id/connect', async (req, res) => {
       return res.status(evoRes.status).json({ success: false, error: msg });
     }
 
+    const base64 = evoRes.data?.base64 || evoRes.data?.qrcode?.base64 || null;
+    const code = evoRes.data?.code || evoRes.data?.qrcode?.code || null;
+    const pairingCode = evoRes.data?.pairingCode || null;
+
     res.json({
       success: true,
       data: {
-        pairingCode: evoRes.data?.pairingCode || null,
-        code: evoRes.data?.code || evoRes.data?.base64 || null,
+        pairingCode,
+        base64,
+        code,
         count: evoRes.data?.count || 1
       }
     });
