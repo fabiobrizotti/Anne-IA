@@ -47,6 +47,17 @@
     btnFichaConnect: document.getElementById('btn-ficha-connect'),
     fichaHistoryList: document.getElementById('ficha-history-list'),
     btnSaveFicha: document.getElementById('btn-save-ficha'),
+    promptIdentity: document.getElementById('prompt-identity'),
+    promptRole: document.getElementById('prompt-role'),
+    promptPersonality: document.getElementById('prompt-personality'),
+    promptPlaybook: document.getElementById('prompt-playbook'),
+    promptTools: document.getElementById('prompt-tools'),
+    promptLocale: document.getElementById('prompt-locale'),
+    promptEscalationChannel: document.getElementById('prompt-escalation-channel'),
+    promptEscalationTarget: document.getElementById('prompt-escalation-target'),
+    promptEscalationPolicy: document.getElementById('prompt-escalation-policy'),
+    promptSystem: document.getElementById('prompt-system'),
+    promptFatiamento: document.getElementById('prompt-fatiamento'),
 
     // Modal Conexão
     modalConnect: document.getElementById('modal-connect'),
@@ -357,7 +368,44 @@
     elements.fichaStatusBadge.innerHTML = `<span class="badge-dot"></span>${statusLabel}`;
 
     renderFichaHistory(inst.historico_telefones || []);
+    resetPromptFields();
+    loadPromptConfig(inst.id);
     openModal(elements.modalFicha);
+  }
+
+  function resetPromptFields() {
+    elements.promptIdentity.value = '';
+    elements.promptRole.value = '';
+    elements.promptPersonality.value = '';
+    elements.promptPlaybook.value = '';
+    elements.promptTools.value = '';
+    elements.promptLocale.value = 'pt-BR';
+    elements.promptEscalationChannel.value = '';
+    elements.promptEscalationTarget.value = '';
+    elements.promptEscalationPolicy.value = '';
+    elements.promptSystem.value = '';
+    elements.promptFatiamento.value = '';
+  }
+
+  async function loadPromptConfig(instanceId) {
+    try {
+      const data = await api(`/api/v1/instances/${encodeURIComponent(instanceId)}/prompt`);
+      const p = data.prompt || {};
+      elements.promptIdentity.value = p.identity || '';
+      elements.promptRole.value = p.role || '';
+      elements.promptPersonality.value = p.personality || '';
+      elements.promptPlaybook.value = p.playbook || '';
+      elements.promptTools.value = p.tools || '';
+      elements.promptLocale.value = p.locale || 'pt-BR';
+      elements.promptEscalationChannel.value = p.escalation_channel || '';
+      elements.promptEscalationTarget.value = p.escalation_target || '';
+      elements.promptEscalationPolicy.value = p.escalation_policy || '';
+      elements.promptSystem.value = p.system_prompt || '';
+      elements.promptFatiamento.value = p.fatiamento_override || '';
+    } catch (err) {
+      // Sem linha de prompt ainda — mantém defaults do formulário.
+      console.warn('[prompt] Configuração de prompt indisponível:', err.message);
+    }
   }
 
   function renderFichaHistory(history) {
@@ -412,6 +460,23 @@
       await api(`/api/v1/instances/${encodeURIComponent(currentFichaInstanceId)}`, {
         method: 'PUT',
         body: JSON.stringify(payload)
+      });
+
+      await api(`/api/v1/instances/${encodeURIComponent(currentFichaInstanceId)}/prompt`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          identity: elements.promptIdentity.value,
+          role: elements.promptRole.value,
+          personality: elements.promptPersonality.value,
+          playbook: elements.promptPlaybook.value,
+          tools: elements.promptTools.value,
+          locale: elements.promptLocale.value,
+          escalation_channel: elements.promptEscalationChannel.value,
+          escalation_target: elements.promptEscalationTarget.value,
+          escalation_policy: elements.promptEscalationPolicy.value,
+          system_prompt: elements.promptSystem.value,
+          fatiamento_override: elements.promptFatiamento.value
+        })
       });
 
       showToast('Ficha do cliente salva com sucesso!');

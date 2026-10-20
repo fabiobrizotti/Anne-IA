@@ -604,6 +604,21 @@ body {
   gap: 12px;
 }
 
+/* Mini-tabela de prompts na ficha do cliente */
+.prompt-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+
+.prompt-grid .form-group {
+  margin: 0;
+}
+
+.prompt-grid textarea.input {
+  resize: vertical;
+}
+
 .field-hint {
   display: block;
   font-size: 11px;

@@ -7,7 +7,7 @@ A stack é auto-inicializável a partir de um clone limpo. A pasta `setup/` conc
 | `setup/rabbitmq/rabbitmq.conf` | Limites de memória/disco, paginação, timeout de LLM e carga de definições. |
 | `setup/rabbitmq/definitions.json.template` | Topologia padrão industrial: exchanges diretas, pipeline em 3 etapas com Quorum Queues e DLX/DLQ (senha via `.env`). |
 | `setup/rabbitmq/entrypoint.sh` | Injeta a senha no template e gera o `definitions.json`. |
-| `setup/postgres/init.sql` | **Fonte única**: schema do negócio, memória LangChain (`memorypostgreschat`), base RAG (`base_conhecimento`), `clientes` + `Instance` (Evolution API) e **alinhamento 1:1** entre `public."Instance"` e `public.clientes` pelo mesmo ID (`clientes.id = Instance.id`). Backfill idempotente e não-destrutivo. |
+| `setup/postgres/init.sql` | **Fonte única**: schema do negócio, memória LangChain (`memorypostgreschat`), base RAG (`base_conhecimento`), `clientes` + `Instance` (Evolution API), **alinhamento 1:1** entre `public."Instance"` e `public.clientes` pelo mesmo ID (`clientes.id = Instance.id`) e `prompt_config` (persona/role/playbook por cliente, usada pelo n8n para montar o system prompt). Backfill idempotente e não-destrutivo. |
 | `setup/pgadmin/servers.json` | Auto-provisionamento da conexão do PostgreSQL no pgAdmin 4. |
 | `setup/n8n/clean-workflows.js` | Limpa workflows antigos no SQLite antes de reimportar (idempotência). |
 | `setup/n8n/sanitize-workflow.js` | Remove rastros da instância de origem para evitar falhas no import. |
@@ -242,6 +242,8 @@ O Dashboard administrativo é uma aplicação web ultra-leve construída em **Va
 | `GET` | `/api/v1/instances/:id/status` | Retorna estado de conexão em tempo real (`open`, `connecting`, `close`) |
 | `GET` | `/api/v1/instances/:id/settings` | Obtém configurações comportamentais da instância |
 | `POST` | `/api/v1/instances/:id/settings` | Salva configurações comportamentais na Evolution e no banco |
+| `GET` | `/api/v1/instances/:id/prompt` | Busca config de prompts do agente (`prompt_config`: identidade, papel, personalidade, playbook, escalação, system prompt) |
+| `PUT` | `/api/v1/instances/:id/prompt` | Salva config de prompts do agente (upsert idempotente em `prompt_config`) |
 | `POST` | `/api/v1/instances/:id/restart` | Reinicia a conexão da instância |
 | `DELETE` | `/api/v1/instances/:id` | Remove a instância na Evolution API e no banco de dados |
 

@@ -77,6 +77,38 @@ ALTER TABLE clientes ADD COLUMN IF NOT EXISTS atualizado_em TIMESTAMP WITH TIME 
 CREATE INDEX IF NOT EXISTS idx_clientes_nome ON clientes (nome);
 CREATE INDEX IF NOT EXISTS idx_clientes_ativo ON clientes (ativo);
 
+-- 6b. Config de Prompts por Cliente (persona/role/playbook usados pelo n8n)
+--     Schema casado com o SQL do workflow ANNE-AI-ORQUESTRAÇÃO:
+--     prompt_final = identity || role || personality || playbook || tools ||
+--                    locale || escalation_* || system_prompt
+--     IMPORTANTE: colunas NOT NULL DEFAULT '' porque o n8n concatena com ||
+--     sem COALESCE — qualquer NULL propagaria e anularia o prompt inteiro.
+CREATE TABLE IF NOT EXISTS prompt_config (
+  id VARCHAR(100) PRIMARY KEY,
+  identity TEXT NOT NULL DEFAULT '',
+  role TEXT NOT NULL DEFAULT '',
+  personality TEXT NOT NULL DEFAULT '',
+  playbook TEXT NOT NULL DEFAULT '',
+  tools TEXT NOT NULL DEFAULT '',
+  locale TEXT NOT NULL DEFAULT 'pt-BR',
+  escalation_channel TEXT NOT NULL DEFAULT '',
+  escalation_target TEXT NOT NULL DEFAULT '',
+  escalation_policy TEXT NOT NULL DEFAULT '',
+  system_prompt TEXT NOT NULL DEFAULT '',
+  fatiamento_override TEXT NOT NULL DEFAULT '',
+  criado_em TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+  atualizado_em TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_prompt_cliente FOREIGN KEY (id) REFERENCES clientes(id) ON DELETE CASCADE
+);
+
+-- Seed idempotente: 1 linha default por cliente existente (nunca sobrescreve)
+INSERT INTO prompt_config (id)
+SELECT c.id FROM clientes c
+WHERE NOT EXISTS (
+  SELECT 1 FROM prompt_config p WHERE p.id = c.id
+)
+ON CONFLICT (id) DO NOTHING;
+
 -- 7. Tabela Instance (Evolution API) - mantida em schema centralizado (idempotente)
 --    Garante existência para permitir alinhamento 1:1 com clientes pelo mesmo ID
 DO $$

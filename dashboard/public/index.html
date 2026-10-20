@@ -156,6 +156,57 @@
               </div>
             </div>
           </div>
+
+          <!-- Prompts do Agente (persona/role/playbook — tabela prompt_config) -->
+          <div class="ficha-section">
+            <h4 class="ficha-section-title">Prompts do Agente</h4>
+            <div class="prompt-grid">
+              <div class="form-group prompt-span-2">
+                <label for="prompt-identity">Identidade</label>
+                <textarea id="prompt-identity" class="input" rows="2" placeholder="Quem é a empresa/agente (nome, negócio, contexto base)"></textarea>
+              </div>
+              <div class="form-group">
+                <label for="prompt-role">Papel</label>
+                <input type="text" id="prompt-role" class="input" placeholder="Ex: Consultor de vendas">
+              </div>
+              <div class="form-group">
+                <label for="prompt-locale">Idioma</label>
+                <input type="text" id="prompt-locale" class="input" value="pt-BR" placeholder="pt-BR">
+              </div>
+              <div class="form-group prompt-span-2">
+                <label for="prompt-personality">Personalidade</label>
+                <textarea id="prompt-personality" class="input" rows="2" placeholder="Tom, estilo e comportamento do agente"></textarea>
+              </div>
+              <div class="form-group prompt-span-2">
+                <label for="prompt-playbook">Modo de Operação</label>
+                <textarea id="prompt-playbook" class="input" rows="3" placeholder="Regras, fluxos e diretrizes de atendimento"></textarea>
+              </div>
+              <div class="form-group prompt-span-2">
+                <label for="prompt-tools">Ferramentas</label>
+                <input type="text" id="prompt-tools" class="input" placeholder="Ex: estoque, pedidos, agenda">
+              </div>
+              <div class="form-group">
+                <label for="prompt-escalation-channel">Escalação — Canal</label>
+                <input type="text" id="prompt-escalation-channel" class="input" placeholder="Ex: WhatsApp">
+              </div>
+              <div class="form-group">
+                <label for="prompt-escalation-target">Escalação — Alvo</label>
+                <input type="text" id="prompt-escalation-target" class="input" placeholder="Ex: número do gestor">
+              </div>
+              <div class="form-group prompt-span-2">
+                <label for="prompt-escalation-policy">Escalação — Política</label>
+                <textarea id="prompt-escalation-policy" class="input" rows="2" placeholder="Quando e como escalar para um humano"></textarea>
+              </div>
+              <div class="form-group prompt-span-2">
+                <label for="prompt-system">System Prompt</label>
+                <textarea id="prompt-system" class="input" rows="3" placeholder="Instruções finais adicionadas ao prompt montado"></textarea>
+              </div>
+              <div class="form-group prompt-span-2">
+                <label for="prompt-fatiamento">Fatiamento Override</label>
+                <textarea id="prompt-fatiamento" class="input" rows="2" placeholder="Override do fluxo de fatiamento (opcional)"></textarea>
+              </div>
+            </div>
+          </div>
         </div>
 
         <div class="modal-footer">

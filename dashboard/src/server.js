@@ -424,6 +424,102 @@ app.post('/api/v1/instances/:id/settings', async (req, res) => {
   }
 });
 
+// 6b. Consultar Prompt do Agente (persona/role/playbook)
+app.get('/api/v1/instances/:id/prompt', async (req, res) => {
+  try {
+    if (!pool) {
+      return res.status(503).json({ success: false, error: 'Banco de dados indisponível' });
+    }
+    const { id } = req.params;
+    const r = await pool.query('SELECT * FROM prompt_config WHERE id = $1', [id]);
+    if (r.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Prompt não configurado para este cliente' });
+    }
+    res.json({ success: true, prompt: r.rows[0] });
+  } catch (err) {
+    console.error('[api] Erro ao buscar prompt:', err);
+    res.status(500).json({ success: false, error: 'Falha ao buscar prompt' });
+  }
+});
+
+// 6c. Salvar Prompt do Agente (upsert idempotente)
+app.put('/api/v1/instances/:id/prompt', async (req, res) => {
+  try {
+    if (!pool) {
+      return res.status(503).json({ success: false, error: 'Banco de dados indisponível' });
+    }
+    const { id } = req.params;
+    const {
+      identity = '',
+      role = '',
+      personality = '',
+      playbook = '',
+      tools = '',
+      locale = 'pt-BR',
+      escalation_channel = '',
+      escalation_target = '',
+      escalation_policy = '',
+      system_prompt = '',
+      fatiamento_override = ''
+    } = req.body;
+
+    const prompt = {
+      identity: String(identity || ''),
+      role: String(role || ''),
+      personality: String(personality || ''),
+      playbook: String(playbook || ''),
+      tools: String(tools || ''),
+      locale: String(locale || 'pt-BR'),
+      escalation_channel: String(escalation_channel || ''),
+      escalation_target: String(escalation_target || ''),
+      escalation_policy: String(escalation_policy || ''),
+      system_prompt: String(system_prompt || ''),
+      fatiamento_override: String(fatiamento_override || '')
+    };
+
+    const r = await pool.query(
+      `INSERT INTO prompt_config (
+         id, identity, role, personality, playbook, tools, locale,
+         escalation_channel, escalation_target, escalation_policy,
+         system_prompt, fatiamento_override, atualizado_em
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, NOW())
+       ON CONFLICT (id) DO UPDATE SET
+         identity = EXCLUDED.identity,
+         role = EXCLUDED.role,
+         personality = EXCLUDED.personality,
+         playbook = EXCLUDED.playbook,
+         tools = EXCLUDED.tools,
+         locale = EXCLUDED.locale,
+         escalation_channel = EXCLUDED.escalation_channel,
+         escalation_target = EXCLUDED.escalation_target,
+         escalation_policy = EXCLUDED.escalation_policy,
+         system_prompt = EXCLUDED.system_prompt,
+         fatiamento_override = EXCLUDED.fatiamento_override,
+         atualizado_em = NOW()
+       RETURNING *`,
+      [
+        id,
+        prompt.identity,
+        prompt.role,
+        prompt.personality,
+        prompt.playbook,
+        prompt.tools,
+        prompt.locale,
+        prompt.escalation_channel,
+        prompt.escalation_target,
+        prompt.escalation_policy,
+        prompt.system_prompt,
+        prompt.fatiamento_override
+      ]
+    );
+
+    res.json({ success: true, prompt: r.rows[0] });
+  } catch (err) {
+    console.error('[api] Erro ao salvar prompt:', err);
+    res.status(500).json({ success: false, error: 'Falha ao salvar prompt' });
+  }
+});
+
 // 7. Reiniciar Instância
 app.post('/api/v1/instances/:id/restart', async (req, res) => {
   try {
