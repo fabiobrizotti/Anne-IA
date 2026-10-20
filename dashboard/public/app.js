@@ -6,6 +6,7 @@
   let instances = [];
   let currentConnectInstanceId = null;
   let currentSettingsInstanceId = null;
+  let currentFichaInstanceId = null;
   let pollStatusTimer = null;
 
   // Elementos do DOM
@@ -18,6 +19,7 @@
     metricOpen: document.getElementById('metric-open'),
     metricClose: document.getElementById('metric-close'),
     toast: document.getElementById('toast'),
+    lastSyncTime: document.getElementById('last-sync-time'),
 
     // Modal Nova Instância
     modalNew: document.getElementById('modal-new'),
@@ -27,6 +29,24 @@
     newId: document.getElementById('new-id'),
     newTelefone: document.getElementById('new-telefone'),
     newEmail: document.getElementById('new-email'),
+
+    // Modal Ficha do Cliente / Instância
+    modalFicha: document.getElementById('modal-ficha'),
+    formFicha: document.getElementById('form-ficha'),
+    fichaTitle: document.getElementById('ficha-title'),
+    fichaStatusBadge: document.getElementById('ficha-status-badge'),
+    fichaId: document.getElementById('ficha-id'),
+    btnCopyFichaId: document.getElementById('btn-copy-ficha-id'),
+    fichaCriadoEm: document.getElementById('ficha-criado-em'),
+    fichaAtualizadoEm: document.getElementById('ficha-atualizado-em'),
+    fichaNome: document.getElementById('ficha-nome'),
+    fichaEmail: document.getElementById('ficha-email'),
+    fichaAtivo: document.getElementById('ficha-ativo'),
+    fichaTelefone: document.getElementById('ficha-telefone'),
+    fichaMotivo: document.getElementById('ficha-motivo'),
+    btnFichaConnect: document.getElementById('btn-ficha-connect'),
+    fichaHistoryList: document.getElementById('ficha-history-list'),
+    btnSaveFicha: document.getElementById('btn-save-ficha'),
 
     // Modal Conexão
     modalConnect: document.getElementById('modal-connect'),
@@ -74,10 +94,12 @@
   }
 
   function openModal(modalEl) {
+    if (!modalEl) return;
     modalEl.classList.remove('hidden');
   }
 
   function closeModal(modalEl) {
+    if (!modalEl) return;
     modalEl.classList.add('hidden');
     if (modalEl === elements.modalConnect) {
       stopStatusPolling();
@@ -98,6 +120,7 @@
     if (!isoString) return '-';
     try {
       const d = new Date(isoString);
+      if (isNaN(d.getTime())) return isoString;
       return d.toLocaleDateString('pt-BR', {
         day: '2-digit',
         month: '2-digit',
@@ -150,6 +173,10 @@
       instances = res.data || [];
       renderMetrics();
       renderInstances();
+
+      if (elements.lastSyncTime) {
+        elements.lastSyncTime.textContent = `Atualizado em: ${new Date().toLocaleTimeString('pt-BR')}`;
+      }
     } catch (err) {
       showToast(`Falha ao carregar instâncias: ${err.message}`, 'error');
       elements.instancesTbody.innerHTML = `
@@ -208,7 +235,7 @@
               <div class="avatar">${avatarContent}</div>
               <div>
                 <strong>${escapeHtml(inst.nome)}</strong>
-                ${inst.email ? `<div class="text-muted text-sm">${escapeHtml(inst.email)}</div>` : ''}
+                ${inst.email ? `<div class="text-muted text-xs">${escapeHtml(inst.email)}</div>` : ''}
               </div>
             </div>
           </td>
@@ -220,9 +247,12 @@
               ${statusLabel}
             </span>
           </td>
-          <td class="text-muted text-sm">${formatDateTime(inst.criado_em)}</td>
+          <td class="text-muted text-xs">${formatDateTime(inst.atualizado_em || inst.criado_em)}</td>
           <td>
             <div class="cell-actions">
+              <button class="btn btn-sm btn-secondary" onclick="window.AnneUI.openFichaModal('${escapeHtml(inst.id)}')">
+                Ficha
+              </button>
               ${inst.status !== 'open' ? `
                 <button class="btn btn-sm btn-primary" onclick="window.AnneUI.openConnectModal('${escapeHtml(inst.id)}')">
                   Conectar
@@ -289,7 +319,7 @@
       await loadInstances();
 
       // Abre automaticamente a tela de conexão
-      window.AnneUI.openConnectModal(payload.id);
+      openConnectModal(payload.id);
     } catch (err) {
       showToast(`Erro ao criar: ${err.message}`, 'error');
     } finally {
@@ -299,15 +329,113 @@
   });
 
   // ---------------------------------------------------------------------------
+  // FICHA DO CLIENTE / INSTÂNCIA
+  // ---------------------------------------------------------------------------
+
+  function openFichaModal(instanceId) {
+    const inst = instances.find(i => i.id === instanceId);
+    if (!inst) {
+      showToast('Instância não encontrada.', 'error');
+      return;
+    }
+
+    currentFichaInstanceId = inst.id;
+    elements.fichaTitle.textContent = `Ficha: ${inst.nome || inst.id}`;
+    elements.fichaId.textContent = inst.id;
+    elements.fichaNome.value = inst.nome || '';
+    elements.fichaEmail.value = inst.email || '';
+    elements.fichaAtivo.checked = inst.ativo !== false;
+    elements.fichaTelefone.value = inst.telefone || '';
+    elements.fichaMotivo.value = '';
+
+    elements.fichaCriadoEm.textContent = formatDateTime(inst.criado_em);
+    elements.fichaAtualizadoEm.textContent = formatDateTime(inst.atualizado_em);
+
+    const statusClass = inst.status === 'open' ? 'badge-open' : (inst.status === 'connecting' ? 'badge-connecting' : 'badge-close');
+    const statusLabel = inst.status === 'open' ? 'Conectado' : (inst.status === 'connecting' ? 'Conectando' : 'Desconectado');
+    elements.fichaStatusBadge.className = `badge ${statusClass}`;
+    elements.fichaStatusBadge.innerHTML = `<span class="badge-dot"></span>${statusLabel}`;
+
+    renderFichaHistory(inst.historico_telefones || []);
+    openModal(elements.modalFicha);
+  }
+
+  function renderFichaHistory(history) {
+    if (!history || history.length === 0) {
+      elements.fichaHistoryList.innerHTML = '<p class="text-muted text-xs">Nenhum histórico de número registrado ainda.</p>';
+      return;
+    }
+
+    const sorted = [...history].reverse();
+    elements.fichaHistoryList.innerHTML = sorted.map(item => `
+      <div class="history-item">
+        <div>
+          <span class="history-phone">${escapeHtml(item.telefone || '-')}</span>
+          <span class="text-muted text-xs"> — ${escapeHtml(item.motivo || 'Cadastro')}</span>
+        </div>
+        <span class="history-date">${formatDateTime(item.data)}</span>
+      </div>
+    `).join('');
+  }
+
+  elements.btnCopyFichaId.addEventListener('click', () => {
+    if (elements.fichaId.textContent) {
+      navigator.clipboard.writeText(elements.fichaId.textContent).then(() => {
+        showToast('ID da instância copiado!');
+      });
+    }
+  });
+
+  elements.btnFichaConnect.addEventListener('click', () => {
+    if (!currentFichaInstanceId) return;
+    const phone = elements.fichaTelefone.value.trim();
+    closeModal(elements.modalFicha);
+    openConnectModal(currentFichaInstanceId, phone);
+  });
+
+  elements.formFicha.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (!currentFichaInstanceId) return;
+
+    elements.btnSaveFicha.disabled = true;
+    elements.btnSaveFicha.textContent = 'Salvando...';
+
+    const payload = {
+      nome: elements.fichaNome.value.trim(),
+      email: elements.fichaEmail.value.trim(),
+      ativo: elements.fichaAtivo.checked,
+      telefone: elements.fichaTelefone.value.trim(),
+      motivoTroca: elements.fichaMotivo.value.trim()
+    };
+
+    try {
+      await api(`/api/v1/instances/${encodeURIComponent(currentFichaInstanceId)}`, {
+        method: 'PUT',
+        body: JSON.stringify(payload)
+      });
+
+      showToast('Ficha do cliente salva com sucesso!');
+      closeModal(elements.modalFicha);
+      await loadInstances();
+    } catch (err) {
+      showToast(`Erro ao salvar ficha: ${err.message}`, 'error');
+    } finally {
+      elements.btnSaveFicha.disabled = false;
+      elements.btnSaveFicha.textContent = 'Salvar Ficha';
+    }
+  });
+
+  // ---------------------------------------------------------------------------
   // CONEXÃO WHATSAPP (PAIRING CODE & QR CODE)
   // ---------------------------------------------------------------------------
 
-  function openConnectModal(instanceId) {
+  function openConnectModal(instanceId, phoneOverride) {
     const inst = instances.find(i => i.id === instanceId);
     currentConnectInstanceId = instanceId;
 
     elements.connectSubtitle.textContent = inst ? `${inst.nome} (${inst.id})` : instanceId;
-    elements.pairingNumber.value = (inst && inst.telefone) ? inst.telefone.replace(/\D/g, '') : '';
+    const phoneToUse = phoneOverride !== undefined ? phoneOverride : (inst && inst.telefone ? inst.telefone : '');
+    elements.pairingNumber.value = phoneToUse ? phoneToUse.replace(/\D/g, '') : '';
     elements.pairingResultBox.classList.add('hidden');
     elements.pairingCodeDisplay.textContent = '--------';
 
@@ -380,16 +508,24 @@
     });
   });
 
-  // Carregar QR Code
+  // Carregar QR Code com prioridade em base64
   async function loadQrCode(instanceId) {
     elements.qrcodeContainer.innerHTML = '<span>Carregando QR Code...</span>';
     try {
       const res = await api(`/api/v1/instances/${encodeURIComponent(instanceId)}/connect`);
-      const qrData = res.data?.code;
+      const base64 = res.data?.base64;
+      const code = res.data?.code;
 
-      if (qrData) {
-        const src = qrData.startsWith('data:image') ? qrData : `data:image/png;base64,${qrData}`;
+      if (base64) {
+        const src = base64.startsWith('data:image') ? base64 : `data:image/png;base64,${base64}`;
         elements.qrcodeContainer.innerHTML = `<img src="${src}" alt="QR Code WhatsApp">`;
+      } else if (code) {
+        elements.qrcodeContainer.innerHTML = `
+          <div style="padding: 12px; text-align: center;">
+            <p class="text-xs text-muted mb-2">Código Baileys recebido:</p>
+            <code style="word-break: break-all; font-size: 11px;">${escapeHtml(code)}</code>
+          </div>
+        `;
       } else {
         elements.qrcodeContainer.innerHTML = '<span class="text-muted">Aguardando geração do QR Code...</span>';
       }
@@ -581,6 +717,7 @@
 
   // Expõe métodos para chamadas inline nos botões da tabela
   window.AnneUI = {
+    openFichaModal,
     openConnectModal,
     openSettingsModal,
     restartInstance,
