@@ -123,6 +123,22 @@
       "vhost": "/",
       "destination": "anne.inbound.raw.q",
       "destination_type": "queue",
+      "routing_key": "messages.upsert",
+      "arguments": {}
+    },
+    {
+      "source": "evolution",
+      "vhost": "/",
+      "destination": "anne.inbound.raw.q",
+      "destination_type": "queue",
+      "routing_key": "*.messages.upsert",
+      "arguments": {}
+    },
+    {
+      "source": "evolution",
+      "vhost": "/",
+      "destination": "anne.inbound.raw.q",
+      "destination_type": "queue",
       "routing_key": "MESSAGES_UPSERT",
       "arguments": {}
     },
