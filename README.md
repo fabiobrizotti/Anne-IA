@@ -98,7 +98,7 @@ A infraestrutura utiliza o `.env.example` como fonte única da verdade estrutura
 - `RABBITMQ_DEFAULT_PASS`: Senha admin do RabbitMQ (sincronizada em `CHAVE_RABBITMQ_DEFAULT_PASS`).
 - `POSTGRES_PASSWORD`: Senha do PostgreSQL (sincronizada em `CHAVE_POSTGRES_PASSWORD`).
 - `REDIS_PASSWORD`: Senha do Redis (sincronizada em `CHAVE_REDIS_PASSWORD`).
-- `NINE_ROUTER_PASSWORD`: Senha admin do 9Router (sincronizada em `CHAVE_NINE_ROUTER_PASSWORD`).
+- `NINE_ROUTER_PASSWORD`: Senha admin do 9Router (sincronizada em `CHAVE_NINE_ROUTER_PASSWORD`). O compose publica esta variável no container como `INITIAL_PASSWORD`, único nome lido pela imagem.
 - `N8N_ENCRYPTION_KEY`: Chave para criptografia de credenciais internas do n8n.
 - `AUTHENTICATION_API_KEY`: Chave de autenticação da Evolution API.
 - `PGADMIN_DEFAULT_EMAIL`: E-mail de login no pgAdmin 4.
@@ -116,6 +116,19 @@ A infraestrutura utiliza o `.env.example` como fonte única da verdade estrutura
 ## 5. Roteamento de IA (9Router)
 O 9Router centraliza provedores de LLM e atua como gateway universal compatível com OpenAI/Anthropic:
 - **Dashboard Web**: `http://localhost:20000` (autentique com `NINE_ROUTER_PASSWORD`).
+
+> **Senha do 9Router — como funciona de verdade**
+> A imagem `decolua/9router` não lê `NINE_ROUTER_PASSWORD`: ela consulta `INITIAL_PASSWORD`
+> (default `123456`). O bloco `9router` do `docker-compose.yml` publica a variável do projeto
+> sob esse nome via `environment:`, então a senha do `.env` é a senha de login.
+>
+> Nesta versão (`NINE_ROUTER_VERSION`), o env permanece autoritativo: trocar
+> `NINE_ROUTER_PASSWORD` no `.env` e rodar `docker compose up -d 9router` já altera a senha,
+> sem necessidade de reset. Se algum dia a versão passar a gravar hash próprio, o sintoma será
+> o login recusar a senha do `.env` com `/api/auth/status` reportando `hasPassword: true` —
+> nesse caso o reset é `docker compose stop 9router && sqlite3 data/9router/db/data.sqlite
+> "DELETE FROM settings WHERE id=1;" && docker compose up -d 9router`.
+
 - **Endpoint interno para n8n / LangChain**: `http://9router:20000/v1` (usar credencial OpenAI compatível com a chave de API gerada no dashboard do 9Router).
 
 ## 6. Painel Web PostgreSQL (pgAdmin 4)

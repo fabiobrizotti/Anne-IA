@@ -201,6 +201,9 @@ services:
       - "${NINE_ROUTER_HOST_BIND}:${NINE_ROUTER_PORT}:${NINE_ROUTER_CONTAINER_PORT}"
     env_file:
       - .env
+    environment:
+      # A imagem lê INITIAL_PASSWORD, não NINE_ROUTER_PASSWORD (ver README §5)
+      INITIAL_PASSWORD: ${NINE_ROUTER_PASSWORD}
     volumes:
       - ./data/9router:/app/data
     networks:
