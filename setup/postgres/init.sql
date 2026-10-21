@@ -171,3 +171,52 @@ WHERE NOT EXISTS (
 )
 ON CONFLICT (id) DO NOTHING;
 
+-- 9. Tabela de Preços por Modelo (USD/1M) - versionada por vigência
+CREATE TABLE IF NOT EXISTS precos_modelos (
+  id BIGSERIAL PRIMARY KEY,
+  provedor VARCHAR(50) NOT NULL,
+  modelo VARCHAR(100) NOT NULL,
+  input_per_1m NUMERIC(12,6) NOT NULL DEFAULT 0,
+  cached_per_1m NUMERIC(12,6) NOT NULL DEFAULT 0,
+  output_per_1m NUMERIC(12,6) NOT NULL DEFAULT 0,
+  reasoning_per_1m NUMERIC(12,6) NOT NULL DEFAULT 0,
+  cache_creation_per_1m NUMERIC(12,6) NOT NULL DEFAULT 0,
+  moeda CHAR(3) NOT NULL DEFAULT 'USD',
+  vigente_de TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  vigente_ate TIMESTAMPTZ,
+  ativo BOOLEAN NOT NULL DEFAULT true,
+  UNIQUE(provedor, modelo, vigente_de)
+);
+CREATE INDEX IF NOT EXISTS idx_precos_modelos_lookup ON precos_modelos(provedor, modelo, ativo, vigente_de);
+
+-- Seed idempotente: preços mínimos para opencode/big-pickle (ajustar conforme valores reais)
+INSERT INTO precos_modelos (provedor, modelo, input_per_1m, cached_per_1m, output_per_1m, reasoning_per_1m, cache_creation_per_1m, moeda, vigente_de, ativo)
+VALUES ('opencode', 'big-pickle', 0, 0, 0, 0, 0, 'USD', NOW(), true)
+ON CONFLICT (provedor, modelo, vigente_de) DO NOTHING;
+
+-- 10. Ledger de uso de tokens por cliente/instância (granular por requisição)
+CREATE TABLE IF NOT EXISTS uso_tokens (
+  id BIGSERIAL PRIMARY KEY,
+  cliente_id VARCHAR(100) NOT NULL REFERENCES clientes(id) ON DELETE CASCADE,
+  instance_id VARCHAR(100),
+  workflow_id VARCHAR(64),
+  execution_id VARCHAR(64),
+  chave_idempotencia VARCHAR(128) UNIQUE,
+  origem VARCHAR(20) NOT NULL CHECK (origem IN ('n8n','9router_sync','manual')),
+  provedor VARCHAR(50),
+  modelo VARCHAR(100),
+  prompt_tokens BIGINT NOT NULL DEFAULT 0,
+  completion_tokens BIGINT NOT NULL DEFAULT 0,
+  cached_tokens BIGINT NOT NULL DEFAULT 0,
+  cache_creation_tokens BIGINT NOT NULL DEFAULT 0,
+  reasoning_tokens BIGINT NOT NULL DEFAULT 0,
+  total_tokens BIGINT NOT NULL DEFAULT 0,
+  custo_usd NUMERIC(18,10) NOT NULL DEFAULT 0,
+  request_id VARCHAR(128),
+  metadados JSONB NOT NULL DEFAULT '{}'::jsonb,
+  criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_uso_tokens_cliente_criado ON uso_tokens(cliente_id, criado_em DESC);
+CREATE INDEX IF NOT EXISTS idx_uso_tokens_exec ON uso_tokens(execution_id);
+CREATE INDEX IF NOT EXISTS idx_uso_tokens_prov_mod ON uso_tokens(provedor, modelo);
+

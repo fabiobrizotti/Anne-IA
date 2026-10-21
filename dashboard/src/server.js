@@ -102,6 +102,30 @@ app.get('/api/v1/instances', async (req, res) => {
       if (name) evoMap.set(name, inst);
     });
 
+    // Agrega uso/custo por cliente
+    let usageMap = new Map();
+    if (pool) {
+      try {
+        const usageRes = await pool.query(
+          `SELECT cliente_id,
+                  COALESCE(SUM(prompt_tokens),0) AS prompt_tokens,
+                  COALESCE(SUM(completion_tokens),0) AS completion_tokens,
+                  COALESCE(SUM(cached_tokens),0) AS cached_tokens,
+                  COALESCE(SUM(total_tokens),0) AS total_tokens,
+                  COALESCE(SUM(custo_usd),0) AS custo_usd,
+                  COUNT(*) AS requisicoes,
+                  MAX(criado_em) AS ultima_requisicao
+           FROM uso_tokens
+           GROUP BY cliente_id`
+        );
+        usageRes.rows.forEach((r) => {
+          usageMap.set(r.cliente_id, r);
+        });
+      } catch (e) {
+        console.error('[api] Erro ao agregar uso_tokens:', e.message);
+      }
+    }
+
     // Mescla dados do banco com status em tempo real da Evolution
     const merged = dbClients.map((c) => {
       const evo = evoMap.get(c.id);
@@ -116,6 +140,8 @@ app.get('/api/v1/instances', async (req, res) => {
         evoMap.delete(c.id);
       }
 
+      const usage = usageMap.get(c.id) || {};
+
       return {
         id: c.id,
         nome: c.nome,
@@ -127,7 +153,16 @@ app.get('/api/v1/instances', async (req, res) => {
         status,
         profilePicUrl,
         criado_em: c.criado_em,
-        atualizado_em: c.atualizado_em
+        atualizado_em: c.atualizado_em,
+        uso_tokens: {
+          prompt_tokens: Number(usage.prompt_tokens || 0),
+          completion_tokens: Number(usage.completion_tokens || 0),
+          cached_tokens: Number(usage.cached_tokens || 0),
+          total_tokens: Number(usage.total_tokens || 0),
+          custo_usd: Number(usage.custo_usd || 0),
+          requisicoes: Number(usage.requisicoes || 0),
+          ultima_requisicao: usage.ultima_requisicao || null
+        }
       };
     });
 
