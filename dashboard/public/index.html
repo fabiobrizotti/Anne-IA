@@ -40,6 +40,10 @@
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
         Painel Financeiro
       </button>
+      <button class="page-tab" data-page-tab="tab-modelos">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        Modelos de IA
+      </button>
     </nav>
 
     <!-- ABA 1: Instâncias e Clientes -->
@@ -225,6 +229,67 @@
           </table>
         </div>
       </div>
+    </div>
+
+    <!-- ABA 3: Modelos de IA -->
+    <div id="tab-modelos" class="page-content">
+      <!-- Resumo de Métricas de Modelos -->
+      <section class="metrics">
+        <div class="card metric-card">
+          <span class="metric-label">Total de Modelos</span>
+          <span id="metric-modelos-total" class="metric-value">0</span>
+        </div>
+        <div class="card metric-card">
+          <span class="metric-label">Modelos Ativos</span>
+          <span id="metric-modelos-ativos" class="metric-value text-success">0</span>
+        </div>
+        <div class="card metric-card">
+          <span class="metric-label">Média Input / 1M</span>
+          <span id="metric-modelos-avg-in" class="metric-value">$0.00</span>
+        </div>
+        <div class="card metric-card">
+          <span class="metric-label">Média Output / 1M</span>
+          <span id="metric-modelos-avg-out" class="metric-value">$0.00</span>
+        </div>
+      </section>
+
+      <!-- Tabela Principal de Modelos -->
+      <main class="card table-card">
+        <div class="table-header">
+          <div>
+            <h2>Catálogo de Modelos e Custos</h2>
+            <p class="subtitle text-xs">Gestão de provedores, parametrização de preços e teste de conectividade via 9Router.</p>
+          </div>
+          <div class="table-actions-header">
+            <input type="text" id="modelos-search-input" placeholder="Buscar modelo ou provedor..." class="search-field">
+            <button id="btn-new-model" class="btn btn-primary">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              Novo Modelo
+            </button>
+          </div>
+        </div>
+
+        <div class="table-responsive">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>Provedor</th>
+                <th>Modelo / Alias</th>
+                <th>Input / 1M</th>
+                <th>Output / 1M</th>
+                <th>Cache / 1M</th>
+                <th>Status</th>
+                <th class="text-right">Ações</th>
+              </tr>
+            </thead>
+            <tbody id="modelos-tbody">
+              <tr>
+                <td colspan="7" class="text-center py-8 text-muted">Carregando modelos...</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </main>
     </div>
   </div>
 
@@ -590,6 +655,117 @@
           <button type="submit" class="btn btn-primary" id="btn-save-settings">Salvar Alterações</button>
         </div>
       </form>
+    </div>
+  </div>
+
+  <!-- Modal: Adicionar/Editar Modelo de IA -->
+  <div id="modal-modelo" class="modal-backdrop hidden">
+    <div class="modal">
+      <div class="modal-header">
+        <div>
+          <h3 id="modal-modelo-title">Cadastrar Modelo de IA</h3>
+          <p class="subtitle text-sm">Parametrize preços por milhão de tokens e habilite para inferência.</p>
+        </div>
+        <button class="btn-close" data-close="modal-modelo">&times;</button>
+      </div>
+
+      <form id="form-modelo">
+        <input type="hidden" id="modelo-id">
+        <div class="modal-body">
+          <div class="form-row">
+            <div class="form-group flex-1">
+              <label for="modelo-provedor">Provedor *</label>
+              <input type="text" id="modelo-provedor" required class="input" placeholder="Ex: opencode, openai, anthropic" autocomplete="off">
+              <small class="field-hint">Slug do provedor (alfanumérico sem espaços).</small>
+            </div>
+            <div class="form-group flex-1">
+              <label for="modelo-nome">Nome / Alias do Modelo *</label>
+              <input type="text" id="modelo-nome" required class="input" placeholder="Ex: big-pickle, gpt-4o-mini" autocomplete="off">
+              <small class="field-hint">Identificador exato consumido pelo 9Router.</small>
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group flex-1">
+              <label for="modelo-input">Input / 1M (USD) *</label>
+              <input type="number" id="modelo-input" step="0.000001" min="0" required class="input" placeholder="0.15">
+            </div>
+            <div class="form-group flex-1">
+              <label for="modelo-output">Output / 1M (USD) *</label>
+              <input type="number" id="modelo-output" step="0.000001" min="0" required class="input" placeholder="0.60">
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group flex-1">
+              <label for="modelo-cached">Cached / 1M (USD)</label>
+              <input type="number" id="modelo-cached" step="0.000001" min="0" class="input" placeholder="0.075">
+            </div>
+            <div class="form-group flex-1">
+              <label for="modelo-reasoning">Reasoning / 1M (USD)</label>
+              <input type="number" id="modelo-reasoning" step="0.000001" min="0" class="input" placeholder="0.00">
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label class="switch-row">
+              <input type="checkbox" id="modelo-ativo" checked>
+              <span>Modelo ativo para seleção e cálculo de custo</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-close="modal-modelo">Cancelar</button>
+          <button type="submit" class="btn btn-primary" id="btn-save-modelo">Salvar Modelo</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Teste de Conectividade / Inferência do Modelo -->
+  <div id="modal-test-model" class="modal-backdrop hidden">
+    <div class="modal">
+      <div class="modal-header">
+        <div>
+          <h3 id="modal-test-title">Teste de Modelo (Ping 9Router)</h3>
+          <p id="modal-test-subtitle" class="subtitle text-sm">Disparando inferência de checagem...</p>
+        </div>
+        <button class="btn-close" data-close="modal-test-model">&times;</button>
+      </div>
+
+      <div class="modal-body">
+        <div id="test-loading" class="text-center py-6">
+          <div class="spinner mb-3"></div>
+          <p class="text-muted text-sm">Aguardando resposta do gateway 9Router...</p>
+        </div>
+
+        <div id="test-result-box" class="hidden">
+          <div class="test-stat-row mb-4">
+            <div class="test-stat-card">
+              <span class="text-xs text-muted">Status HTTP</span>
+              <span id="test-status-code" class="text-base font-semibold">--</span>
+            </div>
+            <div class="test-stat-card">
+              <span class="text-xs text-muted">Latência</span>
+              <span id="test-latency" class="text-base font-semibold">--</span>
+            </div>
+            <div class="test-stat-card">
+              <span class="text-xs text-muted">Modelo Efetivo</span>
+              <span id="test-model-effective" class="text-base font-mono">--</span>
+            </div>
+          </div>
+
+          <div class="test-preview-box">
+            <span class="ficha-label">Resposta da IA:</span>
+            <pre id="test-reply-content" class="test-reply-pre">--</pre>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-close="modal-test-model">Fechar</button>
+      </div>
     </div>
   </div>
 

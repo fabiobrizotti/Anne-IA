@@ -1,6 +1,7 @@
 const express = require('express');
 const { Pool } = require('pg');
 const path = require('path');
+const crypto = require('crypto');
 
 const app = express();
 const port = parseInt(process.env.PORT || '3000', 10);
@@ -8,6 +9,8 @@ const port = parseInt(process.env.PORT || '3000', 10);
 const EVOLUTION_API_URL = process.env.EVOLUTION_API_URL || 'http://evolution-api:8080';
 const EVOLUTION_API_KEY = process.env.EVOLUTION_API_KEY || '';
 const DATABASE_URL = process.env.DATABASE_URL || '';
+const NINE_ROUTER_URL = process.env.NINE_ROUTER_URL || 'http://9router:20000/v1';
+const NINE_ROUTER_API_KEY = process.env.NINE_ROUTER_API_KEY || process.env.NINE_ROUTER_PASSWORD || '';
 
 // Pool PostgreSQL
 let pool = null;
@@ -40,9 +43,24 @@ if (authEnabled && authPass) {
     }
 
     const credentials = Buffer.from(authHeader.split(' ')[1], 'base64').toString('ascii');
-    const [user, pass] = credentials.split(':');
+    const separatorIdx = credentials.indexOf(':');
+    if (separatorIdx === -1) {
+      res.setHeader('WWW-Authenticate', 'Basic realm="Painel Anne-IA"');
+      return res.status(401).send('Credenciais inválidas.');
+    }
 
-    if (user === authUser && pass === authPass) {
+    const user = credentials.substring(0, separatorIdx);
+    const pass = credentials.substring(separatorIdx + 1);
+
+    const userBuf = Buffer.from(user);
+    const authUserBuf = Buffer.from(authUser);
+    const passBuf = Buffer.from(pass);
+    const authPassBuf = Buffer.from(authPass);
+
+    const userMatch = userBuf.length === authUserBuf.length && crypto.timingSafeEqual(userBuf, authUserBuf);
+    const passMatch = passBuf.length === authPassBuf.length && crypto.timingSafeEqual(passBuf, authPassBuf);
+
+    if (userMatch && passMatch) {
       return next();
     }
 
@@ -728,6 +746,250 @@ app.get('/api/v1/financeiro', async (req, res) => {
   } catch (err) {
     console.error('[api] Erro ao carregar dados financeiros:', err);
     res.status(500).json({ success: false, error: 'Falha ao processar dados financeiros' });
+  }
+});
+
+// -----------------------------------------------------------------------------
+// ROTAS DE GESTÃO E TESTE DE MODELOS (/api/v1/modelos)
+// -----------------------------------------------------------------------------
+
+// Rate limit simples em memória para testes de modelo (máx 10 testes por minuto por IP)
+const testRateLimits = new Map();
+function checkTestRateLimit(ip) {
+  const now = Date.now();
+  const windowMs = 60 * 1000;
+  const maxRequests = 10;
+  const record = testRateLimits.get(ip) || { count: 0, resetAt: now + windowMs };
+
+  if (now > record.resetAt) {
+    record.count = 1;
+    record.resetAt = now + windowMs;
+  } else {
+    record.count += 1;
+  }
+  testRateLimits.set(ip, record);
+  return record.count <= maxRequests;
+}
+
+// GET /api/v1/modelos - Listar todos os modelos
+app.get('/api/v1/modelos', async (_req, res) => {
+  if (!pool) return res.status(500).json({ success: false, error: 'Postgres não conectado' });
+  try {
+    const result = await pool.query(
+      `SELECT id, provedor, modelo, input_per_1m, cached_per_1m, output_per_1m,
+              reasoning_per_1m, cache_creation_per_1m, moeda, vigente_de, vigente_ate, ativo
+       FROM precos_modelos
+       ORDER BY ativo DESC, provedor ASC, modelo ASC`
+    );
+    res.json({ success: true, data: result.rows });
+  } catch (err) {
+    console.error('[api] Erro ao listar modelos:', err.message);
+    res.status(500).json({ success: false, error: 'Falha ao consultar modelos' });
+  }
+});
+
+// POST /api/v1/modelos - Cadastrar novo modelo
+app.post('/api/v1/modelos', async (req, res) => {
+  if (!pool) return res.status(500).json({ success: false, error: 'Postgres não conectado' });
+  const { provedor, modelo, input_per_1m, cached_per_1m, output_per_1m, reasoning_per_1m, cache_creation_per_1m, ativo } = req.body;
+
+  // Sanitização rigorosa
+  const provClean = String(provedor || '').trim().toLowerCase();
+  const modClean = String(modelo || '').trim();
+
+  if (!/^[a-zA-Z0-9_-]{2,50}$/.test(provClean)) {
+    return res.status(400).json({ success: false, error: 'Provedor inválido (2-50 chars, alfanumérico, hífen ou underline)' });
+  }
+  if (!/^[a-zA-Z0-9_./:-]{2,100}$/.test(modClean)) {
+    return res.status(400).json({ success: false, error: 'Nome de modelo inválido (2-100 chars)' });
+  }
+
+  const pInput = Math.max(0, Math.min(10000, Number(input_per_1m) || 0));
+  const pCached = Math.max(0, Math.min(10000, Number(cached_per_1m) || 0));
+  const pOutput = Math.max(0, Math.min(10000, Number(output_per_1m) || 0));
+  const pReasoning = Math.max(0, Math.min(10000, Number(reasoning_per_1m) || 0));
+  const pCacheCreation = Math.max(0, Math.min(10000, Number(cache_creation_per_1m) || 0));
+  const isAtivo = ativo !== false;
+
+  try {
+    const insertRes = await pool.query(
+      `INSERT INTO precos_modelos (provedor, modelo, input_per_1m, cached_per_1m, output_per_1m, reasoning_per_1m, cache_creation_per_1m, moeda, vigente_de, ativo)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'USD', NOW(), $8)
+       RETURNING *`,
+      [provClean, modClean, pInput, pCached, pOutput, pReasoning, pCacheCreation, isAtivo]
+    );
+    res.status(201).json({ success: true, data: insertRes.rows[0] });
+  } catch (err) {
+    console.error('[api] Erro ao cadastrar modelo:', err.message);
+    res.status(500).json({ success: false, error: 'Falha ao salvar modelo no banco' });
+  }
+});
+
+// PUT /api/v1/modelos/:id - Atualizar modelo existente
+app.put('/api/v1/modelos/:id', async (req, res) => {
+  if (!pool) return res.status(500).json({ success: false, error: 'Postgres não conectado' });
+  const id = parseInt(req.params.id, 10);
+  if (!id || id <= 0) return res.status(400).json({ success: false, error: 'ID inválido' });
+
+  const { provedor, modelo, input_per_1m, cached_per_1m, output_per_1m, reasoning_per_1m, cache_creation_per_1m, ativo } = req.body;
+
+  const provClean = String(provedor || '').trim().toLowerCase();
+  const modClean = String(modelo || '').trim();
+
+  if (!/^[a-zA-Z0-9_-]{2,50}$/.test(provClean)) {
+    return res.status(400).json({ success: false, error: 'Provedor inválido' });
+  }
+  if (!/^[a-zA-Z0-9_./:-]{2,100}$/.test(modClean)) {
+    return res.status(400).json({ success: false, error: 'Nome de modelo inválido' });
+  }
+
+  const pInput = Math.max(0, Math.min(10000, Number(input_per_1m) || 0));
+  const pCached = Math.max(0, Math.min(10000, Number(cached_per_1m) || 0));
+  const pOutput = Math.max(0, Math.min(10000, Number(output_per_1m) || 0));
+  const pReasoning = Math.max(0, Math.min(10000, Number(reasoning_per_1m) || 0));
+  const pCacheCreation = Math.max(0, Math.min(10000, Number(cache_creation_per_1m) || 0));
+  const isAtivo = ativo !== false;
+
+  try {
+    const updateRes = await pool.query(
+      `UPDATE precos_modelos
+       SET provedor = $1, modelo = $2, input_per_1m = $3, cached_per_1m = $4,
+           output_per_1m = $5, reasoning_per_1m = $6, cache_creation_per_1m = $7, ativo = $8
+       WHERE id = $9
+       RETURNING *`,
+      [provClean, modClean, pInput, pCached, pOutput, pReasoning, pCacheCreation, isAtivo, id]
+    );
+
+    if (updateRes.rowCount === 0) {
+      return res.status(404).json({ success: false, error: 'Modelo não encontrado' });
+    }
+    res.json({ success: true, data: updateRes.rows[0] });
+  } catch (err) {
+    console.error('[api] Erro ao atualizar modelo:', err.message);
+    res.status(500).json({ success: false, error: 'Falha ao atualizar modelo' });
+  }
+});
+
+// DELETE /api/v1/modelos/:id - Excluir modelo ou desativar com segurança
+app.delete('/api/v1/modelos/:id', async (req, res) => {
+  if (!pool) return res.status(500).json({ success: false, error: 'Postgres não conectado' });
+  const id = parseInt(req.params.id, 10);
+  if (!id || id <= 0) return res.status(400).json({ success: false, error: 'ID inválido' });
+
+  try {
+    // Busca informações do modelo
+    const modRes = await pool.query('SELECT provedor, modelo FROM precos_modelos WHERE id = $1', [id]);
+    if (modRes.rowCount === 0) {
+      return res.status(404).json({ success: false, error: 'Modelo não encontrado' });
+    }
+    const { provedor, modelo } = modRes.rows[0];
+
+    // Checa se possui registros no ledger de uso de tokens
+    const usageCheck = await pool.query(
+      'SELECT 1 FROM uso_tokens WHERE provedor = $1 AND modelo = $2 LIMIT 1',
+      [provedor, modelo]
+    );
+
+    if (usageCheck.rowCount > 0) {
+      // Protege integridade referencial histórica desativando o modelo
+      await pool.query('UPDATE precos_modelos SET ativo = false WHERE id = $1', [id]);
+      return res.json({
+        success: true,
+        action: 'desativado',
+        message: 'Modelo possui histórico financeiro; foi desativado em vez de excluído para preservar auditoria.'
+      });
+    }
+
+    await pool.query('DELETE FROM precos_modelos WHERE id = $1', [id]);
+    res.json({ success: true, action: 'removido', message: 'Modelo removido com sucesso' });
+  } catch (err) {
+    console.error('[api] Erro ao excluir modelo:', err.message);
+    res.status(500).json({ success: false, error: 'Falha ao excluir modelo' });
+  }
+});
+
+// POST /api/v1/modelos/:id/testar - Testar inferência/ping do modelo via 9Router
+app.post('/api/v1/modelos/:id/testar', async (req, res) => {
+  if (!pool) return res.status(500).json({ success: false, error: 'Postgres não conectado' });
+  const id = parseInt(req.params.id, 10);
+  if (!id || id <= 0) return res.status(400).json({ success: false, error: 'ID inválido' });
+
+  const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'local';
+  if (!checkTestRateLimit(clientIp)) {
+    return res.status(429).json({ success: false, error: 'Limite de testes atingido (máx 10 por minuto). Aguarde.' });
+  }
+
+  try {
+    const modRes = await pool.query('SELECT provedor, modelo, ativo FROM precos_modelos WHERE id = $1', [id]);
+    if (modRes.rowCount === 0) {
+      return res.status(404).json({ success: false, error: 'Modelo não encontrado' });
+    }
+    const record = modRes.rows[0];
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 12000); // 12s timeout estrito
+
+    const startTime = Date.now();
+    let statusHttp = 0;
+    let rawResponse = null;
+
+    try {
+      const response = await fetch(`${NINE_ROUTER_URL}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${NINE_ROUTER_API_KEY}`
+        },
+        body: JSON.stringify({
+          model: record.modelo,
+          messages: [{ role: 'user', content: 'Responda apenas "OK" em 1 palavra.' }],
+          max_tokens: 5,
+          temperature: 0.1
+        }),
+        signal: controller.signal
+      });
+
+      clearTimeout(timeout);
+      statusHttp = response.status;
+      rawResponse = await response.json().catch(() => ({}));
+
+      const latencyMs = Date.now() - startTime;
+
+      if (!response.ok) {
+        return res.status(502).json({
+          success: false,
+          latency_ms: latencyMs,
+          status_http: statusHttp,
+          error: rawResponse.error?.message || rawResponse.message || 'Falha na resposta do 9Router/LLM',
+          raw: rawResponse
+        });
+      }
+
+      const reply = rawResponse.choices?.[0]?.message?.content || '(resposta vazia)';
+      const usage = rawResponse.usage || null;
+
+      res.json({
+        success: true,
+        latency_ms: latencyMs,
+        status_http: statusHttp,
+        modelo_retornado: rawResponse.model || record.modelo,
+        resposta: reply.trim(),
+        usage
+      });
+    } catch (fetchErr) {
+      clearTimeout(timeout);
+      const latencyMs = Date.now() - startTime;
+      const isTimeout = fetchErr.name === 'AbortError';
+
+      res.status(504).json({
+        success: false,
+        latency_ms: latencyMs,
+        error: isTimeout ? 'Timeout: o modelo não respondeu em até 12 segundos' : `Erro de conexão com 9Router: ${fetchErr.message}`
+      });
+    }
+  } catch (err) {
+    console.error('[api] Erro ao testar modelo:', err.message);
+    res.status(500).json({ success: false, error: 'Falha interna ao processar teste' });
   }
 });
 

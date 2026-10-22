@@ -247,6 +247,10 @@ O Dashboard administrativo é uma aplicação web ultra-leve construída em **Va
    - Gráfico temporal diário interativo (SVG puro) com alternador de visão em tabela (WCAG acessível).
    - Rankings em barras horizontais de custo por cliente e consumo por modelo.
    - Tabela de detalhamento analítico por cliente com busca textual instantânea.
+5. **Modelos de IA & Gestão de Custos (Aba Modelos de IA)**:
+   - Catálogo de modelos com precificação por 1M tokens (input, output, cache, reasoning).
+   - Cadastro, edição e desativação segura protegendo integridade de auditoria.
+   - Teste de conectividade e inferência direta via 9Router com medição de latência em milissegundos e rate limit defensivo.
 
 ### 8.4. Endpoints da API REST (v1)
 
@@ -263,8 +267,11 @@ O Dashboard administrativo é uma aplicação web ultra-leve construída em **Va
 | `GET` | `/api/v1/instances/:id/prompt` | Busca config de prompts do agente (`prompt_config`: identidade, papel, personalidade, playbook, escalação, system prompt) |
 | `PUT` | `/api/v1/instances/:id/prompt` | Salva config de prompts do agente (upsert idempotente em `prompt_config`) |
 | `GET` | `/api/v1/financeiro` | Retorna métricas analíticas de custo e tokens por período (`?dias=7\|30\|90`) |
-| `POST` | `/api/v1/instances/:id/restart` | Reinicia a conexão da instância |
-| `DELETE` | `/api/v1/instances/:id` | Remove a instância na Evolution API e no banco de dados |
+| `GET` | `/api/v1/modelos` | Lista catálogo de modelos de IA, status e custos por 1M tokens |
+| `POST` | `/api/v1/modelos` | Cadastra novo modelo com preços de entrada/saída sanitizados |
+| `PUT` | `/api/v1/modelos/:id` | Atualiza parâmetros e vigência de precificação do modelo |
+| `DELETE` | `/api/v1/modelos/:id` | Exclui ou desativa modelo (soft-delete seguro se houver histórico contábil) |
+| `POST` | `/api/v1/modelos/:id/testar` | Dispara teste de ping/inferência no 9Router e afere latência |
 | `POST` | `/api/v1/instances/:id/restart` | Reinicia a conexão da instância |
 | `DELETE` | `/api/v1/instances/:id` | Remove a instância na Evolution API e no banco de dados |
 

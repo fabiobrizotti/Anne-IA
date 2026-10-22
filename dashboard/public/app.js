@@ -113,8 +113,43 @@
     clientChartContainer: document.getElementById('finance-client-chart-container'),
     modelChartContainer: document.getElementById('finance-model-chart-container'),
     financeClientsTbody: document.getElementById('finance-clients-tbody'),
-    financeSearchInput: document.getElementById('finance-search-input')
+    financeSearchInput: document.getElementById('finance-search-input'),
+
+    // Elementos da Aba Modelos de IA
+    metricModelosTotal: document.getElementById('metric-modelos-total'),
+    metricModelosAtivos: document.getElementById('metric-modelos-ativos'),
+    metricModelosAvgIn: document.getElementById('metric-modelos-avg-in'),
+    metricModelosAvgOut: document.getElementById('metric-modelos-avg-out'),
+    modelosSearchInput: document.getElementById('modelos-search-input'),
+    modelosTbody: document.getElementById('modelos-tbody'),
+    btnNewModel: document.getElementById('btn-new-model'),
+
+    // Modal Modelo
+    modalModelo: document.getElementById('modal-modelo'),
+    modalModeloTitle: document.getElementById('modal-modelo-title'),
+    formModelo: document.getElementById('form-modelo'),
+    modeloId: document.getElementById('modelo-id'),
+    modeloProvedor: document.getElementById('modelo-provedor'),
+    modeloNome: document.getElementById('modelo-nome'),
+    modeloInput: document.getElementById('modelo-input'),
+    modeloOutput: document.getElementById('modelo-output'),
+    modeloCached: document.getElementById('modelo-cached'),
+    modeloReasoning: document.getElementById('modelo-reasoning'),
+    modeloAtivo: document.getElementById('modelo-ativo'),
+
+    // Modal Teste de Modelo
+    modalTestModel: document.getElementById('modal-test-model'),
+    modalTestTitle: document.getElementById('modal-test-title'),
+    modalTestSubtitle: document.getElementById('modal-test-subtitle'),
+    testLoading: document.getElementById('test-loading'),
+    testResultBox: document.getElementById('test-result-box'),
+    testStatusCode: document.getElementById('test-status-code'),
+    testLatency: document.getElementById('test-latency'),
+    testModelEffective: document.getElementById('test-model-effective'),
+    testReplyContent: document.getElementById('test-reply-content')
   };
+
+  let modelsList = [];
 
   // ---------------------------------------------------------------------------
   // UTILITÁRIOS
@@ -812,6 +847,8 @@
 
     if (targetTabId === 'tab-financeiro') {
       loadFinanceData();
+    } else if (targetTabId === 'tab-modelos') {
+      loadModels();
     }
   }
 
@@ -1118,6 +1155,229 @@
     });
   }
 
+  // ---------------------------------------------------------------------------
+  // GESTÃO E TESTE DE MODELOS DE IA
+  // ---------------------------------------------------------------------------
+
+  async function loadModels() {
+    try {
+      const res = await api('/api/v1/modelos');
+      modelsList = Array.isArray(res.data) ? res.data : [];
+      renderModels();
+    } catch (err) {
+      console.error('[models] Erro ao carregar modelos:', err);
+      showToast(`Falha ao carregar catálogo de modelos: ${err.message}`, 'error');
+    }
+  }
+
+  function renderModels() {
+    if (!elements.modelosTbody) return;
+
+    const term = (elements.modelosSearchInput?.value || '').toLowerCase().trim();
+    const filtered = modelsList.filter(m => {
+      const p = (m.provedor || '').toLowerCase();
+      const n = (m.modelo || '').toLowerCase();
+      return p.includes(term) || n.includes(term);
+    });
+
+    // Métricas
+    const total = modelsList.length;
+    const ativos = modelsList.filter(m => m.ativo).length;
+    const avgIn = total > 0 ? (modelsList.reduce((acc, m) => acc + Number(m.input_per_1m || 0), 0) / total) : 0;
+    const avgOut = total > 0 ? (modelsList.reduce((acc, m) => acc + Number(m.output_per_1m || 0), 0) / total) : 0;
+
+    if (elements.metricModelosTotal) elements.metricModelosTotal.textContent = total;
+    if (elements.metricModelosAtivos) elements.metricModelosAtivos.textContent = ativos;
+    if (elements.metricModelosAvgIn) elements.metricModelosAvgIn.textContent = `$${avgIn.toFixed(4)}`;
+    if (elements.metricModelosAvgOut) elements.metricModelosAvgOut.textContent = `$${avgOut.toFixed(4)}`;
+
+    if (filtered.length === 0) {
+      elements.modelosTbody.innerHTML = `
+        <tr>
+          <td colspan="7" class="text-center py-8 text-muted">
+            ${term ? 'Nenhum modelo encontrado para o termo pesquisado.' : 'Nenhum modelo cadastrado.'}
+          </td>
+        </tr>
+      `;
+      return;
+    }
+
+    elements.modelosTbody.innerHTML = filtered.map(m => {
+      const statusBadge = m.ativo
+        ? '<span class="badge badge-model-active">Ativo</span>'
+        : '<span class="badge badge-model-inactive">Inativo</span>';
+
+      const provEsc = escapeHtml(m.provedor || '');
+      const modEsc = escapeHtml(m.modelo || '');
+
+      return `
+        <tr>
+          <td><span class="badge badge-outline">${provEsc}</span></td>
+          <td><strong>${modEsc}</strong></td>
+          <td>$${Number(m.input_per_1m || 0).toFixed(4)}</td>
+          <td>$${Number(m.output_per_1m || 0).toFixed(4)}</td>
+          <td>$${Number(m.cached_per_1m || 0).toFixed(4)}</td>
+          <td>${statusBadge}</td>
+          <td class="text-right">
+            <div class="action-buttons justify-end">
+              <button class="btn btn-xs btn-secondary" onclick="window.AnneUI.testModel(${m.id})" title="Testar resposta e latência via 9Router">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                Testar
+              </button>
+              <button class="btn btn-xs btn-secondary" onclick="window.AnneUI.openModelModal(${m.id})" title="Editar modelo e precificação">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                Editar
+              </button>
+              <button class="btn btn-xs btn-secondary text-danger" onclick="window.AnneUI.deleteModel(${m.id})" title="Excluir ou desativar modelo">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+              </button>
+            </div>
+          </td>
+        </tr>
+      `;
+    }).join('');
+  }
+
+  function openModelModal(modelId = null) {
+    elements.formModelo.reset();
+    if (modelId) {
+      const model = modelsList.find(m => m.id === modelId);
+      if (!model) return;
+      elements.modalModeloTitle.textContent = 'Editar Modelo de IA';
+      elements.modeloId.value = model.id;
+      elements.modeloProvedor.value = model.provedor || '';
+      elements.modeloNome.value = model.modelo || '';
+      elements.modeloInput.value = model.input_per_1m ?? 0;
+      elements.modeloOutput.value = model.output_per_1m ?? 0;
+      elements.modeloCached.value = model.cached_per_1m ?? 0;
+      elements.modeloReasoning.value = model.reasoning_per_1m ?? 0;
+      elements.modeloAtivo.checked = model.ativo !== false;
+    } else {
+      elements.modalModeloTitle.textContent = 'Cadastrar Modelo de IA';
+      elements.modeloId.value = '';
+      elements.modeloProvedor.value = '';
+      elements.modeloNome.value = '';
+      elements.modeloInput.value = '0.00';
+      elements.modeloOutput.value = '0.00';
+      elements.modeloCached.value = '0.00';
+      elements.modeloReasoning.value = '0.00';
+      elements.modeloAtivo.checked = true;
+    }
+    openModal(elements.modalModelo);
+  }
+
+  async function saveModel(e) {
+    e.preventDefault();
+    const id = elements.modeloId.value ? parseInt(elements.modeloId.value, 10) : null;
+    const provedor = elements.modeloProvedor.value.trim().toLowerCase();
+    const modelo = elements.modeloNome.value.trim();
+
+    if (!provedor || !modelo) {
+      showToast('Preencha o provedor e o nome do modelo.', 'error');
+      return;
+    }
+
+    const payload = {
+      provedor,
+      modelo,
+      input_per_1m: parseFloat(elements.modeloInput.value) || 0,
+      output_per_1m: parseFloat(elements.modeloOutput.value) || 0,
+      cached_per_1m: parseFloat(elements.modeloCached.value) || 0,
+      reasoning_per_1m: parseFloat(elements.modeloReasoning.value) || 0,
+      ativo: elements.modeloAtivo.checked
+    };
+
+    try {
+      if (id) {
+        await api(`/api/v1/modelos/${id}`, {
+          method: 'PUT',
+          body: JSON.stringify(payload)
+        });
+        showToast('Modelo atualizado com sucesso.');
+      } else {
+        await api('/api/v1/modelos', {
+          method: 'POST',
+          body: JSON.stringify(payload)
+        });
+        showToast('Modelo cadastrado com sucesso.');
+      }
+      closeModal(elements.modalModelo);
+      await loadModels();
+    } catch (err) {
+      showToast(`Falha ao salvar modelo: ${err.message}`, 'error');
+    }
+  }
+
+  async function deleteModel(id) {
+    const mod = modelsList.find(m => m.id === id);
+    if (!mod) return;
+
+    const confirmed = window.confirm(`Deseja remover ou desativar o modelo "${mod.provedor}/${mod.modelo}"?`);
+    if (!confirmed) return;
+
+    try {
+      const res = await api(`/api/v1/modelos/${id}`, { method: 'DELETE' });
+      showToast(res.message || 'Operação realizada.');
+      await loadModels();
+    } catch (err) {
+      showToast(`Erro ao excluir: ${err.message}`, 'error');
+    }
+  }
+
+  async function testModel(id) {
+    const mod = modelsList.find(m => m.id === id);
+    if (!mod) return;
+
+    elements.modalTestTitle.textContent = `Teste: ${mod.provedor}/${mod.modelo}`;
+    elements.modalTestSubtitle.textContent = 'Enviando ping de teste para o gateway 9Router...';
+    elements.testLoading.classList.remove('hidden');
+    elements.testResultBox.classList.add('hidden');
+    openModal(elements.modalTestModel);
+
+    try {
+      const res = await api(`/api/v1/modelos/${id}/testar`, { method: 'POST' });
+      elements.testLoading.classList.add('hidden');
+      elements.testResultBox.classList.remove('hidden');
+
+      const latency = res.latency_ms || 0;
+      elements.testStatusCode.textContent = `${res.status_http || 200} OK`;
+      elements.testStatusCode.className = 'text-base font-semibold text-success';
+
+      let latClass = 'latency-fast';
+      if (latency > 2500) latClass = 'latency-slow';
+      else if (latency > 800) latClass = 'latency-medium';
+
+      elements.testLatency.textContent = `${latency} ms`;
+      elements.testLatency.className = `text-base font-semibold ${latClass}`;
+
+      elements.testModelEffective.textContent = res.modelo_retornado || mod.modelo;
+      elements.testReplyContent.textContent = res.resposta || '(sem conteúdo de texto)';
+    } catch (err) {
+      elements.testLoading.classList.add('hidden');
+      elements.testResultBox.classList.remove('hidden');
+
+      elements.testStatusCode.textContent = 'ERRO';
+      elements.testStatusCode.className = 'text-base font-semibold text-danger';
+
+      elements.testLatency.textContent = '--';
+      elements.testLatency.className = 'text-base font-semibold text-muted';
+
+      elements.testModelEffective.textContent = mod.modelo;
+      elements.testReplyContent.textContent = `Falha na requisição: ${err.message}`;
+    }
+  }
+
+  // Event Listeners dos Modelos
+  if (elements.btnNewModel) {
+    elements.btnNewModel.addEventListener('click', () => openModelModal(null));
+  }
+  if (elements.formModelo) {
+    elements.formModelo.addEventListener('submit', saveModel);
+  }
+  if (elements.modelosSearchInput) {
+    elements.modelosSearchInput.addEventListener('input', renderModels);
+  }
+
   // Redimensionamento responsivo do gráfico diário
   window.addEventListener('resize', () => {
     if (activePageTab === 'tab-financeiro' && financeData?.serie_diaria) {
@@ -1137,6 +1397,8 @@
     loadInstances();
     if (activePageTab === 'tab-financeiro') {
       loadFinanceData();
+    } else if (activePageTab === 'tab-modelos') {
+      loadModels();
     }
   });
 
@@ -1146,7 +1408,10 @@
     openConnectModal,
     openSettingsModal,
     restartInstance,
-    deleteInstance
+    deleteInstance,
+    openModelModal,
+    deleteModel,
+    testModel
   };
 
   // Inicialização
