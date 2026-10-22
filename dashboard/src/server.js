@@ -102,30 +102,6 @@ app.get('/api/v1/instances', async (req, res) => {
       if (name) evoMap.set(name, inst);
     });
 
-    // Agrega uso/custo por cliente
-    let usageMap = new Map();
-    if (pool) {
-      try {
-        const usageRes = await pool.query(
-          `SELECT cliente_id,
-                  COALESCE(SUM(prompt_tokens),0) AS prompt_tokens,
-                  COALESCE(SUM(completion_tokens),0) AS completion_tokens,
-                  COALESCE(SUM(cached_tokens),0) AS cached_tokens,
-                  COALESCE(SUM(total_tokens),0) AS total_tokens,
-                  COALESCE(SUM(custo_usd),0) AS custo_usd,
-                  COUNT(*) AS requisicoes,
-                  MAX(criado_em) AS ultima_requisicao
-           FROM uso_tokens
-           GROUP BY cliente_id`
-        );
-        usageRes.rows.forEach((r) => {
-          usageMap.set(r.cliente_id, r);
-        });
-      } catch (e) {
-        console.error('[api] Erro ao agregar uso_tokens:', e.message);
-      }
-    }
-
     // Mescla dados do banco com status em tempo real da Evolution
     const merged = dbClients.map((c) => {
       const evo = evoMap.get(c.id);
@@ -140,8 +116,6 @@ app.get('/api/v1/instances', async (req, res) => {
         evoMap.delete(c.id);
       }
 
-      const usage = usageMap.get(c.id) || {};
-
       return {
         id: c.id,
         nome: c.nome,
@@ -153,16 +127,7 @@ app.get('/api/v1/instances', async (req, res) => {
         status,
         profilePicUrl,
         criado_em: c.criado_em,
-        atualizado_em: c.atualizado_em,
-        uso_tokens: {
-          prompt_tokens: Number(usage.prompt_tokens || 0),
-          completion_tokens: Number(usage.completion_tokens || 0),
-          cached_tokens: Number(usage.cached_tokens || 0),
-          total_tokens: Number(usage.total_tokens || 0),
-          custo_usd: Number(usage.custo_usd || 0),
-          requisicoes: Number(usage.requisicoes || 0),
-          ultima_requisicao: usage.ultima_requisicao || null
-        }
+        atualizado_em: c.atualizado_em
       };
     });
 
@@ -592,6 +557,177 @@ app.delete('/api/v1/instances/:id', async (req, res) => {
   } catch (err) {
     console.error('[api] Erro ao excluir instância:', err);
     res.status(500).json({ success: false, error: 'Falha ao excluir instância' });
+  }
+});
+
+// 9. Relatório Financeiro (Custo e Consumo de Tokens)
+app.get('/api/v1/financeiro', async (req, res) => {
+  if (!pool) {
+    return res.status(503).json({ success: false, error: 'Banco de dados indisponível' });
+  }
+
+  try {
+    const rawDias = parseInt(req.query.dias || '30', 10);
+    const dias = [7, 30, 90].includes(rawDias) ? rawDias : 30;
+
+    const [kpiRes, kpiPrevRes, serieRes, clienteRes, modeloRes] = await Promise.all([
+      // KPIs período atual
+      pool.query(
+        `SELECT
+           COALESCE(SUM(custo_usd), 0) AS custo_usd,
+           COALESCE(COUNT(*), 0) AS requisicoes,
+           COALESCE(SUM(total_tokens), 0) AS tokens_total,
+           COALESCE(SUM(prompt_tokens), 0) AS tokens_prompt,
+           COALESCE(SUM(completion_tokens), 0) AS tokens_completion,
+           COALESCE(SUM(cached_tokens), 0) AS tokens_cached,
+           COUNT(DISTINCT cliente_id) AS clientes_ativos
+         FROM uso_tokens
+         WHERE criado_em >= NOW() - ($1 || ' days')::interval`,
+        [dias]
+      ),
+      // KPIs período anterior (para cálculo de delta)
+      pool.query(
+        `SELECT
+           COALESCE(SUM(custo_usd), 0) AS custo_usd,
+           COALESCE(COUNT(*), 0) AS requisicoes,
+           COALESCE(SUM(total_tokens), 0) AS tokens_total,
+           COALESCE(SUM(cached_tokens), 0) AS tokens_cached
+         FROM uso_tokens
+         WHERE criado_em >= NOW() - (2 * $1 || ' days')::interval
+           AND criado_em < NOW() - ($1 || ' days')::interval`,
+        [dias]
+      ),
+      // Série temporal diária
+      pool.query(
+        `SELECT
+           TO_CHAR(date_trunc('day', criado_em AT TIME ZONE 'America/Sao_Paulo'), 'YYYY-MM-DD') AS dia,
+           COALESCE(SUM(custo_usd), 0) AS custo_usd,
+           COALESCE(SUM(total_tokens), 0) AS tokens,
+           COUNT(*) AS requisicoes
+         FROM uso_tokens
+         WHERE criado_em >= NOW() - ($1 || ' days')::interval
+         GROUP BY 1
+         ORDER BY 1 ASC`,
+        [dias]
+      ),
+      // Agrupamento por cliente
+      pool.query(
+        `SELECT
+           u.cliente_id,
+           COALESCE(c.nome, u.cliente_id) AS nome,
+           COALESCE(SUM(u.custo_usd), 0) AS custo_usd,
+           COALESCE(SUM(u.total_tokens), 0) AS tokens,
+           COALESCE(SUM(u.cached_tokens), 0) AS tokens_cached,
+           COUNT(*) AS requisicoes
+         FROM uso_tokens u
+         LEFT JOIN clientes c ON c.id = u.cliente_id
+         WHERE u.criado_em >= NOW() - ($1 || ' days')::interval
+         GROUP BY u.cliente_id, c.nome
+         ORDER BY custo_usd DESC, tokens DESC`,
+        [dias]
+      ),
+      // Agrupamento por modelo
+      pool.query(
+        `SELECT
+           COALESCE(provedor, 'desconhecido') AS provedor,
+           COALESCE(modelo, 'desconhecido') AS modelo,
+           COALESCE(SUM(custo_usd), 0) AS custo_usd,
+           COALESCE(SUM(total_tokens), 0) AS tokens,
+           COUNT(*) AS requisicoes
+         FROM uso_tokens
+         WHERE criado_em >= NOW() - ($1 || ' days')::interval
+         GROUP BY provedor, modelo
+         ORDER BY custo_usd DESC, tokens DESC`,
+        [dias]
+      )
+    ]);
+
+    const kpiRow = kpiRes.rows[0] || {};
+    const kpiPrevRow = kpiPrevRes.rows[0] || {};
+
+    const custo = Number(kpiRow.custo_usd || 0);
+    const reqs = Number(kpiRow.requisicoes || 0);
+    const tokensTotal = Number(kpiRow.tokens_total || 0);
+    const tokensCached = Number(kpiRow.tokens_cached || 0);
+
+    const prevCusto = Number(kpiPrevRow.custo_usd || 0);
+    const prevReqs = Number(kpiPrevRow.requisicoes || 0);
+    const prevTokens = Number(kpiPrevRow.tokens_total || 0);
+
+    // Série diária contínua preenchida com zeros
+    const serieMap = new Map();
+    serieRes.rows.forEach(r => {
+      serieMap.set(r.dia, {
+        dia: r.dia,
+        custo_usd: Number(r.custo_usd || 0),
+        tokens: Number(r.tokens || 0),
+        requisicoes: Number(r.requisicoes || 0)
+      });
+    });
+
+    const serieDiaria = [];
+    const hoje = new Date();
+    for (let i = dias - 1; i >= 0; i--) {
+      const d = new Date(hoje);
+      d.setDate(d.getDate() - i);
+      const chave = d.toISOString().slice(0, 10);
+      if (serieMap.has(chave)) {
+        serieDiaria.push(serieMap.get(chave));
+      } else {
+        serieDiaria.push({ dia: chave, custo_usd: 0, tokens: 0, requisicoes: 0 });
+      }
+    }
+
+    const porCliente = clienteRes.rows.map(r => {
+      const tot = Number(r.tokens || 0);
+      const cch = Number(r.tokens_cached || 0);
+      return {
+        cliente_id: r.cliente_id,
+        nome: r.nome,
+        custo_usd: Number(r.custo_usd || 0),
+        tokens: tot,
+        requisicoes: Number(r.requisicoes || 0),
+        cache_rate: tot > 0 ? Number(((cch / tot) * 100).toFixed(1)) : 0
+      };
+    });
+
+    const porModelo = modeloRes.rows.map(r => ({
+      provedor: r.provedor,
+      modelo: r.modelo,
+      custo_usd: Number(r.custo_usd || 0),
+      tokens: Number(r.tokens || 0),
+      requisicoes: Number(r.requisicoes || 0)
+    }));
+
+    res.json({
+      success: true,
+      data: {
+        periodo_dias: dias,
+        gerado_em: new Date().toISOString(),
+        kpis: {
+          custo_usd: custo,
+          requisicoes: reqs,
+          tokens_total: tokensTotal,
+          tokens_prompt: Number(kpiRow.tokens_prompt || 0),
+          tokens_completion: Number(kpiRow.tokens_completion || 0),
+          tokens_cached: tokensCached,
+          cache_rate: tokensTotal > 0 ? Number(((tokensCached / tokensTotal) * 100).toFixed(1)) : 0,
+          custo_medio_requisicao: reqs > 0 ? Number((custo / reqs).toFixed(6)) : 0,
+          clientes_ativos: Number(kpiRow.clientes_ativos || 0)
+        },
+        kpis_anteriores: {
+          custo_usd: prevCusto,
+          requisicoes: prevReqs,
+          tokens_total: prevTokens
+        },
+        serie_diaria: serieDiaria,
+        por_cliente: porCliente,
+        por_modelo: porModelo
+      }
+    });
+  } catch (err) {
+    console.error('[api] Erro ao carregar dados financeiros:', err);
+    res.status(500).json({ success: false, error: 'Falha ao processar dados financeiros' });
   }
 });
 

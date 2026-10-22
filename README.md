@@ -242,6 +242,11 @@ O Dashboard administrativo é uma aplicação web ultra-leve construída em **Va
    - Rejeição automática de chamadas de voz e vídeo com mensagem explicativa customizável.
    - Ignorar mensagens em grupos para focar apenas no atendimento privado.
    - Manter status sempre online, recibo de leitura (tique azul), visualização de status e sincronização de histórico.
+4. **Painel Financeiro & Métricas de Tokens (Aba Financeiro)**:
+   - Visualização dedicada com KPIs de custo acumulado (USD), requisições LLM, tokens totais (prompt/completion) e taxa de cache.
+   - Gráfico temporal diário interativo (SVG puro) com alternador de visão em tabela (WCAG acessível).
+   - Rankings em barras horizontais de custo por cliente e consumo por modelo.
+   - Tabela de detalhamento analítico por cliente com busca textual instantânea.
 
 ### 8.4. Endpoints da API REST (v1)
 
@@ -257,6 +262,9 @@ O Dashboard administrativo é uma aplicação web ultra-leve construída em **Va
 | `POST` | `/api/v1/instances/:id/settings` | Salva configurações comportamentais na Evolution e no banco |
 | `GET` | `/api/v1/instances/:id/prompt` | Busca config de prompts do agente (`prompt_config`: identidade, papel, personalidade, playbook, escalação, system prompt) |
 | `PUT` | `/api/v1/instances/:id/prompt` | Salva config de prompts do agente (upsert idempotente em `prompt_config`) |
+| `GET` | `/api/v1/financeiro` | Retorna métricas analíticas de custo e tokens por período (`?dias=7\|30\|90`) |
+| `POST` | `/api/v1/instances/:id/restart` | Reinicia a conexão da instância |
+| `DELETE` | `/api/v1/instances/:id` | Remove a instância na Evolution API e no banco de dados |
 | `POST` | `/api/v1/instances/:id/restart` | Reinicia a conexão da instância |
 | `DELETE` | `/api/v1/instances/:id` | Remove a instância na Evolution API e no banco de dados |
 

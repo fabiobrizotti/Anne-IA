@@ -8,6 +8,10 @@
   let currentSettingsInstanceId = null;
   let currentFichaInstanceId = null;
   let pollStatusTimer = null;
+  let currentFinancePeriod = 30;
+  let financeData = null;
+  let financeDailyTableView = false;
+  let activePageTab = 'tab-instancias';
 
   // Elementos do DOM
   const elements = {
@@ -64,7 +68,7 @@
     connectSubtitle: document.getElementById('connect-instance-subtitle'),
     tabPairing: document.getElementById('tab-pairing'),
     tabQrcode: document.getElementById('tab-qrcode'),
-    tabButtons: document.querySelectorAll('.tab-btn'),
+    tabButtons: document.querySelectorAll('#modal-connect .tab-btn'),
     pairingNumber: document.getElementById('pairing-number'),
     btnRequestPairing: document.getElementById('btn-request-pairing'),
     pairingResultBox: document.getElementById('pairing-result-box'),
@@ -87,7 +91,29 @@
     settingAlwaysOnline: document.getElementById('setting-alwaysOnline'),
     settingReadMessages: document.getElementById('setting-readMessages'),
     settingReadStatus: document.getElementById('setting-readStatus'),
-    settingSyncFullHistory: document.getElementById('setting-syncFullHistory')
+    settingSyncFullHistory: document.getElementById('setting-syncFullHistory'),
+
+    // Elementos da Aba Financeiro
+    pageTabs: document.querySelectorAll('.page-tab'),
+    pageContents: document.querySelectorAll('.page-content'),
+    pillBtns: document.querySelectorAll('.pill-btn'),
+    kpiCusto: document.getElementById('kpi-custo'),
+    kpiCustoDelta: document.getElementById('kpi-custo-delta'),
+    kpiRequisicoes: document.getElementById('kpi-requisicoes'),
+    kpiReqsDelta: document.getElementById('kpi-reqs-delta'),
+    kpiTokens: document.getElementById('kpi-tokens'),
+    kpiTokensDelta: document.getElementById('kpi-tokens-delta'),
+    kpiTokensSplit: document.getElementById('kpi-tokens-split'),
+    kpiCacheRate: document.getElementById('kpi-cache-rate'),
+    kpiCustoMedio: document.getElementById('kpi-custo-medio'),
+    dailyChartContainer: document.getElementById('finance-daily-chart-container'),
+    dailyTableContainer: document.getElementById('finance-daily-table-container'),
+    dailyTbody: document.getElementById('finance-daily-tbody'),
+    btnToggleDailyView: document.getElementById('btn-toggle-daily-view'),
+    clientChartContainer: document.getElementById('finance-client-chart-container'),
+    modelChartContainer: document.getElementById('finance-model-chart-container'),
+    financeClientsTbody: document.getElementById('finance-clients-tbody'),
+    financeSearchInput: document.getElementById('finance-search-input')
   };
 
   // ---------------------------------------------------------------------------
@@ -770,6 +796,335 @@
     });
   });
 
+  // ---------------------------------------------------------------------------
+  // NAVEGAÇÃO DE PÁGINAS / ABAS PRINCIPAIS
+  // ---------------------------------------------------------------------------
+
+  function switchPageTab(targetTabId) {
+    activePageTab = targetTabId;
+    elements.pageTabs.forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.pageTab === targetTabId);
+    });
+
+    elements.pageContents.forEach(content => {
+      content.classList.toggle('active', content.id === targetTabId);
+    });
+
+    if (targetTabId === 'tab-financeiro') {
+      loadFinanceData();
+    }
+  }
+
+  elements.pageTabs.forEach(btn => {
+    btn.addEventListener('click', () => switchPageTab(btn.dataset.pageTab));
+  });
+
+  // Filtro de período (7d / 30d / 90d)
+  elements.pillBtns.forEach(btn => {
+    btn.addEventListener('click', () => {
+      const period = parseInt(btn.dataset.period, 10);
+      if (period === currentFinancePeriod) return;
+      currentFinancePeriod = period;
+      elements.pillBtns.forEach(b => b.classList.toggle('active', b === btn));
+      loadFinanceData();
+    });
+  });
+
+  // Alternador de visão diária: Gráfico vs Tabela
+  if (elements.btnToggleDailyView) {
+    elements.btnToggleDailyView.addEventListener('click', () => {
+      financeDailyTableView = !financeDailyTableView;
+      elements.dailyChartContainer.classList.toggle('hidden', financeDailyTableView);
+      elements.dailyTableContainer.classList.toggle('hidden', !financeDailyTableView);
+      elements.btnToggleDailyView.textContent = financeDailyTableView ? 'Ver em Gráfico' : 'Ver em Tabela';
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // DASHBOARD FINANCEIRO: CARREGAMENTO E RENDERIZAÇÃO
+  // ---------------------------------------------------------------------------
+
+  async function loadFinanceData() {
+    try {
+      const res = await api(`/api/v1/financeiro?dias=${currentFinancePeriod}`);
+      financeData = res.data || {};
+      renderFinanceDashboard();
+    } catch (err) {
+      console.error('[finance] Erro ao carregar dados:', err);
+      showToast(`Falha ao carregar dados financeiros: ${err.message}`, 'error');
+    }
+  }
+
+  function renderFinanceDashboard() {
+    if (!financeData) return;
+    const { kpis = {}, kpis_anteriores = {}, serie_diaria = [], por_cliente = [], por_modelo = [] } = financeData;
+
+    renderKPIs(kpis, kpis_anteriores);
+    renderDailyAreaChart(serie_diaria);
+    renderDailyTable(serie_diaria);
+    renderClientRanking(por_cliente);
+    renderModelRanking(por_modelo);
+    renderFinanceClientsTable(por_cliente);
+  }
+
+  function formatDelta(current, prev, isCurrency = false) {
+    if (!prev || prev === 0) {
+      return { text: current > 0 ? '+100%' : '0%', class: 'neutral' };
+    }
+    const diff = current - prev;
+    const pct = ((diff / prev) * 100).toFixed(1);
+    if (diff > 0) {
+      return { text: `+${pct}%`, class: 'up' };
+    } else if (diff < 0) {
+      return { text: `${pct}%`, class: 'down' };
+    }
+    return { text: '0%', class: 'neutral' };
+  }
+
+  function renderKPIs(kpis, kpisPrev) {
+    const custo = Number(kpis.custo_usd || 0);
+    const prevCusto = Number(kpisPrev.custo_usd || 0);
+    const reqs = Number(kpis.requisicoes || 0);
+    const prevReqs = Number(kpisPrev.requisicoes || 0);
+    const tokens = Number(kpis.tokens_total || 0);
+    const prevTokens = Number(kpisPrev.tokens_total || 0);
+
+    const deltaCusto = formatDelta(custo, prevCusto);
+    const deltaReqs = formatDelta(reqs, prevReqs);
+    const deltaTokens = formatDelta(tokens, prevTokens);
+
+    elements.kpiCusto.textContent = `$${custo.toFixed(4)}`;
+    elements.kpiCustoDelta.textContent = deltaCusto.text;
+    elements.kpiCustoDelta.className = `delta-badge ${deltaCusto.class}`;
+
+    elements.kpiRequisicoes.textContent = reqs.toLocaleString('pt-BR');
+    elements.kpiReqsDelta.textContent = deltaReqs.text;
+    elements.kpiReqsDelta.className = `delta-badge ${deltaReqs.class}`;
+
+    elements.kpiTokens.textContent = tokens.toLocaleString('pt-BR');
+    elements.kpiTokensDelta.textContent = deltaTokens.text;
+    elements.kpiTokensDelta.className = `delta-badge ${deltaTokens.class}`;
+
+    const promptT = Number(kpis.tokens_prompt || 0);
+    const compT = Number(kpis.tokens_completion || 0);
+    elements.kpiTokensSplit.textContent = `${promptT.toLocaleString('pt-BR')} prompt / ${compT.toLocaleString('pt-BR')} completion`;
+
+    elements.kpiCacheRate.textContent = `${Number(kpis.cache_rate || 0).toFixed(1)}%`;
+    elements.kpiCustoMedio.textContent = `Custo médio: $${Number(kpis.custo_medio_requisicao || 0).toFixed(6)} / req`;
+  }
+
+  // Gráfico Diário de Área em SVG Puro
+  function renderDailyAreaChart(series) {
+    const container = elements.dailyChartContainer;
+    if (!container) return;
+
+    if (!series || series.length === 0 || series.every(s => s.custo_usd === 0)) {
+      container.innerHTML = `
+        <div class="empty-state">
+          <svg class="empty-state-icon" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/></svg>
+          <p class="text-xs">Nenhum custo registrado nos últimos ${currentFinancePeriod} dias.</p>
+        </div>
+      `;
+      return;
+    }
+
+    const width = container.clientWidth || 800;
+    const height = 240;
+    const padding = { top: 20, right: 20, bottom: 30, left: 60 };
+    const innerW = width - padding.left - padding.right;
+    const innerH = height - padding.top - padding.bottom;
+
+    const maxVal = Math.max(...series.map(s => s.custo_usd), 0.001);
+    const points = series.map((s, idx) => {
+      const x = padding.left + (idx / (series.length - 1 || 1)) * innerW;
+      const y = padding.top + innerH - (s.custo_usd / maxVal) * innerH;
+      return { x, y, ...s };
+    });
+
+    const pathLine = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' ');
+    const pathArea = `${pathLine} L ${padding.left + innerW} ${padding.top + innerH} L ${padding.left} ${padding.top + innerH} Z`;
+
+    // Linhas de grade e ticks do eixo Y (4 linhas)
+    const yTicks = [0, 0.33, 0.66, 1].map(frac => {
+      const y = padding.top + innerH - frac * innerH;
+      const val = (frac * maxVal).toFixed(4);
+      return `
+        <line class="chart-gridline" x1="${padding.left}" y1="${y}" x2="${padding.left + innerW}" y2="${y}" />
+        <text class="chart-axis-text" x="${padding.left - 8}" y="${y + 3}" text-anchor="end">$${val}</text>
+      `;
+    }).join('');
+
+    // Rótulos do eixo X (amostras com espaçamento)
+    const step = Math.ceil(series.length / 7);
+    const xLabels = points.filter((_, idx) => idx % step === 0 || idx === points.length - 1).map(p => {
+      const parts = p.dia.split('-');
+      const label = `${parts[2]}/${parts[1]}`;
+      return `
+        <text class="chart-axis-text" x="${p.x}" y="${height - 10}" text-anchor="middle">${label}</text>
+      `;
+    }).join('');
+
+    container.innerHTML = `
+      <svg class="svg-chart" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">
+        ${yTicks}
+        <path class="chart-area" d="${pathArea}" />
+        <path class="chart-line" d="${pathLine}" />
+        ${points.map(p => `
+          <circle class="chart-point" cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" data-dia="${p.dia}" data-custo="${p.custo_usd}">
+            <title>${p.dia}: $${p.custo_usd.toFixed(6)} (${p.tokens.toLocaleString('pt-BR')} tokens, ${p.requisicoes} reqs)</title>
+          </circle>
+        `).join('')}
+        ${xLabels}
+      </svg>
+    `;
+  }
+
+  function renderDailyTable(series) {
+    if (!elements.dailyTbody) return;
+    if (!series || series.length === 0) {
+      elements.dailyTbody.innerHTML = '<tr><td colspan="4" class="text-center py-8 text-muted">Sem dados.</td></tr>';
+      return;
+    }
+
+    elements.dailyTbody.innerHTML = [...series].reverse().map(s => `
+      <tr>
+        <td><code>${s.dia}</code></td>
+        <td>$${s.custo_usd.toFixed(6)}</td>
+        <td>${s.tokens.toLocaleString('pt-BR')}</td>
+        <td class="text-right">${s.requisicoes.toLocaleString('pt-BR')}</td>
+      </tr>
+    `).join('');
+  }
+
+  // Gráfico de Barras Horizontais: Custo por Cliente
+  function renderClientRanking(clients) {
+    const container = elements.clientChartContainer;
+    if (!container) return;
+
+    const top = (clients || []).slice(0, 5);
+    if (top.length === 0 || top.every(c => c.custo_usd === 0)) {
+      container.innerHTML = `
+        <div class="empty-state">
+          <p class="text-xs">Nenhum custo por cliente registrado no período.</p>
+        </div>
+      `;
+      return;
+    }
+
+    const maxVal = Math.max(...top.map(c => c.custo_usd), 0.0001);
+    const barHeight = 20;
+    const gap = 14;
+    const height = top.length * (barHeight + gap) + 10;
+
+    container.innerHTML = `
+      <svg class="svg-chart" viewBox="0 0 400 ${height}" style="height: ${height}px;">
+        ${top.map((c, i) => {
+          const y = i * (barHeight + gap) + 5;
+          const w = Math.max(4, Math.min(260, (c.custo_usd / maxVal) * 260));
+          const nomeTrunc = (c.nome || c.cliente_id).slice(0, 16);
+          return `
+            <text class="chart-bar-label" x="0" y="${y + 14}">${escapeHtml(nomeTrunc)}</text>
+            <rect class="chart-bar-bg" x="110" y="${y}" width="260" height="${barHeight}" />
+            <rect class="chart-bar-rect" x="110" y="${y}" width="${w}" height="${barHeight}">
+              <title>${escapeHtml(c.nome)}: $${c.custo_usd.toFixed(6)}</title>
+            </rect>
+            <text class="chart-bar-val" x="380" y="${y + 14}" text-anchor="end">$${c.custo_usd.toFixed(4)}</text>
+          `;
+        }).join('')}
+      </svg>
+    `;
+  }
+
+  // Gráfico de Barras Horizontais: Tokens por Modelo
+  function renderModelRanking(models) {
+    const container = elements.modelChartContainer;
+    if (!container) return;
+
+    const top = (models || []).slice(0, 5);
+    if (top.length === 0 || top.every(m => m.tokens === 0)) {
+      container.innerHTML = `
+        <div class="empty-state">
+          <p class="text-xs">Nenhum consumo por modelo registrado no período.</p>
+        </div>
+      `;
+      return;
+    }
+
+    const maxVal = Math.max(...top.map(m => m.tokens), 1);
+    const barHeight = 20;
+    const gap = 14;
+    const height = top.length * (barHeight + gap) + 10;
+
+    container.innerHTML = `
+      <svg class="svg-chart" viewBox="0 0 400 ${height}" style="height: ${height}px;">
+        ${top.map((m, i) => {
+          const y = i * (barHeight + gap) + 5;
+          const w = Math.max(4, Math.min(250, (m.tokens / maxVal) * 250));
+          const label = m.modelo.slice(0, 15);
+          return `
+            <text class="chart-bar-label" x="0" y="${y + 14}">${escapeHtml(label)}</text>
+            <rect class="chart-bar-bg" x="110" y="${y}" width="250" height="${barHeight}" />
+            <rect class="chart-bar-rect" x="110" y="${y}" width="${w}" height="${barHeight}">
+              <title>${escapeHtml(m.provedor)} / ${escapeHtml(m.modelo)}: ${m.tokens.toLocaleString('pt-BR')} tokens</title>
+            </rect>
+            <text class="chart-bar-val" x="390" y="${y + 14}" text-anchor="end">${m.tokens.toLocaleString('pt-BR')}</text>
+          `;
+        }).join('')}
+      </svg>
+    `;
+  }
+
+  // Tabela Detalhada por Cliente (Data Table)
+  function renderFinanceClientsTable(clients) {
+    if (!elements.financeClientsTbody) return;
+
+    const term = (elements.financeSearchInput?.value || '').trim().toLowerCase();
+    const filtered = (clients || []).filter(c => {
+      const nome = (c.nome || '').toLowerCase();
+      const id = (c.cliente_id || '').toLowerCase();
+      return nome.includes(term) || id.includes(term);
+    });
+
+    if (filtered.length === 0) {
+      elements.financeClientsTbody.innerHTML = `
+        <tr>
+          <td colspan="5" class="text-center py-8 text-muted">
+            ${term ? 'Nenhum cliente encontrado para o filtro.' : 'Nenhum registro de uso de tokens encontrado.'}
+          </td>
+        </tr>
+      `;
+      return;
+    }
+
+    elements.financeClientsTbody.innerHTML = filtered.map(c => `
+      <tr>
+        <td>
+          <strong>${escapeHtml(c.nome)}</strong>
+          <div class="text-muted text-xs"><code>${escapeHtml(c.cliente_id)}</code></div>
+        </td>
+        <td>${c.requisicoes.toLocaleString('pt-BR')}</td>
+        <td>${c.tokens.toLocaleString('pt-BR')}</td>
+        <td>${c.cache_rate.toFixed(1)}%</td>
+        <td class="text-right font-bold">$${c.custo_usd.toFixed(6)}</td>
+      </tr>
+    `).join('');
+  }
+
+  if (elements.financeSearchInput) {
+    elements.financeSearchInput.addEventListener('input', () => {
+      if (financeData?.por_cliente) {
+        renderFinanceClientsTable(financeData.por_cliente);
+      }
+    });
+  }
+
+  // Redimensionamento responsivo do gráfico diário
+  window.addEventListener('resize', () => {
+    if (activePageTab === 'tab-financeiro' && financeData?.serie_diaria) {
+      renderDailyAreaChart(financeData.serie_diaria);
+    }
+  });
+
   // Fechar no Esc
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
@@ -778,7 +1133,12 @@
   });
 
   elements.searchInput.addEventListener('input', renderInstances);
-  elements.btnRefresh.addEventListener('click', loadInstances);
+  elements.btnRefresh.addEventListener('click', () => {
+    loadInstances();
+    if (activePageTab === 'tab-financeiro') {
+      loadFinanceData();
+    }
+  });
 
   // Expõe métodos para chamadas inline nos botões da tabela
   window.AnneUI = {

@@ -30,49 +30,202 @@
       </div>
     </header>
 
-    <!-- Resumo de Métricas -->
-    <section class="metrics">
-      <div class="card metric-card">
-        <span class="metric-label">Total de Clientes</span>
-        <span id="metric-total" class="metric-value">0</span>
-      </div>
-      <div class="card metric-card">
-        <span class="metric-label">Instâncias Conectadas</span>
-        <span id="metric-open" class="metric-value text-success">0</span>
-      </div>
-      <div class="card metric-card">
-        <span class="metric-label">Aguardando Conexão</span>
-        <span id="metric-close" class="metric-value text-warning">0</span>
-      </div>
-    </section>
+    <!-- Navegação de Abas do Topo -->
+    <nav class="page-nav">
+      <button class="page-tab active" data-page-tab="tab-instancias">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+        Instâncias e Clientes
+      </button>
+      <button class="page-tab" data-page-tab="tab-financeiro">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+        Painel Financeiro
+      </button>
+    </nav>
 
-    <!-- Tabela Principal -->
-    <main class="card table-card">
-      <div class="table-header">
-        <h2>Instâncias Ativas</h2>
-        <input type="text" id="search-input" placeholder="Buscar por cliente, ID ou telefone..." class="search-field">
+    <!-- ABA 1: Instâncias e Clientes -->
+    <div id="tab-instancias" class="page-content active">
+      <!-- Resumo de Métricas -->
+      <section class="metrics">
+        <div class="card metric-card">
+          <span class="metric-label">Total de Clientes</span>
+          <span id="metric-total" class="metric-value">0</span>
+        </div>
+        <div class="card metric-card">
+          <span class="metric-label">Instâncias Conectadas</span>
+          <span id="metric-open" class="metric-value text-success">0</span>
+        </div>
+        <div class="card metric-card">
+          <span class="metric-label">Aguardando Conexão</span>
+          <span id="metric-close" class="metric-value text-warning">0</span>
+        </div>
+      </section>
+
+      <!-- Tabela Principal -->
+      <main class="card table-card">
+        <div class="table-header">
+          <h2>Instâncias Ativas</h2>
+          <input type="text" id="search-input" placeholder="Buscar por cliente, ID ou telefone..." class="search-field">
+        </div>
+
+        <div class="table-responsive">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>Cliente</th>
+                <th>ID da Instância</th>
+                <th>WhatsApp</th>
+                <th>Status</th>
+                <th>Atualizado em</th>
+                <th class="text-right">Ações</th>
+              </tr>
+            </thead>
+            <tbody id="instances-tbody">
+              <tr>
+                <td colspan="6" class="text-center py-8 text-muted">Carregando instâncias...</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </main>
+    </div>
+
+    <!-- ABA 2: Painel Financeiro -->
+    <div id="tab-financeiro" class="page-content">
+      <!-- Barra de Filtro de Período -->
+      <div class="finance-filter-bar">
+        <div>
+          <h2 class="finance-title">Visão Geral de Custos e Consumo</h2>
+          <p class="subtitle text-xs">Acompanhamento de tokens, requisições de LLM e custos em USD agregados.</p>
+        </div>
+        <div class="pill-group">
+          <button class="pill-btn" data-period="7">7 dias</button>
+          <button class="pill-btn active" data-period="30">30 dias</button>
+          <button class="pill-btn" data-period="90">90 dias</button>
+        </div>
       </div>
 
-      <div class="table-responsive">
-        <table class="table">
-          <thead>
-            <tr>
-              <th>Cliente</th>
-              <th>ID da Instância</th>
-              <th>WhatsApp</th>
-              <th>Status</th>
-              <th>Atualizado em</th>
-              <th class="text-right">Ações</th>
-            </tr>
-          </thead>
-          <tbody id="instances-tbody">
-            <tr>
-              <td colspan="6" class="text-center py-8 text-muted">Carregando instâncias...</td>
-            </tr>
-          </tbody>
-        </table>
+      <!-- KPIs Financeiros (Estilo section-cards) -->
+      <section class="metrics finance-kpis">
+        <div class="card metric-card">
+          <div class="metric-header-row">
+            <span class="metric-label">Custo Total</span>
+            <span id="kpi-custo-delta" class="delta-badge">--</span>
+          </div>
+          <span id="kpi-custo" class="metric-value">$0.0000</span>
+          <span class="metric-sublabel">Gasto no período selecionado</span>
+        </div>
+        <div class="card metric-card">
+          <div class="metric-header-row">
+            <span class="metric-label">Requisições LLM</span>
+            <span id="kpi-reqs-delta" class="delta-badge">--</span>
+          </div>
+          <span id="kpi-requisicoes" class="metric-value">0</span>
+          <span class="metric-sublabel">Chamadas à API processadas</span>
+        </div>
+        <div class="card metric-card">
+          <div class="metric-header-row">
+            <span class="metric-label">Tokens Totais</span>
+            <span id="kpi-tokens-delta" class="delta-badge">--</span>
+          </div>
+          <span id="kpi-tokens" class="metric-value">0</span>
+          <span id="kpi-tokens-split" class="metric-sublabel">0 prompt / 0 completion</span>
+        </div>
+        <div class="card metric-card">
+          <div class="metric-header-row">
+            <span class="metric-label">Taxa de Cache</span>
+          </div>
+          <span id="kpi-cache-rate" class="metric-value">0.0%</span>
+          <span id="kpi-custo-medio" class="metric-sublabel">Custo médio: $0.000000 / req</span>
+        </div>
+      </section>
+
+      <!-- Gráfico de Custo por Dia (Estilo chart-area-interactive) -->
+      <div class="card chart-card">
+        <div class="chart-header">
+          <div>
+            <h3>Custo Diário (USD)</h3>
+            <p class="subtitle text-xs">Evolução temporal dos custos de inferência de IA.</p>
+          </div>
+          <div class="chart-actions">
+            <button id="btn-toggle-daily-view" class="btn btn-xs btn-secondary">Ver em Tabela</button>
+          </div>
+        </div>
+        <div id="finance-daily-chart-container" class="chart-container">
+          <!-- SVG renderizado dinamicamente via JS -->
+        </div>
+        <div id="finance-daily-table-container" class="table-responsive hidden">
+          <table class="table text-xs">
+            <thead>
+              <tr>
+                <th>Data</th>
+                <th>Custo (USD)</th>
+                <th>Tokens</th>
+                <th class="text-right">Requisições</th>
+              </tr>
+            </thead>
+            <tbody id="finance-daily-tbody">
+              <tr><td colspan="4" class="text-center py-8 text-muted">Carregando dados...</td></tr>
+            </tbody>
+          </table>
+        </div>
       </div>
-    </main>
+
+      <!-- Grid de Rankings (Estilo chart-bar-horizontal) -->
+      <div class="finance-grid-2">
+        <div class="card chart-card">
+          <div class="chart-header">
+            <div>
+              <h3>Custo por Cliente</h3>
+              <p class="subtitle text-xs">Top clientes ordenados por gasto total em USD.</p>
+            </div>
+          </div>
+          <div id="finance-client-chart-container" class="chart-container-bar">
+            <!-- SVG de barras horizontais -->
+          </div>
+        </div>
+
+        <div class="card chart-card">
+          <div class="chart-header">
+            <div>
+              <h3>Consumo por Modelo</h3>
+              <p class="subtitle text-xs">Distribuição de tokens processados por modelo.</p>
+            </div>
+          </div>
+          <div id="finance-model-chart-container" class="chart-container-bar">
+            <!-- SVG de barras horizontais -->
+          </div>
+        </div>
+      </div>
+
+      <!-- Tabela Detalhada por Cliente (Estilo data-table) -->
+      <div class="card table-card">
+        <div class="table-header">
+          <div>
+            <h2>Detalhamento por Cliente</h2>
+            <p class="subtitle text-xs">Métricas consolidadas de consumo e custo por instância cliente.</p>
+          </div>
+          <input type="text" id="finance-search-input" placeholder="Filtrar cliente..." class="search-field">
+        </div>
+        <div class="table-responsive">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>Cliente / ID</th>
+                <th>Requisições</th>
+                <th>Tokens Totais</th>
+                <th>Taxa de Cache</th>
+                <th class="text-right">Custo (USD)</th>
+              </tr>
+            </thead>
+            <tbody id="finance-clients-tbody">
+              <tr>
+                <td colspan="5" class="text-center py-8 text-muted">Carregando dados...</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- Modal: Ficha do Cliente / Instância -->
