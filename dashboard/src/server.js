@@ -771,6 +771,66 @@ function checkTestRateLimit(ip) {
   return record.count <= maxRequests;
 }
 
+// GET /api/v1/9router/status - Diagnóstico e lista de modelos do 9Router
+app.get('/api/v1/9router/status', async (_req, res) => {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
+
+  // Calcula URL base da API do 9Router (ex: http://9router:20000)
+  const baseUrl = NINE_ROUTER_URL.replace(/\/v1\/?$/, '');
+
+  let isHealthy = false;
+  let models = [];
+  let errorMsg = null;
+
+  try {
+    // 1. Checa health
+    const healthRes = await fetch(`${baseUrl}/api/health`, { signal: controller.signal }).catch(() => null);
+    if (healthRes && healthRes.ok) {
+      const hData = await healthRes.json().catch(() => ({}));
+      isHealthy = hData.ok === true || healthRes.status < 400;
+    }
+
+    // 2. Consulta modelos
+    const modelsRes = await fetch(`${NINE_ROUTER_URL}/models`, {
+      headers: NINE_ROUTER_API_KEY ? { 'Authorization': `Bearer ${NINE_ROUTER_API_KEY}` } : {},
+      signal: controller.signal
+    }).catch((e) => {
+      errorMsg = e.message;
+      return null;
+    });
+
+    if (modelsRes) {
+      if (modelsRes.ok) {
+        const mData = await modelsRes.json().catch(() => ({}));
+        models = Array.isArray(mData.data) ? mData.data.map(m => ({
+          id: m.id,
+          owned_by: m.owned_by,
+          capabilities: m.capabilities || null
+        })) : [];
+      } else {
+        const errData = await modelsRes.json().catch(() => ({}));
+        errorMsg = errData.error || `HTTP ${modelsRes.status}`;
+      }
+    }
+  } catch (err) {
+    errorMsg = err.message;
+  } finally {
+    clearTimeout(timeout);
+  }
+
+  res.json({
+    success: true,
+    gateway_url: NINE_ROUTER_URL,
+    chat_endpoint: `${NINE_ROUTER_URL}/chat/completions`,
+    has_api_key: Boolean(NINE_ROUTER_API_KEY),
+    healthy: isHealthy,
+    error: errorMsg,
+    total_models: models.length,
+    models
+  });
+});
+
 // GET /api/v1/modelos - Listar todos os modelos
 app.get('/api/v1/modelos', async (_req, res) => {
   if (!pool) return res.status(500).json({ success: false, error: 'Postgres não conectado' });
@@ -954,10 +1014,13 @@ app.post('/api/v1/modelos/:id/testar', async (req, res) => {
       rawResponse = await response.json().catch(() => ({}));
 
       const latencyMs = Date.now() - startTime;
+      const endpointUsed = `${NINE_ROUTER_URL}/chat/completions`;
 
       if (!response.ok) {
         return res.status(502).json({
           success: false,
+          endpoint_url: endpointUsed,
+          modelo_solicitado: record.modelo,
           latency_ms: latencyMs,
           status_http: statusHttp,
           error: rawResponse.error?.message || rawResponse.message || 'Falha na resposta do 9Router/LLM',
@@ -965,11 +1028,15 @@ app.post('/api/v1/modelos/:id/testar', async (req, res) => {
         });
       }
 
-      const reply = rawResponse.choices?.[0]?.message?.content || '(resposta vazia)';
+      // Captura resposta de texto ou reasoning_content caso presente
+      const msg = rawResponse.choices?.[0]?.message || {};
+      const reply = msg.content || (msg.reasoning_content ? `[Reasoning]: ${msg.reasoning_content}` : '(resposta vazia)');
       const usage = rawResponse.usage || null;
 
       res.json({
         success: true,
+        endpoint_url: endpointUsed,
+        modelo_solicitado: record.modelo,
         latency_ms: latencyMs,
         status_http: statusHttp,
         modelo_retornado: rawResponse.model || record.modelo,
@@ -983,6 +1050,8 @@ app.post('/api/v1/modelos/:id/testar', async (req, res) => {
 
       res.status(504).json({
         success: false,
+        endpoint_url: `${NINE_ROUTER_URL}/chat/completions`,
+        modelo_solicitado: record.modelo,
         latency_ms: latencyMs,
         error: isTimeout ? 'Timeout: o modelo não respondeu em até 12 segundos' : `Erro de conexão com 9Router: ${fetchErr.message}`
       });

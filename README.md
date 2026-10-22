@@ -267,6 +267,7 @@ O Dashboard administrativo é uma aplicação web ultra-leve construída em **Va
 | `GET` | `/api/v1/instances/:id/prompt` | Busca config de prompts do agente (`prompt_config`: identidade, papel, personalidade, playbook, escalação, system prompt) |
 | `PUT` | `/api/v1/instances/:id/prompt` | Salva config de prompts do agente (upsert idempotente em `prompt_config`) |
 | `GET` | `/api/v1/financeiro` | Retorna métricas analíticas de custo e tokens por período (`?dias=7\|30\|90`) |
+| `GET` | `/api/v1/9router/status` | Retorna diagnóstico de conectividade, endpoint e lista de modelos do 9Router |
 | `GET` | `/api/v1/modelos` | Lista catálogo de modelos de IA, status e custos por 1M tokens |
 | `POST` | `/api/v1/modelos` | Cadastra novo modelo com preços de entrada/saída sanitizados |
 | `PUT` | `/api/v1/modelos/:id` | Atualiza parâmetros e vigência de precificação do modelo |

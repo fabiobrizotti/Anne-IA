@@ -253,6 +253,25 @@
         </div>
       </section>
 
+      <!-- Banner Informativo de Conectividade do 9Router -->
+      <div class="card gateway-status-card mb-4">
+        <div class="gateway-status-content">
+          <div class="gateway-status-badge-group">
+            <span class="badge-dot" id="gateway-status-dot"></span>
+            <strong>9Router Gateway:</strong>
+            <code id="gateway-endpoint-display" class="font-mono text-xs">http://9router:20000/v1</code>
+          </div>
+          <div class="gateway-status-info">
+            <span id="gateway-status-badge" class="badge badge-connecting">Checando conexão...</span>
+            <span id="gateway-models-count" class="text-xs text-muted">0 modelos descobertos</span>
+            <button id="btn-sync-9router" class="btn btn-xs btn-secondary" title="Sincronizar catálogo de modelos do 9Router">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+              Sincronizar Modelos
+            </button>
+          </div>
+        </div>
+      </div>
+
       <!-- Tabela Principal de Modelos -->
       <main class="card table-card">
         <div class="table-header">
@@ -680,8 +699,9 @@
             </div>
             <div class="form-group flex-1">
               <label for="modelo-nome">Nome / Alias do Modelo *</label>
-              <input type="text" id="modelo-nome" required class="input" placeholder="Ex: big-pickle, gpt-4o-mini" autocomplete="off">
-              <small class="field-hint">Identificador exato consumido pelo 9Router.</small>
+              <input type="text" id="modelo-nome" required list="datalist-9router-models" class="input" placeholder="Ex: anneia, deepseek/deepseek-chat" autocomplete="off">
+              <datalist id="datalist-9router-models"></datalist>
+              <small class="field-hint">Identificador exato consumido pelo 9Router (selecione da lista ou digite).</small>
             </div>
           </div>
 
@@ -741,6 +761,11 @@
         </div>
 
         <div id="test-result-box" class="hidden">
+          <div class="test-endpoint-info mb-3">
+            <span class="text-xs text-muted">Endpoint Consultado:</span>
+            <code id="test-endpoint-url" class="font-mono text-xs">http://9router:20000/v1/chat/completions</code>
+          </div>
+
           <div class="test-stat-row mb-4">
             <div class="test-stat-card">
               <span class="text-xs text-muted">Status HTTP</span>
@@ -751,13 +776,13 @@
               <span id="test-latency" class="text-base font-semibold">--</span>
             </div>
             <div class="test-stat-card">
-              <span class="text-xs text-muted">Modelo Efetivo</span>
+              <span class="text-xs text-muted">Modelo Solicitado / Efetivo</span>
               <span id="test-model-effective" class="text-base font-mono">--</span>
             </div>
           </div>
 
           <div class="test-preview-box">
-            <span class="ficha-label">Resposta da IA:</span>
+            <span class="ficha-label" id="test-reply-label">Resposta da IA:</span>
             <pre id="test-reply-content" class="test-reply-pre">--</pre>
           </div>
         </div>
@@ -772,6 +797,6 @@
   <!-- Toast de Notificação -->
   <div id="toast" class="toast hidden"></div>
 
-  <script src="app.js?v=1.0.1"></script>
+  <script src="app.js?v=1.0.2"></script>
 </body>
 </html>

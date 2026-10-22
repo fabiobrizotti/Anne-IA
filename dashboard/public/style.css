@@ -1212,3 +1212,43 @@ input:checked + .slider:before {
   color: #ef4444;
 }
 
+/* Gateway 9Router Status */
+.gateway-status-card {
+  padding: 12px 16px;
+  background-color: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.gateway-status-content {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.gateway-status-badge-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.gateway-status-info {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.test-endpoint-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background-color: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+

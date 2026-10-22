@@ -123,6 +123,12 @@
     modelosSearchInput: document.getElementById('modelos-search-input'),
     modelosTbody: document.getElementById('modelos-tbody'),
     btnNewModel: document.getElementById('btn-new-model'),
+    gatewayStatusDot: document.getElementById('gateway-status-dot'),
+    gatewayStatusBadge: document.getElementById('gateway-status-badge'),
+    gatewayModelsCount: document.getElementById('gateway-models-count'),
+    gatewayEndpointDisplay: document.getElementById('gateway-endpoint-display'),
+    btnSync9Router: document.getElementById('btn-sync-9router'),
+    datalist9RouterModels: document.getElementById('datalist-9router-models'),
 
     // Modal Modelo
     modalModelo: document.getElementById('modal-modelo'),
@@ -146,10 +152,13 @@
     testStatusCode: document.getElementById('test-status-code'),
     testLatency: document.getElementById('test-latency'),
     testModelEffective: document.getElementById('test-model-effective'),
+    testEndpointUrl: document.getElementById('test-endpoint-url'),
+    testReplyLabel: document.getElementById('test-reply-label'),
     testReplyContent: document.getElementById('test-reply-content')
   };
 
   let modelsList = [];
+  let nineRouterModels = [];
 
   // ---------------------------------------------------------------------------
   // UTILITÁRIOS
@@ -1159,9 +1168,54 @@
   // GESTÃO E TESTE DE MODELOS DE IA
   // ---------------------------------------------------------------------------
 
+  async function checkNineRouterStatus() {
+    try {
+      const res = await api('/api/v1/9router/status');
+      if (elements.gatewayEndpointDisplay) {
+        elements.gatewayEndpointDisplay.textContent = res.gateway_url || 'http://9router:20000/v1';
+      }
+
+      if (res.healthy) {
+        if (elements.gatewayStatusDot) elements.gatewayStatusDot.className = 'badge-dot bg-success';
+        if (elements.gatewayStatusBadge) {
+          elements.gatewayStatusBadge.textContent = 'Conectado / Online';
+          elements.gatewayStatusBadge.className = 'badge badge-open';
+        }
+      } else {
+        if (elements.gatewayStatusDot) elements.gatewayStatusDot.className = 'badge-dot bg-danger';
+        if (elements.gatewayStatusBadge) {
+          elements.gatewayStatusBadge.textContent = 'Indisponível';
+          elements.gatewayStatusBadge.className = 'badge badge-close';
+        }
+      }
+
+      nineRouterModels = Array.isArray(res.models) ? res.models : [];
+      if (elements.gatewayModelsCount) {
+        elements.gatewayModelsCount.textContent = `${nineRouterModels.length} modelos descobertos`;
+      }
+
+      // Preenche datalist para autocompletion no cadastro
+      if (elements.datalist9RouterModels) {
+        elements.datalist9RouterModels.innerHTML = nineRouterModels.map(m => {
+          const label = m.owned_by ? `${m.id} (${m.owned_by})` : m.id;
+          return `<option value="${escapeHtml(m.id)}">${escapeHtml(label)}</option>`;
+        }).join('');
+      }
+    } catch (err) {
+      console.warn('[9router] Erro ao checar status:', err.message);
+      if (elements.gatewayStatusBadge) {
+        elements.gatewayStatusBadge.textContent = 'Erro ao verificar';
+        elements.gatewayStatusBadge.className = 'badge badge-close';
+      }
+    }
+  }
+
   async function loadModels() {
     try {
-      const res = await api('/api/v1/modelos');
+      const [res] = await Promise.all([
+        api('/api/v1/modelos'),
+        checkNineRouterStatus()
+      ]);
       modelsList = Array.isArray(res.data) ? res.data : [];
       renderModels();
     } catch (err) {
@@ -1332,12 +1386,19 @@
     elements.modalTestSubtitle.textContent = 'Enviando ping de teste para o gateway 9Router...';
     elements.testLoading.classList.remove('hidden');
     elements.testResultBox.classList.add('hidden');
+    if (elements.testEndpointUrl) {
+      elements.testEndpointUrl.textContent = 'Consultando gateway...';
+    }
     openModal(elements.modalTestModel);
 
     try {
       const res = await api(`/api/v1/modelos/${encodeURIComponent(id)}/testar`, { method: 'POST' });
       elements.testLoading.classList.add('hidden');
       elements.testResultBox.classList.remove('hidden');
+
+      if (elements.testEndpointUrl) {
+        elements.testEndpointUrl.textContent = res.endpoint_url || 'http://9router:20000/v1/chat/completions';
+      }
 
       const latency = res.latency_ms || 0;
       elements.testStatusCode.textContent = `${res.status_http || 200} OK`;
@@ -1351,25 +1412,40 @@
       elements.testLatency.className = `text-base font-semibold ${latClass}`;
 
       elements.testModelEffective.textContent = res.modelo_retornado || mod.modelo;
+      if (elements.testReplyLabel) elements.testReplyLabel.textContent = 'Resposta da IA:';
       elements.testReplyContent.textContent = res.resposta || '(sem conteúdo de texto)';
     } catch (err) {
       elements.testLoading.classList.add('hidden');
       elements.testResultBox.classList.remove('hidden');
 
-      elements.testStatusCode.textContent = 'ERRO';
+      if (elements.testEndpointUrl) {
+        elements.testEndpointUrl.textContent = 'http://9router:20000/v1/chat/completions';
+      }
+
+      elements.testStatusCode.textContent = 'ERRO HTTP / 9ROUTER';
       elements.testStatusCode.className = 'text-base font-semibold text-danger';
 
       elements.testLatency.textContent = '--';
       elements.testLatency.className = 'text-base font-semibold text-muted';
 
       elements.testModelEffective.textContent = mod.modelo;
-      elements.testReplyContent.textContent = `Falha na requisição: ${err.message}`;
+      if (elements.testReplyLabel) elements.testReplyLabel.textContent = 'Diagnóstico / Erro retornado:';
+      elements.testReplyContent.textContent = `${err.message}\n\nDica: certifique-se de que o ID do modelo existe no 9Router e possui credencial/provedor configurado no gateway.`;
     }
   }
 
   // Event Listeners dos Modelos
   if (elements.btnNewModel) {
     elements.btnNewModel.addEventListener('click', () => openModelModal(null));
+  }
+  if (elements.btnSync9Router) {
+    elements.btnSync9Router.addEventListener('click', async () => {
+      elements.btnSync9Router.disabled = true;
+      showToast('Sincronizando com gateway 9Router...');
+      await checkNineRouterStatus();
+      elements.btnSync9Router.disabled = false;
+      showToast('Modelos do 9Router sincronizados!');
+    });
   }
   if (elements.formModelo) {
     elements.formModelo.addEventListener('submit', saveModel);
