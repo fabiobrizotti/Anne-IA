@@ -1220,15 +1220,15 @@
           <td>${statusBadge}</td>
           <td class="text-right">
             <div class="action-buttons justify-end">
-              <button class="btn btn-xs btn-secondary" onclick="window.AnneUI.testModel(${m.id})" title="Testar resposta e latência via 9Router">
+              <button class="btn btn-xs btn-secondary" onclick="window.AnneUI.testModel('${escapeHtml(String(m.id))}')" title="Testar resposta e latência via 9Router">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
                 Testar
               </button>
-              <button class="btn btn-xs btn-secondary" onclick="window.AnneUI.openModelModal(${m.id})" title="Editar modelo e precificação">
+              <button class="btn btn-xs btn-secondary" onclick="window.AnneUI.openModelModal('${escapeHtml(String(m.id))}')" title="Editar modelo e precificação">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
                 Editar
               </button>
-              <button class="btn btn-xs btn-secondary text-danger" onclick="window.AnneUI.deleteModel(${m.id})" title="Excluir ou desativar modelo">
+              <button class="btn btn-xs btn-secondary text-danger" onclick="window.AnneUI.deleteModel('${escapeHtml(String(m.id))}')" title="Excluir ou desativar modelo">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
               </button>
             </div>
@@ -1240,8 +1240,8 @@
 
   function openModelModal(modelId = null) {
     elements.formModelo.reset();
-    if (modelId) {
-      const model = modelsList.find(m => m.id === modelId);
+    if (modelId !== null && modelId !== undefined && modelId !== '') {
+      const model = modelsList.find(m => String(m.id) === String(modelId));
       if (!model) return;
       elements.modalModeloTitle.textContent = 'Editar Modelo de IA';
       elements.modeloId.value = model.id;
@@ -1309,14 +1309,14 @@
   }
 
   async function deleteModel(id) {
-    const mod = modelsList.find(m => m.id === id);
+    const mod = modelsList.find(m => String(m.id) === String(id));
     if (!mod) return;
 
     const confirmed = window.confirm(`Deseja remover ou desativar o modelo "${mod.provedor}/${mod.modelo}"?`);
     if (!confirmed) return;
 
     try {
-      const res = await api(`/api/v1/modelos/${id}`, { method: 'DELETE' });
+      const res = await api(`/api/v1/modelos/${encodeURIComponent(id)}`, { method: 'DELETE' });
       showToast(res.message || 'Operação realizada.');
       await loadModels();
     } catch (err) {
@@ -1325,7 +1325,7 @@
   }
 
   async function testModel(id) {
-    const mod = modelsList.find(m => m.id === id);
+    const mod = modelsList.find(m => String(m.id) === String(id));
     if (!mod) return;
 
     elements.modalTestTitle.textContent = `Teste: ${mod.provedor}/${mod.modelo}`;
@@ -1335,7 +1335,7 @@
     openModal(elements.modalTestModel);
 
     try {
-      const res = await api(`/api/v1/modelos/${id}/testar`, { method: 'POST' });
+      const res = await api(`/api/v1/modelos/${encodeURIComponent(id)}/testar`, { method: 'POST' });
       elements.testLoading.classList.add('hidden');
       elements.testResultBox.classList.remove('hidden');
 
