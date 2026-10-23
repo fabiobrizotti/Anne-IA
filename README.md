@@ -231,7 +231,7 @@ O Dashboard administrativo é uma aplicação web ultra-leve construída em **Va
 
 ### 8.3. Funcionalidades Principais
 1. **Gestão Centralizada e Ficha do Cliente (Dossier)**:
-   - Tabela `clientes` no PostgreSQL (`anneia`), onde o campo `id` é estritamente imutável e idêntico ao `instanceName`/`instanceId` da Evolution API.
+   - Tabela `clientes` no PostgreSQL (`anneia`), onde o campo `id` é estritamente imutável e idêntico ao `instanceName`/`instanceId` da Evolution API, acompanhado de `codigo` numérico sequencial (`BIGSERIAL UNIQUE`) para referência simplificada de faturamento e ledger.
    - **Prontuário Completo**: Modal administrativo para consulta e edição de dados do cliente (Nome, E-mail, Status Ativo).
    - **Histórico Persistente de Telefones**: Mudanças de número registram automaticamente o número anterior, novo número, data (ISO 8601) e motivo da alteração em coluna `JSONB` (`historico_telefones`) com auditoria.
    - **Conexão Direta**: Botão para disparar o fluxo de conexão do WhatsApp com o número preenchido na ficha.
