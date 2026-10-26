@@ -831,15 +831,18 @@ app.get('/api/v1/9router/status', async (_req, res) => {
   });
 });
 
+// Constantes de validação
+const ALLOWED_MODEL_TIERS = ['tier_1', 'tier_2', 'tier_3'];
+
 // GET /api/v1/modelos - Listar todos os modelos
 app.get('/api/v1/modelos', async (_req, res) => {
   if (!pool) return res.status(500).json({ success: false, error: 'Postgres não conectado' });
   try {
     const result = await pool.query(
-      `SELECT id, provedor, modelo, input_per_1m, cached_per_1m, output_per_1m,
+      `SELECT id, provedor, modelo, tier, input_per_1m, cached_per_1m, output_per_1m,
               reasoning_per_1m, cache_creation_per_1m, moeda, vigente_de, vigente_ate, ativo
        FROM precos_modelos
-       ORDER BY ativo DESC, provedor ASC, modelo ASC`
+       ORDER BY ativo DESC, tier ASC, input_per_1m ASC, provedor ASC, modelo ASC`
     );
     res.json({ success: true, data: result.rows });
   } catch (err) {
@@ -851,17 +854,21 @@ app.get('/api/v1/modelos', async (_req, res) => {
 // POST /api/v1/modelos - Cadastrar novo modelo
 app.post('/api/v1/modelos', async (req, res) => {
   if (!pool) return res.status(500).json({ success: false, error: 'Postgres não conectado' });
-  const { provedor, modelo, input_per_1m, cached_per_1m, output_per_1m, reasoning_per_1m, cache_creation_per_1m, ativo } = req.body;
+  const { provedor, modelo, tier, input_per_1m, cached_per_1m, output_per_1m, reasoning_per_1m, cache_creation_per_1m, ativo } = req.body;
 
   // Sanitização rigorosa
   const provClean = String(provedor || '').trim().toLowerCase();
   const modClean = String(modelo || '').trim();
+  const tierClean = String(tier || 'tier_1').trim().toLowerCase();
 
   if (!/^[a-zA-Z0-9_-]{2,50}$/.test(provClean)) {
     return res.status(400).json({ success: false, error: 'Provedor inválido (2-50 chars, alfanumérico, hífen ou underline)' });
   }
   if (!/^[a-zA-Z0-9_./:-]{2,100}$/.test(modClean)) {
     return res.status(400).json({ success: false, error: 'Nome de modelo inválido (2-100 chars)' });
+  }
+  if (!ALLOWED_MODEL_TIERS.includes(tierClean)) {
+    return res.status(400).json({ success: false, error: 'Tier inválido. Opções: tier_1, tier_2, tier_3' });
   }
 
   const pInput = Math.max(0, Math.min(10000, Number(input_per_1m) || 0));
@@ -873,10 +880,10 @@ app.post('/api/v1/modelos', async (req, res) => {
 
   try {
     const insertRes = await pool.query(
-      `INSERT INTO precos_modelos (provedor, modelo, input_per_1m, cached_per_1m, output_per_1m, reasoning_per_1m, cache_creation_per_1m, moeda, vigente_de, ativo)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, 'USD', NOW(), $8)
+      `INSERT INTO precos_modelos (provedor, modelo, tier, input_per_1m, cached_per_1m, output_per_1m, reasoning_per_1m, cache_creation_per_1m, moeda, vigente_de, ativo)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'USD', NOW(), $9)
        RETURNING *`,
-      [provClean, modClean, pInput, pCached, pOutput, pReasoning, pCacheCreation, isAtivo]
+      [provClean, modClean, tierClean, pInput, pCached, pOutput, pReasoning, pCacheCreation, isAtivo]
     );
     res.status(201).json({ success: true, data: insertRes.rows[0] });
   } catch (err) {
@@ -891,16 +898,20 @@ app.put('/api/v1/modelos/:id', async (req, res) => {
   const id = parseInt(req.params.id, 10);
   if (!id || id <= 0) return res.status(400).json({ success: false, error: 'ID inválido' });
 
-  const { provedor, modelo, input_per_1m, cached_per_1m, output_per_1m, reasoning_per_1m, cache_creation_per_1m, ativo } = req.body;
+  const { provedor, modelo, tier, input_per_1m, cached_per_1m, output_per_1m, reasoning_per_1m, cache_creation_per_1m, ativo } = req.body;
 
   const provClean = String(provedor || '').trim().toLowerCase();
   const modClean = String(modelo || '').trim();
+  const tierClean = String(tier || 'tier_1').trim().toLowerCase();
 
   if (!/^[a-zA-Z0-9_-]{2,50}$/.test(provClean)) {
     return res.status(400).json({ success: false, error: 'Provedor inválido' });
   }
   if (!/^[a-zA-Z0-9_./:-]{2,100}$/.test(modClean)) {
     return res.status(400).json({ success: false, error: 'Nome de modelo inválido' });
+  }
+  if (!ALLOWED_MODEL_TIERS.includes(tierClean)) {
+    return res.status(400).json({ success: false, error: 'Tier inválido. Opções: tier_1, tier_2, tier_3' });
   }
 
   const pInput = Math.max(0, Math.min(10000, Number(input_per_1m) || 0));
@@ -913,11 +924,11 @@ app.put('/api/v1/modelos/:id', async (req, res) => {
   try {
     const updateRes = await pool.query(
       `UPDATE precos_modelos
-       SET provedor = $1, modelo = $2, input_per_1m = $3, cached_per_1m = $4,
-           output_per_1m = $5, reasoning_per_1m = $6, cache_creation_per_1m = $7, ativo = $8
-       WHERE id = $9
+       SET provedor = $1, modelo = $2, tier = $3, input_per_1m = $4, cached_per_1m = $5,
+           output_per_1m = $6, reasoning_per_1m = $7, cache_creation_per_1m = $8, ativo = $9
+       WHERE id = $10
        RETURNING *`,
-      [provClean, modClean, pInput, pCached, pOutput, pReasoning, pCacheCreation, isAtivo, id]
+      [provClean, modClean, tierClean, pInput, pCached, pOutput, pReasoning, pCacheCreation, isAtivo, id]
     );
 
     if (updateRes.rowCount === 0) {
@@ -1059,6 +1070,243 @@ app.post('/api/v1/modelos/:id/testar', async (req, res) => {
   } catch (err) {
     console.error('[api] Erro ao testar modelo:', err.message);
     res.status(500).json({ success: false, error: 'Falha interna ao processar teste' });
+  }
+});
+
+// -----------------------------------------------------------------------------
+// ROTAS DE GESTÃO DE PROMPTS PADRÃO (/api/v1/prompts-padrao)
+// -----------------------------------------------------------------------------
+
+// GET /api/v1/prompts-padrao - Listar todos os prompts padrão
+app.get('/api/v1/prompts-padrao', async (req, res) => {
+  if (!pool) return res.status(500).json({ success: false, error: 'Postgres não conectado' });
+  try {
+    const { ativo } = req.query;
+    const conditions = [];
+    const values = [];
+
+    if (ativo !== undefined && (ativo === 'true' || ativo === 'false')) {
+      values.push(ativo === 'true');
+      conditions.push(`ativo = $${values.length}`);
+    }
+
+    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+    const query = `
+      SELECT id, chave, nome, descricao, conteudo, modelo_sugerido,
+             variaveis, ativo, versao, criado_em, atualizado_em
+      FROM prompts_padrao
+      ${whereClause}
+      ORDER BY ativo DESC, nome ASC
+    `;
+
+    const result = await pool.query(query, values);
+    res.json({ success: true, data: result.rows });
+  } catch (err) {
+    console.error('[api] Erro ao listar prompts padrão:', err.message);
+    res.status(500).json({ success: false, error: 'Falha ao consultar prompts padrão' });
+  }
+});
+
+// GET /api/v1/prompts-padrao/:id - Obter prompt padrão por ID ou chave
+app.get('/api/v1/prompts-padrao/:id', async (req, res) => {
+  if (!pool) return res.status(500).json({ success: false, error: 'Postgres não conectado' });
+  const rawId = req.params.id;
+
+  try {
+    const isNumeric = /^\d+$/.test(rawId);
+    const query = isNumeric
+      ? 'SELECT * FROM prompts_padrao WHERE id = $1'
+      : 'SELECT * FROM prompts_padrao WHERE chave = $1';
+    const params = isNumeric ? [parseInt(rawId, 10)] : [rawId.trim().toLowerCase()];
+
+    const result = await pool.query(query, params);
+    if (result.rowCount === 0) {
+      return res.status(404).json({ success: false, error: 'Prompt padrão não encontrado' });
+    }
+    res.json({ success: true, data: result.rows[0] });
+  } catch (err) {
+    console.error('[api] Erro ao buscar prompt padrão:', err.message);
+    res.status(500).json({ success: false, error: 'Falha ao consultar prompt padrão' });
+  }
+});
+
+// POST /api/v1/prompts-padrao - Cadastrar novo prompt padrão
+app.post('/api/v1/prompts-padrao', async (req, res) => {
+  if (!pool) return res.status(500).json({ success: false, error: 'Postgres não conectado' });
+  const { chave, nome, descricao, conteudo, modelo_sugerido, variaveis, ativo } = req.body;
+
+  const chaveClean = String(chave || '').trim().toLowerCase();
+  const nomeClean = String(nome || '').trim();
+  const conteudoClean = String(conteudo || '').trim();
+  const descClean = String(descricao || '').trim();
+  const modClean = String(modelo_sugerido || '').trim();
+
+  // Validação estrita
+  if (!/^[a-z0-9_-]{3,100}$/.test(chaveClean)) {
+    return res.status(400).json({
+      success: false,
+      error: 'Chave inválida. Use de 3 a 100 caracteres minúsculos, números, underline ou hífen (ex: roteador_modelos).'
+    });
+  }
+
+  if (nomeClean.length < 2 || nomeClean.length > 200) {
+    return res.status(400).json({ success: false, error: 'Nome do prompt deve ter entre 2 e 200 caracteres.' });
+  }
+
+  if (!conteudoClean || conteudoClean.length > 500000) {
+    return res.status(400).json({ success: false, error: 'Conteúdo do prompt é obrigatório e deve ter no máximo 500KB.' });
+  }
+
+  // Valida integridade referencial do modelo sugerido
+  if (modClean) {
+    const checkModel = await pool.query(
+      'SELECT 1 FROM precos_modelos WHERE modelo = $1 AND ativo = true LIMIT 1',
+      [modClean]
+    );
+    if (checkModel.rowCount === 0) {
+      return res.status(400).json({
+        success: false,
+        error: `O modelo "${modClean}" não está cadastrado ou ativo na tabela de modelos.`
+      });
+    }
+  }
+
+  let varsJson = '[]';
+  try {
+    varsJson = Array.isArray(variaveis) ? JSON.stringify(variaveis) : (variaveis ? JSON.stringify([variaveis]) : '[]');
+  } catch (_e) {
+    varsJson = '[]';
+  }
+
+  const isAtivo = ativo !== false;
+
+  try {
+    // Checa duplicação de chave
+    const checkDup = await pool.query('SELECT 1 FROM prompts_padrao WHERE chave = $1', [chaveClean]);
+    if (checkDup.rowCount > 0) {
+      return res.status(409).json({ success: false, error: `Já existe um prompt padrão cadastrado com a chave "${chaveClean}".` });
+    }
+
+    const insertRes = await pool.query(
+      `INSERT INTO prompts_padrao (chave, nome, descricao, conteudo, modelo_sugerido, variaveis, ativo, versao, criado_em, atualizado_em)
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, 1, NOW(), NOW())
+       RETURNING *`,
+      [chaveClean, nomeClean, descClean, conteudoClean, modClean || null, varsJson, isAtivo]
+    );
+
+    res.status(201).json({ success: true, data: insertRes.rows[0] });
+  } catch (err) {
+    console.error('[api] Erro ao cadastrar prompt padrão:', err.message);
+    res.status(500).json({ success: false, error: 'Falha ao salvar prompt padrão' });
+  }
+});
+
+// PUT /api/v1/prompts-padrao/:id - Atualizar prompt padrão
+app.put('/api/v1/prompts-padrao/:id', async (req, res) => {
+  if (!pool) return res.status(500).json({ success: false, error: 'Postgres não conectado' });
+  const id = parseInt(req.params.id, 10);
+  if (!id || id <= 0) return res.status(400).json({ success: false, error: 'ID inválido' });
+
+  const { chave, nome, descricao, conteudo, modelo_sugerido, variaveis, ativo } = req.body;
+
+  const chaveClean = String(chave || '').trim().toLowerCase();
+  const nomeClean = String(nome || '').trim();
+  const conteudoClean = String(conteudo || '').trim();
+  const descClean = String(descricao || '').trim();
+  const modClean = String(modelo_sugerido || '').trim();
+
+  if (!/^[a-z0-9_-]{3,100}$/.test(chaveClean)) {
+    return res.status(400).json({ success: false, error: 'Chave inválida (3-100 chars, alfanumérico, hífen ou underline).' });
+  }
+
+  if (nomeClean.length < 2 || nomeClean.length > 200) {
+    return res.status(400).json({ success: false, error: 'Nome do prompt deve ter entre 2 e 200 caracteres.' });
+  }
+
+  if (!conteudoClean || conteudoClean.length > 500000) {
+    return res.status(400).json({ success: false, error: 'Conteúdo do prompt é obrigatório (máx 500KB).' });
+  }
+
+  // Valida integridade referencial do modelo sugerido
+  if (modClean) {
+    const checkModel = await pool.query(
+      'SELECT 1 FROM precos_modelos WHERE modelo = $1 AND ativo = true LIMIT 1',
+      [modClean]
+    );
+    if (checkModel.rowCount === 0) {
+      return res.status(400).json({
+        success: false,
+        error: `O modelo "${modClean}" não está cadastrado ou ativo na tabela de modelos.`
+      });
+    }
+  }
+
+  let varsJson = '[]';
+  try {
+    varsJson = Array.isArray(variaveis) ? JSON.stringify(variaveis) : (variaveis ? JSON.stringify([variaveis]) : '[]');
+  } catch (_e) {
+    varsJson = '[]';
+  }
+
+  const isAtivo = ativo !== false;
+
+  try {
+    // Checa duplicação de chave em outro registro
+    const checkDup = await pool.query('SELECT id FROM prompts_padrao WHERE chave = $1 AND id <> $2', [chaveClean, id]);
+    if (checkDup.rowCount > 0) {
+      return res.status(409).json({ success: false, error: `A chave "${chaveClean}" já está em uso por outro prompt.` });
+    }
+
+    const updateRes = await pool.query(
+      `UPDATE prompts_padrao
+       SET chave = $1, nome = $2, descricao = $3, conteudo = $4,
+           modelo_sugerido = $5, variaveis = $6::jsonb, ativo = $7,
+           versao = versao + 1, atualizado_em = NOW()
+       WHERE id = $8
+       RETURNING *`,
+      [chaveClean, nomeClean, descClean, conteudoClean, modClean || null, varsJson, isAtivo, id]
+    );
+
+    if (updateRes.rowCount === 0) {
+      return res.status(404).json({ success: false, error: 'Prompt padrão não encontrado' });
+    }
+
+    res.json({ success: true, data: updateRes.rows[0] });
+  } catch (err) {
+    console.error('[api] Erro ao atualizar prompt padrão:', err.message);
+    res.status(500).json({ success: false, error: 'Falha ao atualizar prompt padrão' });
+  }
+});
+
+// DELETE /api/v1/prompts-padrao/:id - Excluir ou desativar com proteção de integridade
+app.delete('/api/v1/prompts-padrao/:id', async (req, res) => {
+  if (!pool) return res.status(500).json({ success: false, error: 'Postgres não conectado' });
+  const id = parseInt(req.params.id, 10);
+  if (!id || id <= 0) return res.status(400).json({ success: false, error: 'ID inválido' });
+
+  try {
+    const promptRes = await pool.query('SELECT chave FROM prompts_padrao WHERE id = $1', [id]);
+    if (promptRes.rowCount === 0) {
+      return res.status(404).json({ success: false, error: 'Prompt padrão não encontrado' });
+    }
+
+    const { chave } = promptRes.rows[0];
+
+    // Proteção de segurança industrial: o prompt core do sistema não deve ser destruído
+    if (chave === 'roteador_modelos_economia') {
+      await pool.query('UPDATE prompts_padrao SET ativo = false WHERE id = $1', [id]);
+      return res.json({
+        success: true,
+        action: 'desativado',
+        message: 'Prompt mestre do sistema foi desativado em vez de excluído para evitar interrupção de fluxos n8n.'
+      });
+    }
+
+    await pool.query('DELETE FROM prompts_padrao WHERE id = $1', [id]);
+    res.json({ success: true, action: 'removido', message: 'Prompt padrão removido com sucesso' });
+  } catch (err) {
+    console.error('[api] Erro ao excluir prompt padrão:', err.message);
+    res.status(500).json({ success: false, error: 'Falha ao excluir prompt padrão' });
   }
 });
 

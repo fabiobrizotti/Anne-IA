@@ -180,6 +180,7 @@ CREATE TABLE IF NOT EXISTS precos_modelos (
   id BIGSERIAL PRIMARY KEY,
   provedor VARCHAR(50) NOT NULL,
   modelo VARCHAR(100) NOT NULL,
+  tier VARCHAR(20) NOT NULL DEFAULT 'tier_1',
   input_per_1m NUMERIC(12,6) NOT NULL DEFAULT 0,
   cached_per_1m NUMERIC(12,6) NOT NULL DEFAULT 0,
   output_per_1m NUMERIC(12,6) NOT NULL DEFAULT 0,
@@ -189,13 +190,16 @@ CREATE TABLE IF NOT EXISTS precos_modelos (
   vigente_de TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   vigente_ate TIMESTAMPTZ,
   ativo BOOLEAN NOT NULL DEFAULT true,
+  CONSTRAINT chk_precos_modelos_tier CHECK (tier IN ('tier_1', 'tier_2', 'tier_3')),
   UNIQUE(provedor, modelo, vigente_de)
 );
+ALTER TABLE precos_modelos ADD COLUMN IF NOT EXISTS tier VARCHAR(20) NOT NULL DEFAULT 'tier_1';
 CREATE INDEX IF NOT EXISTS idx_precos_modelos_lookup ON precos_modelos(provedor, modelo, ativo, vigente_de);
+CREATE INDEX IF NOT EXISTS idx_precos_modelos_tier_ativo_custo ON precos_modelos (tier, ativo, input_per_1m ASC);
 
 -- Seed idempotente: preços mínimos para opencode/big-pickle (ajustar conforme valores reais)
-INSERT INTO precos_modelos (provedor, modelo, input_per_1m, cached_per_1m, output_per_1m, reasoning_per_1m, cache_creation_per_1m, moeda, vigente_de, ativo)
-VALUES ('opencode', 'big-pickle', 0, 0, 0, 0, 0, 'USD', NOW(), true)
+INSERT INTO precos_modelos (provedor, modelo, tier, input_per_1m, cached_per_1m, output_per_1m, reasoning_per_1m, cache_creation_per_1m, moeda, vigente_de, ativo)
+VALUES ('opencode', 'big-pickle', 'tier_3', 0, 0, 0, 0, 0, 'USD', NOW(), true)
 ON CONFLICT (provedor, modelo, vigente_de) DO NOTHING;
 
 -- 10. Ledger de uso de tokens por cliente/instância (granular por requisição)
@@ -223,4 +227,109 @@ CREATE TABLE IF NOT EXISTS uso_tokens (
 CREATE INDEX IF NOT EXISTS idx_uso_tokens_cliente_criado ON uso_tokens(cliente_id, criado_em DESC);
 CREATE INDEX IF NOT EXISTS idx_uso_tokens_exec ON uso_tokens(execution_id);
 CREATE INDEX IF NOT EXISTS idx_uso_tokens_prov_mod ON uso_tokens(provedor, modelo);
+
+-- 11. Tabela de Prompts Padrão do Sistema (prompts_padrao)
+--     Prompts globais para roteamento, classificação de intenção e otimização de custos de IA
+CREATE TABLE IF NOT EXISTS prompts_padrao (
+  id BIGSERIAL PRIMARY KEY,
+  chave VARCHAR(100) UNIQUE NOT NULL,
+  nome VARCHAR(200) NOT NULL,
+  descricao TEXT,
+  conteudo TEXT NOT NULL,
+  modelo_sugerido VARCHAR(100) DEFAULT 'deepseek/deepseek-chat',
+  variaveis JSONB NOT NULL DEFAULT '[]'::jsonb,
+  ativo BOOLEAN NOT NULL DEFAULT true,
+  versao INT NOT NULL DEFAULT 1,
+  criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  atualizado_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT chk_chave_format CHECK (length(chave) >= 3 AND chave ~ '^[a-z0-9_-]+$')
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_prompts_padrao_chave ON prompts_padrao (chave);
+CREATE INDEX IF NOT EXISTS idx_prompts_padrao_ativo ON prompts_padrao (ativo);
+
+CREATE OR REPLACE FUNCTION trigger_set_atualizado_em()
+RETURNS TRIGGER AS $$
+BEGIN
+  NEW.atualizado_em = NOW();
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS set_prompts_padrao_atualizado_em ON prompts_padrao;
+CREATE TRIGGER set_prompts_padrao_atualizado_em
+BEFORE UPDATE ON prompts_padrao
+FOR EACH ROW
+EXECUTE FUNCTION trigger_set_atualizado_em();
+
+-- Seed Idempotente: Prompt Mestre de Roteamento e Economia de Custos (Mini JEV)
+INSERT INTO prompts_padrao (
+  chave,
+  nome,
+  descricao,
+  conteudo,
+  modelo_sugerido,
+  variaveis,
+  ativo,
+  versao
+)
+VALUES (
+  'roteador_modelos_economia',
+  'Roteador Inteligente e Classificador de Tarefas (Mini JEV)',
+  'Classifica a intenção da mensagem e seleciona dinamicamente o modelo mais econômico e eficiente do catálogo ativo (Tier 1: Texto Puro, Tier 2: Ferramentas, Tier 3: Raciocínio Complexo).',
+  '<context>
+Você é o Router e Classificador de Tarefas da Anne-IA.
+Sua missão é analisar a mensagem do cliente e o histórico recente, avaliar a complexidade da intenção e selecionar o modelo mais econômico e eficiente disponível no catálogo ativo.
+</context>
+
+<objective>
+Classificar a intenção e determinar se a solicitação pode ser atendida diretamente por texto puro ou se necessita de execução de ferramentas externas (tool/function calling) ou raciocínio complexo, escolhendo o modelo adequado.
+</objective>
+
+<models_catalog>
+{{catalogo_modelos}}
+</models_catalog>
+
+<routing_guidelines>
+1. TAREFA TEXTO PURO (Conversação geral, saudações, esclarecimento de dúvidas simples, resumos informativos):
+   - Selecione o modelo de menor custo de input/output do catálogo ativo que seja adequado para conversação direta.
+   - requer_ferramentas: false
+   - tipo_tarefa: "texto_puro"
+
+2. TAREFA COM FERRAMENTAS (Consulta de preços específicos, verificação de estoque, busca de pedidos, agendamentos, chamadas de API n8n, leitura/escrita em banco de dados):
+   - Selecione um modelo com alta confiabilidade de tool-calling (ex: jev, gpt-4o-mini ou equivalente listado no catálogo).
+   - requer_ferramentas: true
+   - tipo_tarefa: "uso_ferramenta"
+
+3. TAREFA COMPLEXA / CRÍTICA (Cálculos matemáticos complexos, lógica dedutiva avançada, análise de contratos, resolução de conflitos graves):
+   - Selecione o modelo de raciocínio avançado presente no catálogo (ex: reasoning/deepseek-reasoner, big-pickle, sonnet).
+   - requer_ferramentas: false
+   - tipo_tarefa: "raciocinio_complexo"
+</routing_guidelines>
+
+<constraints>
+- Responda EXCLUSIVAMENTE com um objeto JSON válido.
+- NÃO inclua markdown (proibido usar ```json ... ```).
+- NÃO inclua introduções, saudações ou texto antes/depois do JSON.
+- O campo "modelo_selecionado" DEVE corresponder exatamente a um dos modelos presentes no <models_catalog>.
+</constraints>
+
+<output_contract>
+{
+  "tipo_tarefa": "texto_puro | uso_ferramenta | raciocinio_complexo",
+  "requer_ferramentas": false,
+  "modelo_selecionado": "string",
+  "temperatura_recomendada": 0.2,
+  "ferramentas_sugeridas": [],
+  "justificativa": "Texto conciso justificando a escolha baseada em custo e capacidade",
+  "confianca": 0.95
+}
+</output_contract>',
+  'deepseek/deepseek-chat',
+  '["mensagem_usuario", "historico_recente", "catalogo_modelos"]'::jsonb,
+  true,
+  1
+)
+ON CONFLICT (chave) DO NOTHING;
+
 

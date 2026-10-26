@@ -7,7 +7,7 @@ A stack é auto-inicializável a partir de um clone limpo. A pasta `setup/` conc
 | `setup/rabbitmq/rabbitmq.conf` | Limites de memória/disco, paginação, timeout de LLM e carga de definições. |
 | `setup/rabbitmq/definitions.json.template` | Topologia padrão industrial: exchanges diretas, pipeline em 3 etapas com Quorum Queues e DLX/DLQ (senha via `.env`). |
 | `setup/rabbitmq/entrypoint.sh` | Injeta a senha no template e gera o `definitions.json`. |
-| `setup/postgres/init.sql` | **Fonte única**: schema do negócio, memória LangChain (`memorypostgreschat`), base RAG (`base_conhecimento`), `clientes` + `Instance` (Evolution API), **alinhamento 1:1** entre `public."Instance"` e `public.clientes` pelo mesmo ID (`clientes.id = Instance.id`), `prompt_config` (persona/role/playbook por cliente), **ledger de custos** (`precos_modelos`, `uso_tokens` por requisição com idempotência). Backfill idempotente e não-destrutivo. |
+| `setup/postgres/init.sql` | **Fonte única**: schema do negócio, memória LangChain (`memorypostgreschat`), base RAG (`base_conhecimento`), `clientes` + `Instance` (Evolution API), **alinhamento 1:1** entre `public."Instance"` e `public.clientes` pelo mesmo ID (`clientes.id = Instance.id`), `prompt_config` (persona/role/playbook por cliente), `prompts_padrao` (prompts mestres globais para roteamento e economia de modelos), **ledger de custos** (`precos_modelos`, `uso_tokens` por requisição com idempotência). Backfill idempotente e não-destrutivo. |
 | `setup/pgadmin/servers.json` | Auto-provisionamento da conexão do PostgreSQL no pgAdmin 4. |
 | `setup/n8n/clean-workflows.js` | Limpa workflows antigos no SQLite antes de reimportar (idempotência). |
 | `setup/n8n/sanitize-workflow.js` | Remove rastros da instância de origem para evitar falhas no import. |
@@ -248,9 +248,14 @@ O Dashboard administrativo é uma aplicação web ultra-leve construída em **Va
    - Rankings em barras horizontais de custo por cliente e consumo por modelo.
    - Tabela de detalhamento analítico por cliente com busca textual instantânea.
 5. **Modelos de IA & Gestão de Custos (Aba Modelos de IA)**:
-   - Catálogo de modelos com precificação por 1M tokens (input, output, cache, reasoning).
-   - Cadastro, edição e desativação segura protegendo integridade de auditoria.
+   - Catálogo de modelos com precificação por 1M tokens (input, output, cache, reasoning) e **classificação por Tiers** (`tier_1`: Texto Puro / Econômico, `tier_2`: Ferramentas / Tool Calling, `tier_3`: Raciocínio Complexo / Crítico).
+   - Cadastro, edição e desativação segura protegendo integridade de auditoria contábil.
    - Teste de conectividade e inferência direta via 9Router com medição de latência em milissegundos e rate limit defensivo.
+6. **Biblioteca de Prompts Padrão (Sub-aba Prompts Padrão)**:
+   - Central de templates de sistema e regras de roteamento consumidas pelos nós de IA do n8n (sem categorias redundantes).
+   - Prompt mestre `roteador_modelos_economia` (Mini JEV) estruturado com suporte a catálogo dinâmico (`{{catalogo_modelos}}`), integrando modelos cadastrados na tabela e classificados por tiers de complexidade e custo.
+   - Seleção de modelo recomendado vinculada estritamente aos modelos ativos da tabela de preços (com indicação visual do Tier correspondente).
+   - Estimativa de caracteres/tokens, versionamento automático e soft-delete protegido para o prompt mestre do sistema.
 
 ### 8.4. Endpoints da API REST (v1)
 
@@ -273,6 +278,11 @@ O Dashboard administrativo é uma aplicação web ultra-leve construída em **Va
 | `PUT` | `/api/v1/modelos/:id` | Atualiza parâmetros e vigência de precificação do modelo |
 | `DELETE` | `/api/v1/modelos/:id` | Exclui ou desativa modelo (soft-delete seguro se houver histórico contábil) |
 | `POST` | `/api/v1/modelos/:id/testar` | Dispara teste de ping/inferência no 9Router e afere latência |
+| `GET` | `/api/v1/prompts-padrao` | Lista prompts padrão globais com filtro opcional por status ativo |
+| `GET` | `/api/v1/prompts-padrao/:id` | Obtém prompt padrão por ID ou chave única (slug n8n) |
+| `POST` | `/api/v1/prompts-padrao` | Cadastra novo prompt padrão com modelo validado contra a tabela de modelos |
+| `PUT` | `/api/v1/prompts-padrao/:id` | Atualiza prompt padrão, incrementando versão automaticamente |
+| `DELETE` | `/api/v1/prompts-padrao/:id` | Exclui ou desativa prompt padrão (protegendo chave mestre do sistema) |
 | `POST` | `/api/v1/instances/:id/restart` | Reinicia a conexão da instância |
 | `DELETE` | `/api/v1/instances/:id` | Remove a instância na Evolution API e no banco de dados |
 

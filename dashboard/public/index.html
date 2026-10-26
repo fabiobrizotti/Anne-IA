@@ -40,9 +40,9 @@
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
         Painel Financeiro
       </button>
-      <button class="page-tab" data-page-tab="tab-modelos">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-        Modelos de IA
+      <button class="page-tab" data-page-tab="tab-ia">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm0 18a8 8 0 1 1 8-8 8 8 0 0 1-8 8z"/><path d="M12 6v6l4 2"/></svg>
+        Inteligência Artificial (IA)
       </button>
     </nav>
 
@@ -231,84 +231,162 @@
       </div>
     </div>
 
-    <!-- ABA 3: Modelos de IA -->
-    <div id="tab-modelos" class="page-content">
-      <!-- Resumo de Métricas de Modelos -->
-      <section class="metrics">
-        <div class="card metric-card">
-          <span class="metric-label">Total de Modelos</span>
-          <span id="metric-modelos-total" class="metric-value">0</span>
-        </div>
-        <div class="card metric-card">
-          <span class="metric-label">Modelos Ativos</span>
-          <span id="metric-modelos-ativos" class="metric-value text-success">0</span>
-        </div>
-        <div class="card metric-card">
-          <span class="metric-label">Média Input / 1M</span>
-          <span id="metric-modelos-avg-in" class="metric-value">$0.00</span>
-        </div>
-        <div class="card metric-card">
-          <span class="metric-label">Média Output / 1M</span>
-          <span id="metric-modelos-avg-out" class="metric-value">$0.00</span>
-        </div>
-      </section>
-
-      <!-- Banner Informativo de Conectividade do 9Router -->
-      <div class="card gateway-status-card mb-4">
-        <div class="gateway-status-content">
-          <div class="gateway-status-badge-group">
-            <span class="badge-dot" id="gateway-status-dot"></span>
-            <strong>9Router Gateway:</strong>
-            <code id="gateway-endpoint-display" class="font-mono text-xs">http://9router:20000/v1</code>
-          </div>
-          <div class="gateway-status-info">
-            <span id="gateway-status-badge" class="badge badge-connecting">Checando conexão...</span>
-            <span id="gateway-models-count" class="text-xs text-muted">0 modelos descobertos</span>
-            <button id="btn-sync-9router" class="btn btn-xs btn-secondary" title="Sincronizar catálogo de modelos do 9Router">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
-              Sincronizar Modelos
-            </button>
-          </div>
+    <!-- ABA 3: Inteligência Artificial (Hub Unificado) -->
+    <div id="tab-ia" class="page-content">
+      <!-- Sub-navegação IA -->
+      <div class="sub-nav-wrapper">
+        <div class="sub-nav">
+          <button class="sub-tab active" data-ia-subtab="subtab-modelos">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            Modelos de IA
+          </button>
+          <button class="sub-tab" data-ia-subtab="subtab-prompts">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+            Prompts Padrão
+          </button>
         </div>
       </div>
 
-      <!-- Tabela Principal de Modelos -->
-      <main class="card table-card">
-        <div class="table-header">
-          <div>
-            <h2>Catálogo de Modelos e Custos</h2>
-            <p class="subtitle text-xs">Gestão de provedores, parametrização de preços e teste de conectividade via 9Router.</p>
+      <!-- SUB-ABA 1: Modelos de IA -->
+      <div id="subtab-modelos" class="ia-subcontent active">
+        <!-- Resumo de Métricas de Modelos -->
+        <section class="metrics">
+          <div class="card metric-card">
+            <span class="metric-label">Total de Modelos</span>
+            <span id="metric-modelos-total" class="metric-value">0</span>
           </div>
-          <div class="table-actions-header">
-            <input type="text" id="modelos-search-input" placeholder="Buscar modelo ou provedor..." class="search-field">
-            <button id="btn-new-model" class="btn btn-primary">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-              Novo Modelo
-            </button>
+          <div class="card metric-card">
+            <span class="metric-label">Modelos Ativos</span>
+            <span id="metric-modelos-ativos" class="metric-value text-success">0</span>
+          </div>
+          <div class="card metric-card">
+            <span class="metric-label">Média Input / 1M</span>
+            <span id="metric-modelos-avg-in" class="metric-value">$0.00</span>
+          </div>
+          <div class="card metric-card">
+            <span class="metric-label">Média Output / 1M</span>
+            <span id="metric-modelos-avg-out" class="metric-value">$0.00</span>
+          </div>
+        </section>
+
+        <!-- Banner Informativo de Conectividade do 9Router -->
+        <div class="card gateway-status-card mb-4">
+          <div class="gateway-status-content">
+            <div class="gateway-status-badge-group">
+              <span class="badge-dot" id="gateway-status-dot"></span>
+              <strong>9Router Gateway:</strong>
+              <code id="gateway-endpoint-display" class="font-mono text-xs">http://9router:20000/v1</code>
+            </div>
+            <div class="gateway-status-info">
+              <span id="gateway-status-badge" class="badge badge-connecting">Checando conexão...</span>
+              <span id="gateway-models-count" class="text-xs text-muted">0 modelos descobertos</span>
+              <button id="btn-sync-9router" class="btn btn-xs btn-secondary" title="Sincronizar catálogo de modelos do 9Router">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+                Sincronizar Modelos
+              </button>
+            </div>
           </div>
         </div>
 
-        <div class="table-responsive">
-          <table class="table">
-            <thead>
-              <tr>
-                <th>Provedor</th>
-                <th>Modelo / Alias</th>
-                <th>Input / 1M</th>
-                <th>Output / 1M</th>
-                <th>Cache / 1M</th>
-                <th>Status</th>
-                <th class="text-right">Ações</th>
-              </tr>
-            </thead>
-            <tbody id="modelos-tbody">
-              <tr>
-                <td colspan="7" class="text-center py-8 text-muted">Carregando modelos...</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </main>
+        <!-- Tabela Principal de Modelos -->
+        <main class="card table-card">
+          <div class="table-header">
+            <div>
+              <h2>Catálogo de Modelos e Custos</h2>
+              <p class="subtitle text-xs">Gestão de provedores, parametrização de preços e teste de conectividade via 9Router.</p>
+            </div>
+            <div class="table-actions-header">
+              <input type="text" id="modelos-search-input" placeholder="Buscar modelo ou provedor..." class="search-field">
+              <button id="btn-new-model" class="btn btn-primary">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                Novo Modelo
+              </button>
+            </div>
+          </div>
+
+          <div class="table-responsive">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>Provedor</th>
+                  <th>Modelo / Alias</th>
+                  <th>Tier (Classificação)</th>
+                  <th>Input / 1M</th>
+                  <th>Output / 1M</th>
+                  <th>Cache / 1M</th>
+                  <th>Status</th>
+                  <th class="text-right">Ações</th>
+                </tr>
+              </thead>
+              <tbody id="modelos-tbody">
+                <tr>
+                  <td colspan="8" class="text-center py-8 text-muted">Carregando modelos...</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </main>
+      </div>
+
+      <!-- SUB-ABA 2: Prompts Padrão -->
+      <div id="subtab-prompts" class="ia-subcontent">
+        <!-- Resumo de Métricas de Prompts -->
+        <section class="metrics">
+          <div class="card metric-card">
+            <span class="metric-label">Total de Prompts</span>
+            <span id="metric-prompts-total" class="metric-value">0</span>
+          </div>
+          <div class="card metric-card">
+            <span class="metric-label">Prompts Ativos</span>
+            <span id="metric-prompts-ativos" class="metric-value text-success">0</span>
+          </div>
+          <div class="card metric-card">
+            <span class="metric-label">Prompts Inativos</span>
+            <span id="metric-prompts-inativos" class="metric-value text-muted">0</span>
+          </div>
+          <div class="card metric-card">
+            <span class="metric-label">Modelo Padrão</span>
+            <span id="metric-prompts-default-model" class="metric-value text-xs font-mono">deepseek-chat</span>
+          </div>
+        </section>
+
+        <!-- Tabela Principal de Prompts Padrão -->
+        <main class="card table-card">
+          <div class="table-header">
+            <div>
+              <h2>Biblioteca de Prompts Globais</h2>
+              <p class="subtitle text-xs">Templates de sistema e regras de roteamento econômico consumidos pelos nós do n8n.</p>
+            </div>
+            <div class="table-actions-header">
+              <input type="text" id="prompts-search-input" placeholder="Buscar por chave ou nome..." class="search-field">
+              <button id="btn-new-prompt" class="btn btn-primary">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                Novo Prompt
+              </button>
+            </div>
+          </div>
+
+          <div class="table-responsive">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>Chave (Slug n8n)</th>
+                  <th>Nome do Prompt</th>
+                  <th>Modelo Vinculado</th>
+                  <th>Versão</th>
+                  <th>Status</th>
+                  <th class="text-right">Ações</th>
+                </tr>
+              </thead>
+              <tbody id="prompts-tbody">
+                <tr>
+                  <td colspan="6" class="text-center py-8 text-muted">Carregando prompts padrão...</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </main>
+      </div>
     </div>
   </div>
 
@@ -707,6 +785,18 @@
 
           <div class="form-row">
             <div class="form-group flex-1">
+              <label for="modelo-tier">Tier / Classificação de Roteamento *</label>
+              <select id="modelo-tier" required class="input">
+                <option value="tier_1">[Tier 1] Texto Puro / Econômico (Conversação, FAQs, Dúvidas)</option>
+                <option value="tier_2">[Tier 2] Ferramentas / Tool Calling (Estoque, Banco, APIs n8n)</option>
+                <option value="tier_3">[Tier 3] Raciocínio Complexo / Crítico (Cálculos, Lógica, Contratos)</option>
+              </select>
+              <small class="field-hint">Usado pelo router (Mini JEV) para direcionar cada tipo de mensagem com máximo custo-benefício.</small>
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group flex-1">
               <label for="modelo-input">Input / 1M (USD) *</label>
               <input type="number" id="modelo-input" step="0.000001" min="0" required class="input" placeholder="0.15">
             </div>
@@ -794,9 +884,122 @@
     </div>
   </div>
 
+  <!-- Modal: Cadastrar / Editar Prompt Padrão -->
+  <div id="modal-prompt" class="modal-backdrop hidden">
+    <div class="modal modal-lg">
+      <div class="modal-header">
+        <div>
+          <h3 id="modal-prompt-title">Cadastrar Prompt Padrão</h3>
+          <p class="subtitle text-sm">Defina templates de sistema e regras de roteamento consumidas pelos fluxos n8n.</p>
+        </div>
+        <button class="btn-close" data-close="modal-prompt">&times;</button>
+      </div>
+
+      <form id="form-prompt">
+        <input type="hidden" id="prompt-id">
+        <div class="modal-body">
+          <div class="form-row">
+            <div class="form-group flex-1">
+              <label for="prompt-chave">Chave Única (Slug n8n) *</label>
+              <input type="text" id="prompt-chave" required pattern="^[a-z0-9_-]{3,100}$" class="input font-mono" placeholder="ex: roteador_modelos_economia" autocomplete="off">
+              <small class="field-hint">Chave de busca para queries no n8n (letras minúsculas, números, hífen e underline).</small>
+            </div>
+            <div class="form-group flex-1">
+              <label for="prompt-nome">Nome do Prompt *</label>
+              <input type="text" id="prompt-nome" required class="input" placeholder="Ex: Roteador de Modelos Econômico">
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group flex-1">
+              <label for="prompt-modelo">Modelo Vinculado (Opcional)</label>
+              <select id="prompt-modelo" class="input font-mono">
+                <option value="">(Nenhum / Definido dinamicamente no fluxo n8n)</option>
+              </select>
+              <small class="field-hint">Selecione um modelo já cadastrado e ativo no catálogo para consumo deste prompt.</small>
+            </div>
+            <div class="form-group flex-1">
+              <label for="prompt-descricao">Descrição / Finalidade</label>
+              <input type="text" id="prompt-descricao" class="input" placeholder="Breve resumo da regra ou objetivo do prompt...">
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label for="prompt-conteudo">Conteúdo do Prompt (System Message) *</label>
+            <textarea id="prompt-conteudo" required class="input prompt-editor-textarea" placeholder="Digite ou cole aqui o prompt estruturado com tags XML..."></textarea>
+            <div class="prompt-meta-counter">
+              <span id="prompt-char-count">0 caracteres</span>
+              <span class="token-est-badge" id="prompt-token-est">~0 tokens estimados</span>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label class="switch-row">
+              <input type="checkbox" id="prompt-ativo" checked>
+              <span>Prompt ativo para consumo imediato no n8n</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-close="modal-prompt">Cancelar</button>
+          <button type="submit" class="btn btn-primary" id="btn-save-prompt">Salvar Prompt</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Visualização Rápida e Cópia do Prompt -->
+  <div id="modal-view-prompt" class="modal-backdrop hidden">
+    <div class="modal modal-lg">
+      <div class="modal-header">
+        <div>
+          <div class="modal-header-top">
+            <h3 id="view-prompt-nome">Detalhes do Prompt</h3>
+          </div>
+          <p id="view-prompt-chave" class="subtitle text-xs font-mono text-muted">chave: --</p>
+        </div>
+        <button class="btn-close" data-close="modal-view-prompt">&times;</button>
+      </div>
+
+      <div class="modal-body">
+        <div class="ficha-readonly-banner mb-3">
+          <div>
+            <span class="ficha-label">Modelo Vinculado:</span>
+            <code id="view-prompt-modelo" class="ficha-code">--</code>
+          </div>
+          <div class="ficha-meta-dates">
+            <div><span class="ficha-label">Versão:</span> <span id="view-prompt-versao">v1</span></div>
+            <div><span class="ficha-label">Status:</span> <span id="view-prompt-status">Ativo</span></div>
+          </div>
+        </div>
+
+        <p id="view-prompt-descricao" class="text-xs text-muted mb-2">--</p>
+        <div id="view-prompt-vars-container" class="mb-3 text-xs text-muted">
+          <span class="ficha-label">Variáveis esperadas:</span> <code id="view-prompt-variaveis" class="font-mono text-xs">--</code>
+        </div>
+
+        <div class="form-group">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+            <label class="ficha-label">Conteúdo do Prompt:</label>
+            <button type="button" id="btn-copy-view-prompt" class="btn btn-xs btn-primary">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+              Copiar para n8n
+            </button>
+          </div>
+          <pre id="view-prompt-content" class="prompt-view-code">--</pre>
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-close="modal-view-prompt">Fechar</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Toast de Notificação -->
   <div id="toast" class="toast hidden"></div>
 
-  <script src="app.js?v=1.0.2"></script>
+  <script src="app.js?v=1.0.6"></script>
 </body>
 </html>

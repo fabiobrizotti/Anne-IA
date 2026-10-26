@@ -137,6 +137,7 @@
     modeloId: document.getElementById('modelo-id'),
     modeloProvedor: document.getElementById('modelo-provedor'),
     modeloNome: document.getElementById('modelo-nome'),
+    modeloTier: document.getElementById('modelo-tier'),
     modeloInput: document.getElementById('modelo-input'),
     modeloOutput: document.getElementById('modelo-output'),
     modeloCached: document.getElementById('modelo-cached'),
@@ -154,11 +155,52 @@
     testModelEffective: document.getElementById('test-model-effective'),
     testEndpointUrl: document.getElementById('test-endpoint-url'),
     testReplyLabel: document.getElementById('test-reply-label'),
-    testReplyContent: document.getElementById('test-reply-content')
+    testReplyContent: document.getElementById('test-reply-content'),
+
+    // Sub-abas IA
+    iaSubTabs: document.querySelectorAll('.sub-tab'),
+    iaSubcontents: document.querySelectorAll('.ia-subcontent'),
+
+    // Elementos da Aba Prompts Padrão
+    metricPromptsTotal: document.getElementById('metric-prompts-total'),
+    metricPromptsAtivos: document.getElementById('metric-prompts-ativos'),
+    metricPromptsInativos: document.getElementById('metric-prompts-inativos'),
+    metricPromptsDefaultModel: document.getElementById('metric-prompts-default-model'),
+    promptsSearchInput: document.getElementById('prompts-search-input'),
+    promptsTbody: document.getElementById('prompts-tbody'),
+    btnNewPrompt: document.getElementById('btn-new-prompt'),
+
+    // Modal Prompt
+    modalPrompt: document.getElementById('modal-prompt'),
+    modalPromptTitle: document.getElementById('modal-prompt-title'),
+    formPrompt: document.getElementById('form-prompt'),
+    promptId: document.getElementById('prompt-id'),
+    promptChave: document.getElementById('prompt-chave'),
+    promptNome: document.getElementById('prompt-nome'),
+    promptModelo: document.getElementById('prompt-modelo'),
+    promptDescricao: document.getElementById('prompt-descricao'),
+    promptConteudo: document.getElementById('prompt-conteudo'),
+    promptCharCount: document.getElementById('prompt-char-count'),
+    promptTokenEst: document.getElementById('prompt-token-est'),
+    promptAtivo: document.getElementById('prompt-ativo'),
+
+    // Modal Visualizar Prompt
+    modalViewPrompt: document.getElementById('modal-view-prompt'),
+    viewPromptNome: document.getElementById('view-prompt-nome'),
+    viewPromptChave: document.getElementById('view-prompt-chave'),
+    viewPromptModelo: document.getElementById('view-prompt-modelo'),
+    viewPromptVariaveis: document.getElementById('view-prompt-variaveis'),
+    viewPromptVersao: document.getElementById('view-prompt-versao'),
+    viewPromptStatus: document.getElementById('view-prompt-status'),
+    viewPromptDescricao: document.getElementById('view-prompt-descricao'),
+    viewPromptContent: document.getElementById('view-prompt-content'),
+    btnCopyViewPrompt: document.getElementById('btn-copy-view-prompt')
   };
 
   let modelsList = [];
   let nineRouterModels = [];
+  let standardPrompts = [];
+  let activeIaSubTab = 'subtab-modelos';
 
   // ---------------------------------------------------------------------------
   // UTILITÁRIOS
@@ -856,13 +898,38 @@
 
     if (targetTabId === 'tab-financeiro') {
       loadFinanceData();
-    } else if (targetTabId === 'tab-modelos') {
+    } else if (targetTabId === 'tab-ia' || targetTabId === 'tab-modelos') {
+      if (activeIaSubTab === 'subtab-prompts') {
+        loadStandardPrompts();
+      } else {
+        loadModels();
+      }
+    }
+  }
+
+  function switchIaSubTab(subTabId) {
+    activeIaSubTab = subTabId;
+    elements.iaSubTabs.forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.iaSubtab === subTabId);
+    });
+
+    elements.iaSubcontents.forEach(content => {
+      content.classList.toggle('active', content.id === subTabId);
+    });
+
+    if (subTabId === 'subtab-prompts') {
+      loadStandardPrompts();
+    } else {
       loadModels();
     }
   }
 
   elements.pageTabs.forEach(btn => {
     btn.addEventListener('click', () => switchPageTab(btn.dataset.pageTab));
+  });
+
+  elements.iaSubTabs.forEach(btn => {
+    btn.addEventListener('click', () => switchIaSubTab(btn.dataset.iaSubtab));
   });
 
   // Filtro de período (7d / 30d / 90d)
@@ -1264,10 +1331,18 @@
       const provEsc = escapeHtml(m.provedor || '');
       const modEsc = escapeHtml(m.modelo || '');
 
+      let tierBadge = '<span class="badge badge-tier-1">Tier 1 • Texto</span>';
+      if (m.tier === 'tier_2') {
+        tierBadge = '<span class="badge badge-tier-2">Tier 2 • Ferramentas</span>';
+      } else if (m.tier === 'tier_3') {
+        tierBadge = '<span class="badge badge-tier-3">Tier 3 • Raciocínio</span>';
+      }
+
       return `
         <tr>
           <td><span class="badge badge-outline">${provEsc}</span></td>
           <td><strong>${modEsc}</strong></td>
+          <td>${tierBadge}</td>
           <td>$${Number(m.input_per_1m || 0).toFixed(4)}</td>
           <td>$${Number(m.output_per_1m || 0).toFixed(4)}</td>
           <td>$${Number(m.cached_per_1m || 0).toFixed(4)}</td>
@@ -1301,6 +1376,7 @@
       elements.modeloId.value = model.id;
       elements.modeloProvedor.value = model.provedor || '';
       elements.modeloNome.value = model.modelo || '';
+      if (elements.modeloTier) elements.modeloTier.value = model.tier || 'tier_1';
       elements.modeloInput.value = model.input_per_1m ?? 0;
       elements.modeloOutput.value = model.output_per_1m ?? 0;
       elements.modeloCached.value = model.cached_per_1m ?? 0;
@@ -1311,6 +1387,7 @@
       elements.modeloId.value = '';
       elements.modeloProvedor.value = '';
       elements.modeloNome.value = '';
+      if (elements.modeloTier) elements.modeloTier.value = 'tier_1';
       elements.modeloInput.value = '0.00';
       elements.modeloOutput.value = '0.00';
       elements.modeloCached.value = '0.00';
@@ -1325,6 +1402,7 @@
     const id = elements.modeloId.value ? parseInt(elements.modeloId.value, 10) : null;
     const provedor = elements.modeloProvedor.value.trim().toLowerCase();
     const modelo = elements.modeloNome.value.trim();
+    const tier = elements.modeloTier ? elements.modeloTier.value : 'tier_1';
 
     if (!provedor || !modelo) {
       showToast('Preencha o provedor e o nome do modelo.', 'error');
@@ -1334,6 +1412,7 @@
     const payload = {
       provedor,
       modelo,
+      tier,
       input_per_1m: parseFloat(elements.modeloInput.value) || 0,
       output_per_1m: parseFloat(elements.modeloOutput.value) || 0,
       cached_per_1m: parseFloat(elements.modeloCached.value) || 0,
@@ -1454,6 +1533,335 @@
     elements.modelosSearchInput.addEventListener('input', renderModels);
   }
 
+  // ---------------------------------------------------------------------------
+  // GESTÃO DE PROMPTS PADRÃO (/api/v1/prompts-padrao)
+  // ---------------------------------------------------------------------------
+
+  function updatePromptCounters() {
+    if (!elements.promptConteudo) return;
+    const text = elements.promptConteudo.value || '';
+    const chars = text.length;
+    // Estimativa de tokens (~4 caracteres por token)
+    const estTokens = Math.ceil(chars / 4);
+
+    if (elements.promptCharCount) {
+      elements.promptCharCount.textContent = `${chars.toLocaleString('pt-BR')} caracteres`;
+    }
+    if (elements.promptTokenEst) {
+      elements.promptTokenEst.textContent = `~${estTokens.toLocaleString('pt-BR')} tokens estimados`;
+    }
+  }
+
+  async function copyPromptToClipboard(text, customMessage = 'Prompt copiado com sucesso!') {
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+      }
+      showToast(customMessage);
+    } catch (err) {
+      console.error('Falha ao copiar prompt:', err);
+      showToast('Erro ao copiar para a área de transferência', 'error');
+    }
+  }
+
+  async function loadStandardPrompts() {
+    if (!elements.promptsTbody) return;
+    elements.promptsTbody.innerHTML = '<tr><td colspan="6" class="text-center py-8 text-muted">Carregando prompts padrão...</td></tr>';
+
+    try {
+      const res = await api('/api/v1/prompts-padrao');
+      standardPrompts = Array.isArray(res.data) ? res.data : [];
+      renderStandardPrompts();
+      updatePromptsMetrics();
+    } catch (err) {
+      console.error('Erro ao carregar prompts padrão:', err);
+      elements.promptsTbody.innerHTML = `<tr><td colspan="6" class="text-center py-8 text-danger">Falha ao carregar prompts: ${err.message}</td></tr>`;
+      showToast('Erro ao listar prompts padrão', 'error');
+    }
+  }
+
+  function updatePromptsMetrics() {
+    if (!elements.metricPromptsTotal) return;
+    const total = standardPrompts.length;
+    const ativos = standardPrompts.filter(p => p.ativo).length;
+    const inativos = total - ativos;
+
+    // Acha o modelo sugerido do roteador principal
+    const mainRouter = standardPrompts.find(p => p.chave === 'roteador_modelos_economia');
+    const defaultModel = mainRouter?.modelo_sugerido || 'deepseek/deepseek-chat';
+
+    elements.metricPromptsTotal.textContent = total;
+    if (elements.metricPromptsAtivos) elements.metricPromptsAtivos.textContent = ativos;
+    if (elements.metricPromptsInativos) elements.metricPromptsInativos.textContent = inativos;
+    if (elements.metricPromptsDefaultModel) {
+      elements.metricPromptsDefaultModel.textContent = defaultModel.split('/').pop() || defaultModel;
+      elements.metricPromptsDefaultModel.title = defaultModel;
+    }
+  }
+
+  function renderStandardPrompts() {
+    if (!elements.promptsTbody) return;
+
+    const searchTerm = (elements.promptsSearchInput?.value || '').trim().toLowerCase();
+
+    const filtered = standardPrompts.filter(p => {
+      return !searchTerm ||
+        p.chave.toLowerCase().includes(searchTerm) ||
+        p.nome.toLowerCase().includes(searchTerm) ||
+        (p.descricao && p.descricao.toLowerCase().includes(searchTerm));
+    });
+
+    if (filtered.length === 0) {
+      elements.promptsTbody.innerHTML = '<tr><td colspan="6" class="text-center py-8 text-muted">Nenhum prompt padrão encontrado.</td></tr>';
+      return;
+    }
+
+    elements.promptsTbody.innerHTML = filtered.map(p => {
+      const statusBadge = p.ativo
+        ? '<span class="badge badge-model-active">Ativo</span>'
+        : '<span class="badge badge-model-inactive">Inativo</span>';
+
+      return `
+        <tr>
+          <td>
+            <code class="font-mono text-xs font-semibold" style="color: var(--text-main);">${escapeHtml(p.chave)}</code>
+          </td>
+          <td>
+            <div style="font-weight: 500;">${escapeHtml(p.nome)}</div>
+            ${p.descricao ? `<div class="text-xs text-muted" style="max-width: 280px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${escapeHtml(p.descricao)}</div>` : ''}
+          </td>
+          <td>
+            <code class="font-mono text-xs text-muted">${escapeHtml(p.modelo_sugerido || '--')}</code>
+          </td>
+          <td>
+            <span class="text-xs text-muted font-mono">v${p.versao || 1}</span>
+          </td>
+          <td>${statusBadge}</td>
+          <td class="text-right">
+            <div style="display: inline-flex; gap: 4px;">
+              <button class="btn btn-xs btn-secondary" onclick="window.AnneUI.quickCopyPrompt('${escapeHtml(String(p.id))}')" title="Copiar conteúdo completo">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                Copiar
+              </button>
+              <button class="btn btn-xs btn-secondary" onclick="window.AnneUI.viewPrompt('${escapeHtml(String(p.id))}')" title="Ver prompt formatado">
+                Ver
+              </button>
+              <button class="btn btn-xs btn-secondary" onclick="window.AnneUI.openPromptModal('${escapeHtml(String(p.id))}')" title="Editar prompt">
+                Editar
+              </button>
+              <button class="btn btn-xs btn-danger" onclick="window.AnneUI.deletePrompt('${escapeHtml(String(p.id))}')" title="Excluir ou desativar">
+                Excluir
+              </button>
+            </div>
+          </td>
+        </tr>
+      `;
+    }).join('');
+  }
+
+  let editingPromptVariaveis = [];
+
+  async function populatePromptModelOptions(selectedModel = '') {
+    if (!elements.promptModelo) return;
+
+    // Se a lista de modelos ainda não foi carregada, busca da API
+    if (!modelsList || modelsList.length === 0) {
+      try {
+        const res = await api('/api/v1/modelos');
+        modelsList = Array.isArray(res.data) ? res.data : [];
+      } catch (_e) {
+        modelsList = [];
+      }
+    }
+
+    const activeModels = modelsList.filter(m => m.ativo);
+    let optionsHtml = '<option value="">(Nenhum / Definido dinamicamente no fluxo n8n)</option>';
+
+    const tierLabels = {
+      tier_1: 'Tier 1 - Texto',
+      tier_2: 'Tier 2 - Ferramentas',
+      tier_3: 'Tier 3 - Raciocínio'
+    };
+
+    optionsHtml += activeModels.map(m => {
+      const isSel = selectedModel && m.modelo === selectedModel ? 'selected' : '';
+      const tLabel = tierLabels[m.tier] || 'Tier 1';
+      const label = `[${tLabel}] ${m.modelo} (${m.provedor})`;
+      return `<option value="${escapeHtml(m.modelo)}" ${isSel}>${escapeHtml(label)}</option>`;
+    }).join('');
+
+    elements.promptModelo.innerHTML = optionsHtml;
+    if (selectedModel) {
+      elements.promptModelo.value = selectedModel;
+    }
+  }
+
+  async function openPromptModal(id = null) {
+    if (!elements.modalPrompt) return;
+
+    if (elements.formPrompt) elements.formPrompt.reset();
+    if (elements.promptId) elements.promptId.value = '';
+    editingPromptVariaveis = [];
+
+    let selectedModel = '';
+
+    if (id !== null && id !== undefined && id !== '') {
+      const p = standardPrompts.find(item => String(item.id) === String(id));
+      if (!p) return;
+
+      if (elements.modalPromptTitle) elements.modalPromptTitle.textContent = 'Editar Prompt Padrão';
+      if (elements.promptId) elements.promptId.value = p.id;
+      if (elements.promptChave) {
+        elements.promptChave.value = p.chave;
+        // Se for o prompt mestre do sistema, trava edição da chave para não quebrar workflows do n8n
+        elements.promptChave.readOnly = p.chave === 'roteador_modelos_economia';
+      }
+      if (elements.promptNome) elements.promptNome.value = p.nome;
+      selectedModel = p.modelo_sugerido || '';
+      if (elements.promptDescricao) elements.promptDescricao.value = p.descricao || '';
+      if (elements.promptConteudo) elements.promptConteudo.value = p.conteudo || '';
+      if (elements.promptAtivo) elements.promptAtivo.checked = p.ativo !== false;
+      editingPromptVariaveis = Array.isArray(p.variaveis) ? p.variaveis : [];
+    } else {
+      if (elements.modalPromptTitle) elements.modalPromptTitle.textContent = 'Cadastrar Prompt Padrão';
+      if (elements.promptChave) {
+        elements.promptChave.value = '';
+        elements.promptChave.readOnly = false;
+      }
+      selectedModel = 'deepseek/deepseek-chat';
+      if (elements.promptAtivo) elements.promptAtivo.checked = true;
+    }
+
+    await populatePromptModelOptions(selectedModel);
+    updatePromptCounters();
+    openModal(elements.modalPrompt);
+  }
+
+  function viewPrompt(id) {
+    if (!elements.modalViewPrompt) return;
+    const p = standardPrompts.find(item => String(item.id) === String(id));
+    if (!p) return;
+
+    if (elements.viewPromptNome) elements.viewPromptNome.textContent = p.nome;
+    if (elements.viewPromptChave) elements.viewPromptChave.textContent = `chave n8n: ${p.chave}`;
+    if (elements.viewPromptModelo) elements.viewPromptModelo.textContent = p.modelo_sugerido || '(nenhum / dinâmico)';
+    if (elements.viewPromptVersao) elements.viewPromptVersao.textContent = `v${p.versao || 1}`;
+    if (elements.viewPromptStatus) {
+      elements.viewPromptStatus.textContent = p.ativo ? 'Ativo' : 'Inativo';
+      elements.viewPromptStatus.className = p.ativo ? 'text-success' : 'text-muted';
+    }
+    if (elements.viewPromptDescricao) elements.viewPromptDescricao.textContent = p.descricao || 'Sem descrição adicional.';
+
+    const vars = Array.isArray(p.variaveis) && p.variaveis.length > 0
+      ? p.variaveis.map(v => `{{${v}}}`).join(', ')
+      : '(nenhuma variável declarada)';
+    if (elements.viewPromptVariaveis) elements.viewPromptVariaveis.textContent = vars;
+
+    if (elements.viewPromptContent) elements.viewPromptContent.textContent = p.conteudo || '';
+
+    if (elements.btnCopyViewPrompt) {
+      elements.btnCopyViewPrompt.onclick = () => {
+        copyPromptToClipboard(p.conteudo, `Prompt "${p.nome}" copiado! Pronto para colar no nó do n8n.`);
+      };
+    }
+
+    openModal(elements.modalViewPrompt);
+  }
+
+  function quickCopyPrompt(id) {
+    const p = standardPrompts.find(item => String(item.id) === String(id));
+    if (!p) return;
+    copyPromptToClipboard(p.conteudo, `Prompt "${p.chave}" copiado!`);
+  }
+
+  async function savePrompt(e) {
+    e.preventDefault();
+    const id = elements.promptId?.value ? parseInt(elements.promptId.value, 10) : null;
+
+    const payload = {
+      chave: elements.promptChave?.value.trim().toLowerCase(),
+      nome: elements.promptNome?.value.trim(),
+      modelo_sugerido: elements.promptModelo?.value.trim() || null,
+      descricao: elements.promptDescricao?.value.trim(),
+      conteudo: elements.promptConteudo?.value.trim(),
+      variaveis: editingPromptVariaveis,
+      ativo: elements.promptAtivo?.checked !== false
+    };
+
+    if (!payload.chave || !/^[a-z0-9_-]{3,100}$/.test(payload.chave)) {
+      showToast('Chave inválida. Use de 3 a 100 caracteres minúsculos, números, underline ou hífen.', 'error');
+      return;
+    }
+    if (!payload.nome) {
+      showToast('Nome do prompt é obrigatório.', 'error');
+      return;
+    }
+    if (!payload.conteudo) {
+      showToast('Conteúdo do prompt é obrigatório.', 'error');
+      return;
+    }
+
+    const saveBtn = document.getElementById('btn-save-prompt');
+    if (saveBtn) saveBtn.disabled = true;
+
+    try {
+      const url = id ? `/api/v1/prompts-padrao/${id}` : '/api/v1/prompts-padrao';
+      const method = id ? 'PUT' : 'POST';
+
+      await api(url, { method, body: payload });
+      showToast(id ? 'Prompt padrão atualizado com sucesso!' : 'Prompt padrão cadastrado com sucesso!');
+      closeModal(elements.modalPrompt);
+      loadStandardPrompts();
+    } catch (err) {
+      showToast(err.message || 'Falha ao salvar prompt padrão', 'error');
+    } finally {
+      if (saveBtn) saveBtn.disabled = false;
+    }
+  }
+
+  async function deletePrompt(id) {
+    const p = standardPrompts.find(item => String(item.id) === String(id));
+    if (!p) return;
+
+    const isCore = p.chave === 'roteador_modelos_economia';
+    const confirmMsg = isCore
+      ? `O prompt "${p.nome}" é o roteador principal do sistema. Deseja desativá-lo para auditoria em vez de excluir?`
+      : `Deseja realmente remover o prompt padrão "${p.nome}" (${p.chave})?`;
+
+    if (!confirm(confirmMsg)) return;
+
+    try {
+      const res = await api(`/api/v1/prompts-padrao/${id}`, { method: 'DELETE' });
+      showToast(res.message || 'Operação realizada com sucesso!');
+      loadStandardPrompts();
+    } catch (err) {
+      showToast(err.message || 'Falha ao remover prompt', 'error');
+    }
+  }
+
+  // Event Listeners dos Prompts Padrão
+  if (elements.btnNewPrompt) {
+    elements.btnNewPrompt.addEventListener('click', () => openPromptModal(null));
+  }
+  if (elements.formPrompt) {
+    elements.formPrompt.addEventListener('submit', savePrompt);
+  }
+  if (elements.promptsSearchInput) {
+    elements.promptsSearchInput.addEventListener('input', renderStandardPrompts);
+  }
+  if (elements.promptConteudo) {
+    elements.promptConteudo.addEventListener('input', updatePromptCounters);
+  }
+
   // Redimensionamento responsivo do gráfico diário
   window.addEventListener('resize', () => {
     if (activePageTab === 'tab-financeiro' && financeData?.serie_diaria) {
@@ -1473,8 +1881,12 @@
     loadInstances();
     if (activePageTab === 'tab-financeiro') {
       loadFinanceData();
-    } else if (activePageTab === 'tab-modelos') {
-      loadModels();
+    } else if (activePageTab === 'tab-ia' || activePageTab === 'tab-modelos') {
+      if (activeIaSubTab === 'subtab-prompts') {
+        loadStandardPrompts();
+      } else {
+        loadModels();
+      }
     }
   });
 
@@ -1487,7 +1899,11 @@
     deleteInstance,
     openModelModal,
     deleteModel,
-    testModel
+    testModel,
+    openPromptModal,
+    viewPrompt,
+    quickCopyPrompt,
+    deletePrompt
   };
 
   // Inicialização
