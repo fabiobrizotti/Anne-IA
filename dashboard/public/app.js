@@ -71,6 +71,7 @@
     tabButtons: document.querySelectorAll('#modal-connect .tab-btn'),
     pairingNumber: document.getElementById('pairing-number'),
     btnRequestPairing: document.getElementById('btn-request-pairing'),
+    btnReconnectRestart: document.getElementById('btn-reconnect-restart'),
     pairingResultBox: document.getElementById('pairing-result-box'),
     pairingCodeDisplay: document.getElementById('pairing-code-display'),
     btnCopyPairing: document.getElementById('btn-copy-pairing'),
@@ -106,6 +107,11 @@
     kpiTokensSplit: document.getElementById('kpi-tokens-split'),
     kpiCacheRate: document.getElementById('kpi-cache-rate'),
     kpiCustoMedio: document.getElementById('kpi-custo-medio'),
+    kpiReqsPorDolar: document.getElementById('kpi-reqs-por-dolar'),
+    kpiMsgsPorDolar: document.getElementById('kpi-msgs-por-dolar'),
+    kpiTokensPorDolar: document.getElementById('kpi-tokens-por-dolar'),
+    kpiMediaTokensMsg: document.getElementById('kpi-media-tokens-msg'),
+    kpiMediaCustoMsg: document.getElementById('kpi-media-custo-msg'),
     dailyChartContainer: document.getElementById('finance-daily-chart-container'),
     dailyTableContainer: document.getElementById('finance-daily-table-container'),
     dailyTbody: document.getElementById('finance-daily-tbody'),
@@ -646,7 +652,7 @@
   // Solicitar Pairing Code
   elements.btnRequestPairing.addEventListener('click', async () => {
     const rawNumber = elements.pairingNumber.value.trim();
-    const cleanNumber = rawNumber.replace(/\D/g, '');
+    let cleanNumber = rawNumber.replace(/\D/g, '');
 
     if (!cleanNumber || cleanNumber.length < 10) {
       showToast('Digite um número de telefone válido com DDI e DDD.', 'error');
@@ -654,8 +660,15 @@
       return;
     }
 
+    // Auto-adiciona DDI 55 se o usuário digitar apenas DDD + número (10 ou 11 dígitos)
+    if (cleanNumber.length === 10 || cleanNumber.length === 11) {
+      cleanNumber = `55${cleanNumber}`;
+      elements.pairingNumber.value = cleanNumber;
+    }
+
     elements.btnRequestPairing.disabled = true;
-    elements.btnRequestPairing.textContent = 'Gerando...';
+    elements.btnRequestPairing.textContent = 'Aguardando WhatsApp...';
+    elements.pairingResultBox.classList.add('hidden');
 
     try {
       const res = await api(`/api/v1/instances/${encodeURIComponent(currentConnectInstanceId)}/connect?number=${cleanNumber}`);
@@ -664,7 +677,7 @@
         elements.pairingResultBox.classList.remove('hidden');
         showToast('Código de pareamento gerado!');
       } else {
-        throw new Error('Código de pareamento não retornado pelo WhatsApp.');
+        throw new Error(res.error || 'Código não retornado a tempo pelo WhatsApp. Clique em "Reiniciar" e tente novamente.');
       }
     } catch (err) {
       showToast(`Falha ao gerar código: ${err.message}`, 'error');
@@ -673,6 +686,28 @@
       elements.btnRequestPairing.textContent = 'Gerar Código';
     }
   });
+
+  // Reiniciar Socket da Instância no modal de Conexão
+  if (elements.btnReconnectRestart) {
+    elements.btnReconnectRestart.addEventListener('click', async () => {
+      if (!currentConnectInstanceId) return;
+
+      elements.btnReconnectRestart.disabled = true;
+      elements.btnReconnectRestart.textContent = 'Reiniciando...';
+      elements.pairingResultBox.classList.add('hidden');
+      elements.pairingCodeDisplay.textContent = '--------';
+
+      try {
+        await api(`/api/v1/instances/${encodeURIComponent(currentConnectInstanceId)}/restart`, { method: 'POST' });
+        showToast('Instância reiniciada na Evolution API! Tente gerar o código agora.');
+      } catch (err) {
+        showToast(`Erro ao reiniciar: ${err.message}`, 'error');
+      } finally {
+        elements.btnReconnectRestart.disabled = false;
+        elements.btnReconnectRestart.textContent = 'Reiniciar';
+      }
+    });
+  }
 
   // Copiar Pairing Code
   elements.btnCopyPairing.addEventListener('click', () => {
@@ -1024,6 +1059,34 @@
 
     elements.kpiCacheRate.textContent = `${Number(kpis.cache_rate || 0).toFixed(1)}%`;
     elements.kpiCustoMedio.textContent = `Custo médio: $${Number(kpis.custo_medio_requisicao || 0).toFixed(6)} / req`;
+
+    // Cálculos 100% no cliente (browser) para zero impacto no servidor pai
+    const avgTokensPerReq = reqs > 0 ? Math.round(tokens / reqs) : 0;
+    const custoMedioReq = reqs > 0 ? (custo / reqs) : 0;
+
+    let reqsPorDolarText = '--';
+    let msgsPorDolarText = '--';
+    let tokensPorDolarText = '--';
+
+    if (custo > 0) {
+      const rpd = Math.round(reqs / custo);
+      const tpd = Math.round(tokens / custo);
+      reqsPorDolarText = rpd.toLocaleString('pt-BR');
+      msgsPorDolarText = rpd.toLocaleString('pt-BR');
+      tokensPorDolarText = tpd >= 1000000
+        ? `${(tpd / 1000000).toFixed(2)}M`
+        : tpd.toLocaleString('pt-BR');
+    } else if (reqs > 0) {
+      reqsPorDolarText = 'Ilimitado (Gratuito)';
+      msgsPorDolarText = 'Ilimitado (Gratuito)';
+      tokensPorDolarText = 'Ilimitado (Gratuito)';
+    }
+
+    if (elements.kpiReqsPorDolar) elements.kpiReqsPorDolar.textContent = reqsPorDolarText;
+    if (elements.kpiMsgsPorDolar) elements.kpiMsgsPorDolar.textContent = msgsPorDolarText;
+    if (elements.kpiTokensPorDolar) elements.kpiTokensPorDolar.textContent = tokensPorDolarText;
+    if (elements.kpiMediaTokensMsg) elements.kpiMediaTokensMsg.textContent = `${avgTokensPerReq.toLocaleString('pt-BR')} tok`;
+    if (elements.kpiMediaCustoMsg) elements.kpiMediaCustoMsg.textContent = `$${custoMedioReq.toFixed(6)} / msg`;
   }
 
   // Gráfico Diário de Área em SVG Puro
@@ -1817,7 +1880,7 @@
       const url = id ? `/api/v1/prompts-padrao/${id}` : '/api/v1/prompts-padrao';
       const method = id ? 'PUT' : 'POST';
 
-      await api(url, { method, body: payload });
+      await api(url, { method, body: JSON.stringify(payload) });
       showToast(id ? 'Prompt padrão atualizado com sucesso!' : 'Prompt padrão cadastrado com sucesso!');
       closeModal(elements.modalPrompt);
       loadStandardPrompts();

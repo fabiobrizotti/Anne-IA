@@ -244,6 +244,7 @@ O Dashboard administrativo é uma aplicação web ultra-leve construída em **Va
    - Manter status sempre online, recibo de leitura (tique azul), visualização de status e sincronização de histórico.
 4. **Painel Financeiro & Métricas de Tokens (Aba Financeiro)**:
    - Visualização dedicada com KPIs de custo acumulado (USD), requisições LLM, tokens totais (prompt/completion) e taxa de cache.
+   - **Poder de Compra & Rendimento de $1 USD (100% Client-Side)**: Indicadores reativos calculados diretamente no navegador do operador sem sobrecarga no servidor pai (Requisições por $1 USD, Mensagens atendidas por $1 USD, Volume de tokens por $1 USD e Média de tokens/custo por mensagem).
    - Gráfico temporal diário interativo (SVG puro) com alternador de visão em tabela (WCAG acessível).
    - Rankings em barras horizontais de custo por cliente e consumo por modelo.
    - Tabela de detalhamento analítico por cliente com busca textual instantânea.

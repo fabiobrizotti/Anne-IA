@@ -143,6 +143,38 @@
         </div>
       </section>
 
+      <!-- Rendimento e Poder de Compra por $1 USD (Cálculos 100% no Cliente) -->
+      <section class="metrics finance-power-kpis">
+        <div class="card metric-card">
+          <div class="metric-header-row">
+            <span class="metric-label">Requisições por $1 USD</span>
+          </div>
+          <span id="kpi-reqs-por-dolar" class="metric-value text-success">--</span>
+          <span class="metric-sublabel">Chamadas de IA que $1.00 entrega</span>
+        </div>
+        <div class="card metric-card">
+          <div class="metric-header-row">
+            <span class="metric-label">Mensagens por $1 USD</span>
+          </div>
+          <span id="kpi-msgs-por-dolar" class="metric-value text-success">--</span>
+          <span class="metric-sublabel">Atendimentos ao cliente por $1.00</span>
+        </div>
+        <div class="card metric-card">
+          <div class="metric-header-row">
+            <span class="metric-label">Tokens por $1 USD</span>
+          </div>
+          <span id="kpi-tokens-por-dolar" class="metric-value">--</span>
+          <span class="metric-sublabel">Volume total de tokens por $1.00</span>
+        </div>
+        <div class="card metric-card">
+          <div class="metric-header-row">
+            <span class="metric-label">Média por Mensagem</span>
+          </div>
+          <span id="kpi-media-tokens-msg" class="metric-value font-mono">--</span>
+          <span id="kpi-media-custo-msg" class="metric-sublabel">Custo médio por mensagem</span>
+        </div>
+      </section>
+
       <!-- Gráfico de Custo por Dia (Estilo chart-area-interactive) -->
       <div class="card chart-card">
         <div class="chart-header">
@@ -601,12 +633,18 @@
 
           <div class="form-row">
             <div class="form-group flex-1">
-              <label for="pairing-number">Número com DDD e país</label>
+              <label for="pairing-number">Número com DDD e país (DDI)</label>
               <input type="tel" id="pairing-number" placeholder="5511999999999" class="input">
+              <small class="field-hint">Ex: 5515999999999 (se omitir 55, será adicionado automaticamente).</small>
             </div>
-            <button id="btn-request-pairing" class="btn btn-primary self-end">
-              Gerar Código
-            </button>
+            <div class="button-group self-end" style="display: flex; gap: 8px;">
+              <button id="btn-request-pairing" class="btn btn-primary">
+                Gerar Código
+              </button>
+              <button type="button" id="btn-reconnect-restart" class="btn btn-secondary" title="Reinicia o socket da instância na Evolution API se o pareamento travar">
+                Reiniciar
+              </button>
+            </div>
           </div>
 
           <div id="pairing-result-box" class="pairing-box hidden">

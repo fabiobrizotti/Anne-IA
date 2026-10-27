@@ -91,6 +91,34 @@ async function evolutionFetch(endpoint, options = {}) {
   }
 }
 
+// Extrai mensagem limpa de erro da Evolution API (NestJS/Baileys)
+function extractEvoError(data, defaultMsg = 'Falha na comunicação com a Evolution API') {
+  if (!data) return defaultMsg;
+  if (typeof data === 'string') return data;
+  if (Array.isArray(data.response?.message) && data.response.message.length > 0) {
+    return data.response.message.join(', ');
+  }
+  if (typeof data.response?.message === 'string') return data.response.message;
+  if (Array.isArray(data.message) && data.message.length > 0) {
+    return data.message.join(', ');
+  }
+  if (typeof data.message === 'string') return data.message;
+  if (typeof data.error === 'string') return data.error;
+  return defaultMsg;
+}
+
+// Normaliza números de telefone garantindo DDI do Brasil (55) quando omitido
+function normalizePhoneNumber(raw) {
+  if (!raw) return '';
+  const digits = String(raw).replace(/\D/g, '');
+  if (!digits) return '';
+  // Se tem 10 ou 11 dígitos (DDD + número no Brasil sem o DDI 55)
+  if (digits.length === 10 || digits.length === 11) {
+    return `55${digits}`;
+  }
+  return digits;
+}
+
 // -----------------------------------------------------------------------------
 // ROTAS DA API REST (v1)
 // -----------------------------------------------------------------------------
@@ -316,22 +344,50 @@ app.get('/api/v1/instances/:id/connect', async (req, res) => {
     const { id } = req.params;
     const { number } = req.query;
 
+    let cleanNumber = null;
     let endpoint = `/instance/connect/${encodeURIComponent(id)}`;
+
     if (number) {
-      const cleanNumber = String(number).replace(/\D/g, '');
+      cleanNumber = normalizePhoneNumber(number);
+      if (!cleanNumber || cleanNumber.length < 10) {
+        return res.status(400).json({ success: false, error: 'Número de telefone inválido. Informe com DDD e país.' });
+      }
       endpoint += `?number=${cleanNumber}`;
     }
 
-    const evoRes = await evolutionFetch(endpoint);
+    let evoRes = await evolutionFetch(endpoint);
 
     if (!evoRes.ok) {
-      const msg = evoRes.data?.response?.message?.[0] || evoRes.data?.error || 'Falha ao gerar código de conexão';
-      return res.status(evoRes.status).json({ success: false, error: msg });
+      const msg = extractEvoError(evoRes.data, 'Falha ao solicitar conexão ao WhatsApp');
+      const isAlreadyConnected = msg.toLowerCase().includes('already connected') || msg.toLowerCase().includes('conectada');
+      return res.status(evoRes.status).json({
+        success: false,
+        error: isAlreadyConnected ? 'Instância já está conectada ao WhatsApp.' : msg
+      });
     }
 
-    const base64 = evoRes.data?.base64 || evoRes.data?.qrcode?.base64 || null;
-    const code = evoRes.data?.code || evoRes.data?.qrcode?.code || null;
-    const pairingCode = evoRes.data?.pairingCode || null;
+    let base64 = evoRes.data?.base64 || evoRes.data?.qrcode?.base64 || null;
+    let code = evoRes.data?.code || evoRes.data?.qrcode?.code || null;
+    let pairingCode = evoRes.data?.pairingCode || null;
+
+    // Se for Pairing Code mas o WhatsApp ainda estiver negociando o código (assíncrono no Baileys)
+    // Realiza espera ativa inteligente de até ~4.8s (4 tentativas de 1.2s)
+    if (cleanNumber && !pairingCode) {
+      for (let attempt = 1; attempt <= 4; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 1200));
+
+        const pollRes = await evolutionFetch(endpoint);
+        if (pollRes.ok) {
+          pairingCode = pollRes.data?.pairingCode || null;
+          base64 = pollRes.data?.base64 || pollRes.data?.qrcode?.base64 || base64;
+          code = pollRes.data?.code || pollRes.data?.qrcode?.code || code;
+          if (pairingCode) {
+            evoRes = pollRes;
+            break;
+          }
+        }
+      }
+    }
 
     res.json({
       success: true,
