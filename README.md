@@ -5,9 +5,9 @@ A stack é auto-inicializável a partir de um clone limpo. A pasta `setup/` conc
 | Artefato | Papel |
 |---|---|
 | `setup/rabbitmq/rabbitmq.conf` | Limites de memória/disco, paginação, timeout de LLM e carga de definições. |
-| `setup/rabbitmq/definitions.json.template` | Topologia padrão industrial: exchanges diretas, pipeline em 3 etapas com Quorum Queues e DLX/DLQ (senha via `.env`). |
+| `setup/rabbitmq/definitions.json.template` | Topologia padrão industrial: exchanges diretas, pipeline em 4 etapas com Quorum Queues e DLX/DLQ (senha via `.env`). |
 | `setup/rabbitmq/entrypoint.sh` | Injeta a senha no template e gera o `definitions.json`. |
-| `setup/postgres/init.sql` | **Fonte única (SSOT 100% idempotente)**: schema do negócio, memória LangChain indexada (`memorypostgreschat` com `idx_memorypostgreschat_session` e `criado_em` para retenção LGPD), base RAG isolada multi-tenant (`base_conhecimento` com `instance_id`, índices HNSW vetoriais, B-tree composto de paginação e GIN trigram `pg_trgm`), `clientes` + `Instance` (Evolution API), **alinhamento 1:1** entre `public."Instance"` e `public.clientes` pelo mesmo ID (`clientes.id = Instance.id`), `prompt_config` (persona/role/playbook por cliente), `prompts_padrao` (prompts mestres globais para roteamento e economia de modelos), **ledger de custos** (`precos_modelos`, `uso_tokens` por requisição com idempotência) e **governança LGPD nativa** (`lgpd_auditoria` com hash SHA-256 via `pgcrypto`, `vw_clientes_mascarado`, `fn_lgpd_anonimizar_titular`, `fn_lgpd_anonimizar_cliente` e `fn_lgpd_expurgo_retencao`). |
+| `setup/postgres/init.sql` | **Fonte única (SSOT 100% idempotente)**: schema do negócio, memória LangChain indexada (`memorypostgreschat` com `idx_memorypostgreschat_session` e `criado_em` para retenção LGPD), base RAG isolada multi-tenant (`base_conhecimento` com `instance_id`, índices HNSW vetoriais, B-tree composto de paginação e GIN trigram `pg_trgm`), `clientes` + `Instance` (Evolution API), **alinhamento 1:1** entre `public."Instance"` e `public.clientes` pelo mesmo ID (`clientes.id = Instance.id`), `prompt_config` (persona/role/playbook por cliente), `prompts_padrao` (prompts mestres globais para roteamento e economia de modelos), **ledger contábil e função de custeio** (`precos_modelos`, `uso_tokens`, `fn_registrar_uso_tokens` com idempotência estrita e precificação dinâmica) e **governança LGPD nativa** (`lgpd_auditoria` com hash SHA-256 via `pgcrypto`, `vw_clientes_mascarado`, `fn_lgpd_anonimizar_titular`, `fn_lgpd_anonimizar_cliente` e `fn_lgpd_expurgo_retencao`). |
 | `setup/pgadmin/servers.json` | Auto-provisionamento da conexão do PostgreSQL no pgAdmin 4. |
 | `setup/n8n/clean-workflows.js` | Limpa workflows antigos no SQLite antes de reimportar (idempotência). |
 | `setup/n8n/sanitize-workflow.js` | Remove rastros da instância de origem para evitar falhas no import. |
@@ -150,7 +150,7 @@ O RabbitMQ opera como o barramento assíncrono de alta confiabilidade da Anne-IA
 
 ---
 
-### 7.2. Pipeline em 3 Estágios do Projeto
+### 7.2. Pipeline em 4 Estágios do Projeto
 
 ```text
 [Evolution API (AMQP Global)]
@@ -167,12 +167,13 @@ O RabbitMQ opera como o barramento assíncrono de alta confiabilidade da Anne-IA
    ┌────────────────────────────────────────────┘
    │ (rk: ai.process)
    ▼
-[FILA 2: anne.ai.process.q] ──(n8n RAG / LLM)───┐
-                                                │
-   ┌────────────────────────────────────────────┘
-   │ (rk: outbound.dispatch)
-   ▼
-[FILA 3: anne.outbound.dispatch.q] ──(n8n humanização / envio WhatsApp)
+[FILA 2: anne.ai.process.q] ──(n8n RAG / LLM)───┬───────────────────────────────────────────┐
+                                                │ (rk: outbound.dispatch)                   │ (rk: costs.telemetry)
+                                                ▼                                           ▼
+[FILA 3: anne.outbound.dispatch.q] ──(n8n envio WhatsApp)    [FILA 4: anne.costs.telemetry.q] ──(n8n FinOps)
+  (Quorum Queue + DLX + DLQ)                                   (Quorum Queue + DLX + DLQ)          │
+                                                                                                   ▼
+                                                                                   [PostgreSQL: uso_tokens]
 ```
 
 | Estágio | Finalidade | Exchange de Ingress / Trabalho | Routing Key | Fila Quorum Principal | DLX | Routing Key DLQ | Fila Dead Letter (DLQ) |
@@ -180,6 +181,7 @@ O RabbitMQ opera como o barramento assíncrono de alta confiabilidade da Anne-IA
 | **1. Inbound** | Recepção de conversas e dados brutos do cliente (WhatsApp/Evolution) | `evolution` (Topic) / `anne.direct.work` | `MESSAGES_UPSERT` / `inbound.received` | `anne.inbound.raw.q` | `anne.direct.dlx` | `dlq.inbound` | `anne.inbound.raw.dlq` |
 | **2. Core IA** | Motor principal de raciocínio, contexto, RAG e chamadas de LLM | `anne.direct.work` | `ai.process` | `anne.ai.process.q` | `anne.direct.dlx` | `dlq.ai` | `anne.ai.process.dlq` |
 | **3. Outbound**| Humanização, formatação e despacho das respostas ao cliente | `anne.direct.work` | `outbound.dispatch`| `anne.outbound.dispatch.q` | `anne.direct.dlx` | `dlq.outbound` | `anne.outbound.dispatch.dlq` |
+| **4. FinOps Telemetria** | Registro assíncrono de tokens e auditoria contábil de IA sem bloquear UX | `anne.direct.work` | `costs.telemetry` | `anne.costs.telemetry.q` | `anne.direct.dlx` | `dlq.costs` | `anne.costs.telemetry.dlq` |
 
 ---
 
@@ -191,6 +193,7 @@ O RabbitMQ opera como o barramento assíncrono de alta confiabilidade da Anne-IA
    - `anne.inbound.raw.q`: `3` tentativas antes de desviar para DLQ.
    - `anne.ai.process.q`: `2` tentativas antes de desviar para DLQ (impede loops caros ou infinitos de chamadas à LLM).
    - `anne.outbound.dispatch.q`: `3` tentativas antes de desviar para DLQ.
+   - `anne.costs.telemetry.q`: `3` tentativas antes de desviar para DLQ.
 3. **Backpressure e Estabilidade no Servidor Local**:
    - `vm_memory_high_watermark.relative = 0.6`: ativa backpressure aos 60% de RAM.
    - `vm_memory_high_watermark_paging_ratio = 0.5`: inicia paginação para disco aos 30% da RAM total, impedindo estouro de memória local.
@@ -208,6 +211,7 @@ O RabbitMQ opera como o barramento assíncrono de alta confiabilidade da Anne-IA
     - `anne.inbound.raw.q`: `10` a `20` (I/O leve).
     - `anne.ai.process.q`: `1` ou `2` (tarefa pesada de IA; impede acúmulo de mensagens não processadas em um único worker).
     - `anne.outbound.dispatch.q`: `5` a `10` (requisições HTTP à Evolution API).
+    - `anne.costs.telemetry.q`: `10` a `20` (telemetria contábil leve em background).
 - **Nós RabbitMQ (Publicadores)**:
   - Exchange: `anne.direct.work`.
   - Delivery Mode: `2 - Persistent`.
