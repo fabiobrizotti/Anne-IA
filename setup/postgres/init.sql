@@ -255,10 +255,16 @@ ALTER TABLE precos_modelos ADD COLUMN IF NOT EXISTS tier VARCHAR(20) NOT NULL DE
 CREATE INDEX IF NOT EXISTS idx_precos_modelos_lookup ON precos_modelos(provedor, modelo, ativo, vigente_de);
 CREATE INDEX IF NOT EXISTS idx_precos_modelos_tier_ativo_custo ON precos_modelos (tier, ativo, input_per_1m ASC);
 
--- Seed idempotente: preços mínimos para opencode/big-pickle (ajustar conforme valores reais)
+-- Seed idempotente: preços mínimos para opencode/big-pickle e antigravity/ag/gemini-3.1-flash-lite
 INSERT INTO precos_modelos (provedor, modelo, tier, input_per_1m, cached_per_1m, output_per_1m, reasoning_per_1m, cache_creation_per_1m, moeda, vigente_de, ativo)
 VALUES ('opencode', 'big-pickle', 'tier_3', 0, 0, 0, 0, 0, 'USD', NOW(), true)
 ON CONFLICT (provedor, modelo, vigente_de) DO NOTHING;
+
+INSERT INTO precos_modelos (provedor, modelo, tier, input_per_1m, cached_per_1m, output_per_1m, reasoning_per_1m, cache_creation_per_1m, moeda, vigente_de, ativo)
+SELECT 'antigravity', 'ag/gemini-3.1-flash-lite', 'tier_1', 0.250000, 0.000000, 1.500000, 0.000000, 0.000000, 'USD', NOW(), true
+WHERE NOT EXISTS (
+  SELECT 1 FROM precos_modelos WHERE provedor = 'antigravity' AND modelo = 'ag/gemini-3.1-flash-lite'
+);
 
 -- 10. Ledger de uso de tokens por cliente/instância (granular por requisição)
 CREATE TABLE IF NOT EXISTS uso_tokens (
@@ -285,6 +291,179 @@ CREATE TABLE IF NOT EXISTS uso_tokens (
 CREATE INDEX IF NOT EXISTS idx_uso_tokens_cliente_criado ON uso_tokens(cliente_id, criado_em DESC);
 CREATE INDEX IF NOT EXISTS idx_uso_tokens_exec ON uso_tokens(execution_id);
 CREATE INDEX IF NOT EXISTS idx_uso_tokens_prov_mod ON uso_tokens(provedor, modelo);
+
+-- Função idempotente de registro contábil de uso de tokens (FinOps SSOT)
+CREATE OR REPLACE FUNCTION fn_registrar_uso_tokens(
+  p_instance_id VARCHAR(100),
+  p_workflow_id VARCHAR(64),
+  p_execution_id VARCHAR(64),
+  p_provedor VARCHAR(50),
+  p_modelo VARCHAR(100),
+  p_prompt_tokens BIGINT DEFAULT 0,
+  p_completion_tokens BIGINT DEFAULT 0,
+  p_cached_tokens BIGINT DEFAULT 0,
+  p_cache_creation_tokens BIGINT DEFAULT 0,
+  p_reasoning_tokens BIGINT DEFAULT 0,
+  p_total_tokens BIGINT DEFAULT NULL,
+  p_origem VARCHAR(20) DEFAULT 'n8n',
+  p_step VARCHAR(50) DEFAULT 'main',
+  p_request_id VARCHAR(128) DEFAULT NULL,
+  p_metadados JSONB DEFAULT '{}'::jsonb
+)
+RETURNS JSONB AS $$
+DECLARE
+  v_cliente_id VARCHAR(100);
+  v_cliente_codigo BIGINT;
+  v_inst_clean VARCHAR(100);
+  v_wf_clean VARCHAR(64);
+  v_exec_clean VARCHAR(64);
+  v_step_clean VARCHAR(50);
+  v_origem_clean VARCHAR(20);
+  v_prov_clean VARCHAR(50);
+  v_mod_clean VARCHAR(100);
+  v_mod_slug VARCHAR(100);
+  v_chave_idemp VARCHAR(128);
+  v_prompt BIGINT;
+  v_completion BIGINT;
+  v_cached BIGINT;
+  v_cache_creation BIGINT;
+  v_reasoning BIGINT;
+  v_total BIGINT;
+  v_billable_input BIGINT;
+  v_preco RECORD;
+  v_custo_usd NUMERIC(18,10) := 0;
+  v_inserted_id BIGINT;
+BEGIN
+  v_inst_clean := btrim(COALESCE(p_instance_id, ''));
+  IF v_inst_clean = '' THEN
+    RETURN jsonb_build_object('sucesso', false, 'ignorado', true, 'motivo', 'instance_id_vazio');
+  END IF;
+
+  SELECT c.id, c.codigo
+    INTO v_cliente_id, v_cliente_codigo
+  FROM clientes c
+  WHERE c.id = v_inst_clean OR c.codigo::text = v_inst_clean
+  LIMIT 1;
+
+  IF v_cliente_id IS NULL THEN
+    RETURN jsonb_build_object('sucesso', false, 'ignorado', true, 'motivo', 'cliente_nao_encontrado', 'instance_id', v_inst_clean);
+  END IF;
+
+  v_wf_clean := COALESCE(NULLIF(btrim(p_workflow_id), ''), 'manual');
+  v_exec_clean := COALESCE(NULLIF(btrim(p_execution_id), ''), 'manual');
+  v_step_clean := COALESCE(NULLIF(btrim(p_step), ''), 'main');
+  v_origem_clean := CASE WHEN p_origem IN ('n8n', '9router_sync', 'manual') THEN p_origem ELSE 'n8n' END;
+
+  v_chave_idemp := left('n8n:' || v_wf_clean || ':' || v_exec_clean || ':' || v_step_clean, 128);
+
+  v_prov_clean := lower(COALESCE(NULLIF(btrim(p_provedor), ''), '9router'));
+  v_mod_clean := COALESCE(NULLIF(btrim(p_modelo), ''), 'anneia');
+  v_mod_slug := lower(regexp_replace(v_mod_clean, '^[^/]+/', ''));
+
+  v_prompt := GREATEST(COALESCE(p_prompt_tokens, 0), 0);
+  v_completion := GREATEST(COALESCE(p_completion_tokens, 0), 0);
+  v_cached := GREATEST(COALESCE(p_cached_tokens, 0), 0);
+  v_cache_creation := GREATEST(COALESCE(p_cache_creation_tokens, 0), 0);
+  v_reasoning := GREATEST(COALESCE(p_reasoning_tokens, 0), 0);
+  v_total := GREATEST(COALESCE(NULLIF(p_total_tokens, 0), v_prompt + v_completion + v_reasoning), 0);
+
+  -- Lookup resiliente a prefixos de roteamento (ex: 'ag/gemini-3.1-flash-lite' vs 'gemini-3.1-flash-lite')
+  SELECT
+    provedor,
+    modelo,
+    COALESCE(input_per_1m, 0) AS input_per_1m,
+    COALESCE(cached_per_1m, 0) AS cached_per_1m,
+    COALESCE(output_per_1m, 0) AS output_per_1m,
+    COALESCE(reasoning_per_1m, 0) AS reasoning_per_1m,
+    COALESCE(cache_creation_per_1m, 0) AS cache_creation_per_1m
+  INTO v_preco
+  FROM precos_modelos
+  WHERE ativo = true
+    AND vigente_de <= NOW()
+    AND (vigente_ate IS NULL OR vigente_ate > NOW())
+    AND (
+      lower(modelo) = lower(v_mod_clean)
+      OR lower(regexp_replace(modelo, '^[^/]+/', '')) = v_mod_slug
+    )
+  ORDER BY
+    (lower(provedor) = v_prov_clean AND lower(modelo) = lower(v_mod_clean)) DESC,
+    (lower(provedor) = v_prov_clean) DESC,
+    (lower(modelo) = lower(v_mod_clean)) DESC,
+    vigente_de DESC
+  LIMIT 1;
+
+  IF FOUND THEN
+    v_prov_clean := COALESCE(v_preco.provedor, v_prov_clean);
+    v_mod_clean := COALESCE(v_preco.modelo, v_mod_clean);
+    v_billable_input := GREATEST(v_prompt - v_cached - v_cache_creation, 0);
+    v_custo_usd := (
+      (v_billable_input / 1000000.0 * v_preco.input_per_1m)
+      + (v_cached / 1000000.0 * v_preco.cached_per_1m)
+      + (v_cache_creation / 1000000.0 * v_preco.cache_creation_per_1m)
+      + (v_completion / 1000000.0 * v_preco.output_per_1m)
+      + (v_reasoning / 1000000.0 * v_preco.reasoning_per_1m)
+    )::NUMERIC(18,10);
+  END IF;
+
+  INSERT INTO uso_tokens (
+    cliente_id,
+    instance_id,
+    workflow_id,
+    execution_id,
+    chave_idempotencia,
+    origem,
+    provedor,
+    modelo,
+    prompt_tokens,
+    completion_tokens,
+    cached_tokens,
+    cache_creation_tokens,
+    reasoning_tokens,
+    total_tokens,
+    custo_usd,
+    request_id,
+    metadados
+  )
+  VALUES (
+    v_cliente_id,
+    v_inst_clean,
+    v_wf_clean,
+    v_exec_clean,
+    v_chave_idemp,
+    v_origem_clean,
+    v_prov_clean,
+    v_mod_clean,
+    v_prompt,
+    v_completion,
+    v_cached,
+    v_cache_creation,
+    v_reasoning,
+    v_total,
+    v_custo_usd,
+    NULLIF(btrim(COALESCE(p_request_id, '')), ''),
+    COALESCE(p_metadados, '{}'::jsonb) || jsonb_build_object(
+      'source', 'anne-costs-rmq',
+      'cliente_codigo', v_cliente_codigo,
+      'price_matched', FOUND,
+      'recorded_at', NOW()
+    )
+  )
+  ON CONFLICT (chave_idempotencia) DO NOTHING
+  RETURNING id INTO v_inserted_id;
+
+  RETURN jsonb_build_object(
+    'sucesso', true,
+    'id', v_inserted_id,
+    'duplicado', (v_inserted_id IS NULL),
+    'chave_idempotencia', v_chave_idemp,
+    'cliente_id', v_cliente_id,
+    'provedor', v_prov_clean,
+    'modelo', v_mod_clean,
+    'total_tokens', v_total,
+    'custo_usd', v_custo_usd
+  );
+END;
+$$ LANGUAGE plpgsql;
 
 -- 11. Tabela de Prompts Padrão do Sistema (prompts_padrao)
 --     Prompts globais para roteamento, classificação de intenção e otimização de custos de IA

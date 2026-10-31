@@ -90,6 +90,18 @@
       }
     },
     {
+      "name": "anne.costs.telemetry.q",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-queue-type": "quorum",
+        "x-delivery-limit": 3,
+        "x-dead-letter-exchange": "anne.direct.dlx",
+        "x-dead-letter-routing-key": "dlq.costs"
+      }
+    },
+    {
       "name": "anne.inbound.raw.dlq",
       "vhost": "/",
       "durable": true,
@@ -109,6 +121,15 @@
     },
     {
       "name": "anne.outbound.dispatch.dlq",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-queue-type": "quorum"
+      }
+    },
+    {
+      "name": "anne.costs.telemetry.dlq",
       "vhost": "/",
       "durable": true,
       "auto_delete": false,
@@ -167,6 +188,14 @@
       "arguments": {}
     },
     {
+      "source": "anne.direct.work",
+      "vhost": "/",
+      "destination": "anne.costs.telemetry.q",
+      "destination_type": "queue",
+      "routing_key": "costs.telemetry",
+      "arguments": {}
+    },
+    {
       "source": "anne.direct.dlx",
       "vhost": "/",
       "destination": "anne.inbound.raw.dlq",
@@ -188,6 +217,14 @@
       "destination": "anne.outbound.dispatch.dlq",
       "destination_type": "queue",
       "routing_key": "dlq.outbound",
+      "arguments": {}
+    },
+    {
+      "source": "anne.direct.dlx",
+      "vhost": "/",
+      "destination": "anne.costs.telemetry.dlq",
+      "destination_type": "queue",
+      "routing_key": "dlq.costs",
       "arguments": {}
     }
   ],
