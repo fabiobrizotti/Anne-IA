@@ -250,8 +250,8 @@ O Dashboard administrativo é uma aplicação web ultra-leve construída em **Va
   - Senha: `DASHBOARD_PASSWORD` (gerada automaticamente no `.env`).
 
 ### 8.2. Interface e Experiência Neutra
-- **Design Monocromático Neutro**: Visual preto e branco sóbrio, livre de neons, gradientes coloridos ou elementos visuais decorativos supérfluos.
-- **Tema Claro/Escuro do Sistema**: Adaptação automática e instantânea às preferências do sistema operacional (`prefers-color-scheme: light/dark`) com `color-scheme: light dark`.
+- **Design Monocromático Neutro**: Visual preto e branco sóbrio (<30MB RAM, zero-build), livre de neons, gradientes coloridos ou elementos decorativos supérfluos.
+- **Tema Claro Padrão & Seletor de Tema**: Inicialização em tema claro (branco) por padrão, seguindo automaticamente as preferências do sistema operacional (`prefers-color-scheme: dark`) caso não haja preferência manual salva, com botão alternador (Sol / Lua) no cabeçalho persistido no `localStorage` e script anti-FOUC no `<head>`.
 - **Rastreabilidade Temporal**: Indicador global "Atualizado em" no cabeçalho com horário da última sincronização, coluna dedicada na tabela e registros tabulares (`tabular-nums`) de criação e modificação.
 
 ### 8.3. Funcionalidades Principais
@@ -261,28 +261,24 @@ O Dashboard administrativo é uma aplicação web ultra-leve construída em **Va
    - **Histórico Persistente de Telefones**: Mudanças de número registram automaticamente o número anterior, novo número, data (ISO 8601) e motivo da alteração em coluna `JSONB` (`historico_telefones`) com auditoria.
    - **Conexão Direta**: Botão para disparar o fluxo de conexão do WhatsApp com o número preenchido na ficha.
 2. **Conexão ao WhatsApp sem Complicações**:
-   - **Código de Pareamento (Pairing Code)**: Informe o número com DDD e receba um código de 8 dígitos para digitar no celular diretamente, sem depender de câmera.
+   - **Código de Pareamento (Pairing Code)**: Layout flex perfeitamente alinhado. Informe o número com DDD e receba um código de 8 dígitos para digitar no celular diretamente, sem depender de câmera.
    - **QR Code em Alta Resolução**: Renderização confiável de imagens base64 geradas pelo Baileys na Evolution API, com atualização manual e auto-polling de status.
 3. **Ajuste de Comportamento (Settings)**:
    - Rejeição automática de chamadas de voz e vídeo com mensagem explicativa customizável.
    - Ignorar mensagens em grupos para focar apenas no atendimento privado.
    - Manter status sempre online, recibo de leitura (tique azul), visualização de status e sincronização de histórico.
-4. **Painel Financeiro & Métricas de Tokens (Aba Financeiro)**:
-   - Visualização dedicada com KPIs de custo acumulado (USD), requisições LLM, tokens totais (prompt/completion) e taxa de cache.
-   - **Poder de Compra & Rendimento de $1 USD (100% Client-Side)**: Indicadores reativos calculados diretamente no navegador do operador sem sobrecarga no servidor pai (Requisições por $1 USD, Mensagens atendidas por $1 USD, Volume de tokens por $1 USD e Média de tokens/custo por mensagem).
+4. **Painel Financeiro Industrial & Métricas de Tokens (Aba Financeiro)**:
+   - **Filtros Flexíveis & Mês Atual**: Seletor rápido com padrão ativo em "Mês Atual" (faturamento contábil), opções de 7 ou 30 dias e filtro customizado por datas com campos nativos `[de]` e `[até]`.
+   - **Arredondamento e Formatação Visual**: Custos consolidados em padrão monetário (`$ 0.00` ou 4 casas quando < $0.01) e métricas de tokens/requisições formatadas com separador de milhar brasileiro (`pt-BR`).
+   - **Arquitetura Client-Side First (Offloading de CPU)**: Cálculos de deltas, médias, construção da série temporal contínua e renderização de gráficos SVG executados 100% no computador do operador, desonerando o servidor pai.
+   - **Poder de Compra & Rendimento de $1 USD**: Reposicionado no rodapé do painel como card informativo discreto (Requisições por $1 USD, Mensagens atendidas por $1 USD, Volume de tokens e Média por mensagem).
+   - **Preparação para Gateway & Faturamento**: Coluna de faturamento na tabela de clientes com status e botão de ação para emitir link de pagamento em modal dedicado.
    - Gráfico temporal diário interativo (SVG puro) com alternador de visão em tabela (WCAG acessível).
-   - Rankings em barras horizontais de custo por cliente e consumo por modelo.
-   - Tabela de detalhamento analítico por cliente com busca textual instantânea.
 5. **Modelos de IA & Gestão de Custos (Aba Modelos de IA)**:
-   - Catálogo de modelos com precificação por 1M tokens (input, output, cache, reasoning) e **classificação por Tiers** (`tier_1`: Texto Puro / Econômico, `tier_2`: Ferramentas / Tool Calling, `tier_3`: Raciocínio Complexo / Crítico).
+   - Catálogo de modelos com precificação por 1M tokens (input, output, cache, reasoning) e **classificação por Níveis** (`Nível 1`, `Nível 2`, `Nível 3`).
    - Cadastro, edição e desativação segura protegendo integridade de auditoria contábil.
    - Teste de conectividade e inferência direta via 9Router com medição de latência em milissegundos e rate limit defensivo.
-6. **Biblioteca de Prompts Padrão (Sub-aba Prompts Padrão)**:
-   - Central de templates de sistema e regras de roteamento consumidas pelos nós de IA do n8n (sem categorias redundantes).
-   - Prompt mestre `roteador_modelos_economia` (Mini JEV) estruturado com suporte a catálogo dinâmico (`{{catalogo_modelos}}`), integrando modelos cadastrados na tabela e classificados por tiers de complexidade e custo.
-   - Seleção de modelo recomendado vinculada estritamente aos modelos ativos da tabela de preços (com indicação visual do Tier correspondente).
-   - Estimativa de caracteres/tokens, versionamento automático e soft-delete protegido para o prompt mestre do sistema.
-7. **Base de Conhecimento RAG & Vetores pgvector (Sub-aba Base de Conhecimento)**:
+6. **Base de Conhecimento RAG & Vetores pgvector (Sub-aba Base de Conhecimento)**:
    - Central de auditoria e inspeção de fragmentos (chunks) textuais, metadados JSONB e embeddings na tabela `base_conhecimento`.
    - Índices de performance industrial: B-tree composto `(instance_id, id DESC)` para paginação multi-tenant instantânea e GIN `pg_trgm` para buscas textuais rápidas.
    - Projeção de dados otimizada sem tráfego de vetores brutos (zero vector leakage).
@@ -302,7 +298,7 @@ O Dashboard administrativo é uma aplicação web ultra-leve construída em **Va
 | `POST` | `/api/v1/instances/:id/settings` | Salva configurações comportamentais na Evolution e no banco |
 | `GET` | `/api/v1/instances/:id/prompt` | Busca config de prompts do agente (`prompt_config`: identidade, papel, personalidade, playbook, escalação, system prompt) |
 | `PUT` | `/api/v1/instances/:id/prompt` | Salva config de prompts do agente (upsert idempotente em `prompt_config`) |
-| `GET` | `/api/v1/financeiro` | Retorna métricas analíticas de custo e tokens por período (`?dias=7\|30\|90`) |
+| `GET` | `/api/v1/financeiro` | Retorna métricas brutas de custo e tokens por período (`?periodo=mes_atual`, `?dias=7\|30\|90` ou `?inicio=YYYY-MM-DD&fim=YYYY-MM-DD`) |
 | `GET` | `/api/v1/9router/status` | Retorna diagnóstico de conectividade, endpoint e lista de modelos do 9Router |
 | `GET` | `/api/v1/modelos` | Lista catálogo de modelos de IA, status e custos por 1M tokens |
 | `POST` | `/api/v1/modelos` | Cadastra novo modelo com preços de entrada/saída sanitizados |

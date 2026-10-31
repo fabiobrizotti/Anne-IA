@@ -648,18 +648,85 @@ app.delete('/api/v1/instances/:id', async (req, res) => {
   }
 });
 
-// 9. Relatório Financeiro (Custo e Consumo de Tokens)
+function resolvePeriodRange(query) {
+  const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+  const periodo = String(query.periodo || '').trim().toLowerCase();
+  const inicio = String(query.inicio || query.data_inicio || '').trim();
+  const fim = String(query.fim || query.data_fim || '').trim();
+
+  if (inicio || fim) {
+    if (!dateRegex.test(inicio) || !dateRegex.test(fim)) {
+      throw new Error('Formato de data inválido. Utilize YYYY-MM-DD.');
+    }
+    const dInicio = new Date(`${inicio}T00:00:00-03:00`);
+    const dFim = new Date(`${fim}T23:59:59.999-03:00`);
+    if (isNaN(dInicio.getTime()) || isNaN(dFim.getTime()) || dInicio > dFim) {
+      throw new Error('Intervalo de datas inválido.');
+    }
+    const diffMs = dFim.getTime() - dInicio.getTime();
+    const dPrevFim = new Date(dInicio.getTime() - 1);
+    const dPrevInicio = new Date(dPrevFim.getTime() - diffMs);
+    return {
+      tipo: 'custom',
+      inicio: dInicio,
+      fim: dFim,
+      prevInicio: dPrevInicio,
+      prevFim: dPrevFim,
+      labelInicio: inicio,
+      labelFim: fim
+    };
+  }
+
+  if (periodo === 'mes_atual' || (!query.dias && !periodo)) {
+    const now = new Date();
+    const dInicio = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
+    const dFim = new Date(now.getTime());
+    const dPrevInicio = new Date(now.getFullYear(), now.getMonth() - 1, 1, 0, 0, 0, 0);
+    const dPrevFim = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999);
+    return {
+      tipo: 'mes_atual',
+      inicio: dInicio,
+      fim: dFim,
+      prevInicio: dPrevInicio,
+      prevFim: dPrevFim,
+      labelInicio: `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`,
+      labelFim: `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+    };
+  }
+
+  const rawDias = parseInt(query.dias || '30', 10);
+  const dias = [7, 30, 90].includes(rawDias) ? rawDias : 30;
+  const now = new Date();
+  const dInicio = new Date(now.getTime() - dias * 24 * 60 * 60 * 1000);
+  const dPrevInicio = new Date(now.getTime() - 2 * dias * 24 * 60 * 60 * 1000);
+  return {
+    tipo: 'dias',
+    dias,
+    inicio: dInicio,
+    fim: now,
+    prevInicio: dPrevInicio,
+    prevFim: dInicio,
+    labelInicio: dInicio.toISOString().slice(0, 10),
+    labelFim: now.toISOString().slice(0, 10)
+  };
+}
+
+// 9. Relatório Financeiro (Custo e Consumo de Tokens - Enxuto com Offloading)
 app.get('/api/v1/financeiro', async (req, res) => {
   if (!pool) {
     return res.status(503).json({ success: false, error: 'Banco de dados indisponível' });
   }
 
   try {
-    const rawDias = parseInt(req.query.dias || '30', 10);
-    const dias = [7, 30, 90].includes(rawDias) ? rawDias : 30;
+    let range;
+    try {
+      range = resolvePeriodRange(req.query);
+    } catch (valErr) {
+      return res.status(400).json({ success: false, error: valErr.message });
+    }
 
     const [kpiRes, kpiPrevRes, serieRes, clienteRes, modeloRes] = await Promise.all([
-      // KPIs período atual
+      // KPIs período atual (100% parametrizado)
       pool.query(
         `SELECT
            COALESCE(SUM(custo_usd), 0) AS custo_usd,
@@ -670,10 +737,10 @@ app.get('/api/v1/financeiro', async (req, res) => {
            COALESCE(SUM(cached_tokens), 0) AS tokens_cached,
            COUNT(DISTINCT cliente_id) AS clientes_ativos
          FROM uso_tokens
-         WHERE criado_em >= NOW() - ($1 || ' days')::interval`,
-        [dias]
+         WHERE criado_em >= $1 AND criado_em <= $2`,
+        [range.inicio, range.fim]
       ),
-      // KPIs período anterior (para cálculo de delta)
+      // KPIs período anterior (para cálculo de delta no cliente)
       pool.query(
         `SELECT
            COALESCE(SUM(custo_usd), 0) AS custo_usd,
@@ -681,11 +748,10 @@ app.get('/api/v1/financeiro', async (req, res) => {
            COALESCE(SUM(total_tokens), 0) AS tokens_total,
            COALESCE(SUM(cached_tokens), 0) AS tokens_cached
          FROM uso_tokens
-         WHERE criado_em >= NOW() - (2 * $1 || ' days')::interval
-           AND criado_em < NOW() - ($1 || ' days')::interval`,
-        [dias]
+         WHERE criado_em >= $1 AND criado_em <= $2`,
+        [range.prevInicio, range.prevFim]
       ),
-      // Série temporal diária
+      // Série temporal diária agregada
       pool.query(
         `SELECT
            TO_CHAR(date_trunc('day', criado_em AT TIME ZONE 'America/Sao_Paulo'), 'YYYY-MM-DD') AS dia,
@@ -693,10 +759,10 @@ app.get('/api/v1/financeiro', async (req, res) => {
            COALESCE(SUM(total_tokens), 0) AS tokens,
            COUNT(*) AS requisicoes
          FROM uso_tokens
-         WHERE criado_em >= NOW() - ($1 || ' days')::interval
+         WHERE criado_em >= $1 AND criado_em <= $2
          GROUP BY 1
          ORDER BY 1 ASC`,
-        [dias]
+        [range.inicio, range.fim]
       ),
       // Agrupamento por cliente
       pool.query(
@@ -709,10 +775,10 @@ app.get('/api/v1/financeiro', async (req, res) => {
            COUNT(*) AS requisicoes
          FROM uso_tokens u
          LEFT JOIN clientes c ON c.id = u.cliente_id
-         WHERE u.criado_em >= NOW() - ($1 || ' days')::interval
+         WHERE u.criado_em >= $1 AND u.criado_em <= $2
          GROUP BY u.cliente_id, c.nome
          ORDER BY custo_usd DESC, tokens DESC`,
-        [dias]
+        [range.inicio, range.fim]
       ),
       // Agrupamento por modelo
       pool.query(
@@ -723,10 +789,10 @@ app.get('/api/v1/financeiro', async (req, res) => {
            COALESCE(SUM(total_tokens), 0) AS tokens,
            COUNT(*) AS requisicoes
          FROM uso_tokens
-         WHERE criado_em >= NOW() - ($1 || ' days')::interval
+         WHERE criado_em >= $1 AND criado_em <= $2
          GROUP BY provedor, modelo
          ORDER BY custo_usd DESC, tokens DESC`,
-        [dias]
+        [range.inicio, range.fim]
       )
     ]);
 
@@ -742,42 +808,21 @@ app.get('/api/v1/financeiro', async (req, res) => {
     const prevReqs = Number(kpiPrevRow.requisicoes || 0);
     const prevTokens = Number(kpiPrevRow.tokens_total || 0);
 
-    // Série diária contínua preenchida com zeros
-    const serieMap = new Map();
-    serieRes.rows.forEach(r => {
-      serieMap.set(r.dia, {
-        dia: r.dia,
-        custo_usd: Number(r.custo_usd || 0),
-        tokens: Number(r.tokens || 0),
-        requisicoes: Number(r.requisicoes || 0)
-      });
-    });
+    const serieBruta = serieRes.rows.map(r => ({
+      dia: r.dia,
+      custo_usd: Number(r.custo_usd || 0),
+      tokens: Number(r.tokens || 0),
+      requisicoes: Number(r.requisicoes || 0)
+    }));
 
-    const serieDiaria = [];
-    const hoje = new Date();
-    for (let i = dias - 1; i >= 0; i--) {
-      const d = new Date(hoje);
-      d.setDate(d.getDate() - i);
-      const chave = d.toISOString().slice(0, 10);
-      if (serieMap.has(chave)) {
-        serieDiaria.push(serieMap.get(chave));
-      } else {
-        serieDiaria.push({ dia: chave, custo_usd: 0, tokens: 0, requisicoes: 0 });
-      }
-    }
-
-    const porCliente = clienteRes.rows.map(r => {
-      const tot = Number(r.tokens || 0);
-      const cch = Number(r.tokens_cached || 0);
-      return {
-        cliente_id: r.cliente_id,
-        nome: r.nome,
-        custo_usd: Number(r.custo_usd || 0),
-        tokens: tot,
-        requisicoes: Number(r.requisicoes || 0),
-        cache_rate: tot > 0 ? Number(((cch / tot) * 100).toFixed(1)) : 0
-      };
-    });
+    const porCliente = clienteRes.rows.map(r => ({
+      cliente_id: r.cliente_id,
+      nome: r.nome,
+      custo_usd: Number(r.custo_usd || 0),
+      tokens: Number(r.tokens || 0),
+      tokens_cached: Number(r.tokens_cached || 0),
+      requisicoes: Number(r.requisicoes || 0)
+    }));
 
     const porModelo = modeloRes.rows.map(r => ({
       provedor: r.provedor,
@@ -790,7 +835,9 @@ app.get('/api/v1/financeiro', async (req, res) => {
     res.json({
       success: true,
       data: {
-        periodo_dias: dias,
+        tipo_periodo: range.tipo,
+        inicio: range.labelInicio,
+        fim: range.labelFim,
         gerado_em: new Date().toISOString(),
         kpis: {
           custo_usd: custo,
@@ -799,8 +846,6 @@ app.get('/api/v1/financeiro', async (req, res) => {
           tokens_prompt: Number(kpiRow.tokens_prompt || 0),
           tokens_completion: Number(kpiRow.tokens_completion || 0),
           tokens_cached: tokensCached,
-          cache_rate: tokensTotal > 0 ? Number(((tokensCached / tokensTotal) * 100).toFixed(1)) : 0,
-          custo_medio_requisicao: reqs > 0 ? Number((custo / reqs).toFixed(6)) : 0,
           clientes_ativos: Number(kpiRow.clientes_ativos || 0)
         },
         kpis_anteriores: {
@@ -808,7 +853,7 @@ app.get('/api/v1/financeiro', async (req, res) => {
           requisicoes: prevReqs,
           tokens_total: prevTokens
         },
-        serie_diaria: serieDiaria,
+        serie_diaria: serieBruta,
         por_cliente: porCliente,
         por_modelo: porModelo
       }

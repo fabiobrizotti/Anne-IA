@@ -4,6 +4,16 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Anne-IA — Gestão de Instâncias</title>
+  <script>
+    (function() {
+      try {
+        var saved = localStorage.getItem('anne_theme');
+        var prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+        var theme = saved ? saved : (prefersDark ? 'dark' : 'light');
+        document.documentElement.setAttribute('data-theme', theme);
+      } catch (e) {}
+    })();
+  </script>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -19,6 +29,10 @@
       </div>
       <div class="actions">
         <span id="last-sync-time" class="last-sync">Atualizado em: --:--:--</span>
+        <button id="btn-theme-toggle" class="btn btn-secondary btn-icon" title="Alternar tema claro/escuro" aria-label="Alternar tema">
+          <svg id="theme-icon-sun" class="hidden" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+          <svg id="theme-icon-moon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        </button>
         <button id="btn-refresh" class="btn btn-secondary">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
           Atualizar
@@ -101,10 +115,20 @@
           <h2 class="finance-title">Visão Geral de Custos e Consumo</h2>
           <p class="subtitle text-xs">Acompanhamento de tokens, requisições de LLM e custos em USD agregados.</p>
         </div>
-        <div class="pill-group">
-          <button class="pill-btn" data-period="7">7 dias</button>
-          <button class="pill-btn active" data-period="30">30 dias</button>
-          <button class="pill-btn" data-period="90">90 dias</button>
+        <div class="finance-filter-actions">
+          <div class="pill-group">
+            <button class="pill-btn active" data-period="mes_atual">Mês Atual</button>
+            <button class="pill-btn" data-period="7">7 dias</button>
+            <button class="pill-btn" data-period="30">30 dias</button>
+            <button class="pill-btn" data-period="custom">Personalizado</button>
+          </div>
+          <div id="finance-custom-dates" class="finance-custom-dates hidden">
+            <label for="finance-date-start">De:</label>
+            <input type="date" id="finance-date-start" class="date-input">
+            <label for="finance-date-end">Até:</label>
+            <input type="date" id="finance-date-end" class="date-input">
+            <button id="btn-apply-finance-dates" class="btn btn-xs btn-primary">Filtrar</button>
+          </div>
         </div>
       </div>
 
@@ -115,7 +139,7 @@
             <span class="metric-label">Custo Total</span>
             <span id="kpi-custo-delta" class="delta-badge">--</span>
           </div>
-          <span id="kpi-custo" class="metric-value">$0.0000</span>
+          <span id="kpi-custo" class="metric-value">$0.00</span>
           <span class="metric-sublabel">Gasto no período selecionado</span>
         </div>
         <div class="card metric-card">
@@ -139,39 +163,7 @@
             <span class="metric-label">Taxa de Cache</span>
           </div>
           <span id="kpi-cache-rate" class="metric-value">0.0%</span>
-          <span id="kpi-custo-medio" class="metric-sublabel">Custo médio: $0.000000 / req</span>
-        </div>
-      </section>
-
-      <!-- Rendimento e Poder de Compra por $1 USD (Cálculos 100% no Cliente) -->
-      <section class="metrics finance-power-kpis">
-        <div class="card metric-card">
-          <div class="metric-header-row">
-            <span class="metric-label">Requisições por $1 USD</span>
-          </div>
-          <span id="kpi-reqs-por-dolar" class="metric-value text-success">--</span>
-          <span class="metric-sublabel">Chamadas de IA que $1.00 entrega</span>
-        </div>
-        <div class="card metric-card">
-          <div class="metric-header-row">
-            <span class="metric-label">Mensagens por $1 USD</span>
-          </div>
-          <span id="kpi-msgs-por-dolar" class="metric-value text-success">--</span>
-          <span class="metric-sublabel">Atendimentos ao cliente por $1.00</span>
-        </div>
-        <div class="card metric-card">
-          <div class="metric-header-row">
-            <span class="metric-label">Tokens por $1 USD</span>
-          </div>
-          <span id="kpi-tokens-por-dolar" class="metric-value">--</span>
-          <span class="metric-sublabel">Volume total de tokens por $1.00</span>
-        </div>
-        <div class="card metric-card">
-          <div class="metric-header-row">
-            <span class="metric-label">Média por Mensagem</span>
-          </div>
-          <span id="kpi-media-tokens-msg" class="metric-value font-mono">--</span>
-          <span id="kpi-media-custo-msg" class="metric-sublabel">Custo médio por mensagem</span>
+          <span id="kpi-custo-medio" class="metric-sublabel">Custo médio: $0.0000 / req</span>
         </div>
       </section>
 
@@ -250,15 +242,39 @@
                 <th>Requisições</th>
                 <th>Tokens Totais</th>
                 <th>Taxa de Cache</th>
-                <th class="text-right">Custo (USD)</th>
+                <th>Custo (USD)</th>
+                <th class="text-right">Faturamento</th>
               </tr>
             </thead>
             <tbody id="finance-clients-tbody">
               <tr>
-                <td colspan="5" class="text-center py-8 text-muted">Carregando dados...</td>
+                <td colspan="6" class="text-center py-8 text-muted">Carregando dados...</td>
               </tr>
             </tbody>
           </table>
+        </div>
+      </div>
+
+      <!-- Rendimento e Poder de Compra por $1 USD (Estimativas no Cliente) -->
+      <div class="card finance-power-card">
+        <h4 class="power-title">Estimativa de Eficiência e Poder de Compra ($1.00 USD)</h4>
+        <div class="power-kpis-grid">
+          <div class="power-item">
+            <span class="power-label">Requisições por $1 USD</span>
+            <span id="kpi-reqs-por-dolar" class="power-value text-success">--</span>
+          </div>
+          <div class="power-item">
+            <span class="power-label">Mensagens por $1 USD</span>
+            <span id="kpi-msgs-por-dolar" class="power-value text-success">--</span>
+          </div>
+          <div class="power-item">
+            <span class="power-label">Tokens por $1 USD</span>
+            <span id="kpi-tokens-por-dolar" class="power-value">--</span>
+          </div>
+          <div class="power-item">
+            <span class="power-label">Média por Mensagem</span>
+            <span id="kpi-media-tokens-msg" class="power-value font-mono">--</span>
+          </div>
         </div>
       </div>
     </div>
@@ -271,10 +287,6 @@
           <button class="sub-tab active" data-ia-subtab="subtab-modelos">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
             Modelos de IA
-          </button>
-          <button class="sub-tab" data-ia-subtab="subtab-prompts">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
-            Prompts Padrão
           </button>
           <button class="sub-tab" data-ia-subtab="subtab-conhecimento">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
@@ -346,7 +358,7 @@
                 <tr>
                   <th>Provedor</th>
                   <th>Modelo / Alias</th>
-                  <th>Tier (Classificação)</th>
+                  <th>Nível do Modelo</th>
                   <th>Input / 1M</th>
                   <th>Output / 1M</th>
                   <th>Cache / 1M</th>
@@ -364,67 +376,7 @@
         </main>
       </div>
 
-      <!-- SUB-ABA 2: Prompts Padrão -->
-      <div id="subtab-prompts" class="ia-subcontent">
-        <!-- Resumo de Métricas de Prompts -->
-        <section class="metrics">
-          <div class="card metric-card">
-            <span class="metric-label">Total de Prompts</span>
-            <span id="metric-prompts-total" class="metric-value">0</span>
-          </div>
-          <div class="card metric-card">
-            <span class="metric-label">Prompts Ativos</span>
-            <span id="metric-prompts-ativos" class="metric-value text-success">0</span>
-          </div>
-          <div class="card metric-card">
-            <span class="metric-label">Prompts Inativos</span>
-            <span id="metric-prompts-inativos" class="metric-value text-muted">0</span>
-          </div>
-          <div class="card metric-card">
-            <span class="metric-label">Modelo Padrão</span>
-            <span id="metric-prompts-default-model" class="metric-value text-xs font-mono">deepseek-chat</span>
-          </div>
-        </section>
-
-        <!-- Tabela Principal de Prompts Padrão -->
-        <main class="card table-card">
-          <div class="table-header">
-            <div>
-              <h2>Biblioteca de Prompts Globais</h2>
-              <p class="subtitle text-xs">Templates de sistema e regras de roteamento econômico consumidos pelos nós do n8n.</p>
-            </div>
-            <div class="table-actions-header">
-              <input type="text" id="prompts-search-input" placeholder="Buscar por chave ou nome..." class="search-field">
-              <button id="btn-new-prompt" class="btn btn-primary">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-                Novo Prompt
-              </button>
-            </div>
-          </div>
-
-          <div class="table-responsive">
-            <table class="table">
-              <thead>
-                <tr>
-                  <th>Chave (Slug n8n)</th>
-                  <th>Nome do Prompt</th>
-                  <th>Modelo Vinculado</th>
-                  <th>Versão</th>
-                  <th>Status</th>
-                  <th class="text-right">Ações</th>
-                </tr>
-              </thead>
-              <tbody id="prompts-tbody">
-                <tr>
-                  <td colspan="6" class="text-center py-8 text-muted">Carregando prompts padrão...</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </main>
-      </div>
-
-      <!-- SUB-ABA 3: Base de Conhecimento (RAG / pgvector) -->
+      <!-- SUB-ABA 2: Base de Conhecimento (RAG / pgvector) -->
       <div id="subtab-conhecimento" class="ia-subcontent">
         <!-- Resumo de Métricas de Conhecimento -->
         <section class="metrics">
@@ -713,13 +665,10 @@
             Digite o número do celular com DDI e DDD. O WhatsApp vai gerar um código de 8 dígitos para você digitar no celular sem precisar de câmera.
           </p>
 
-          <div class="form-row">
-            <div class="form-group flex-1">
-              <label for="pairing-number">Número com DDD e país (DDI)</label>
+          <div class="form-group">
+            <label for="pairing-number">Número com DDD e país (DDI)</label>
+            <div class="pairing-input-row">
               <input type="tel" id="pairing-number" placeholder="5511999999999" class="input">
-              <small class="field-hint">Ex: 5515999999999 (se omitir 55, será adicionado automaticamente).</small>
-            </div>
-            <div class="button-group self-end" style="display: flex; gap: 8px;">
               <button id="btn-request-pairing" class="btn btn-primary">
                 Gerar Código
               </button>
@@ -727,6 +676,7 @@
                 Reiniciar
               </button>
             </div>
+            <small class="field-hint">Ex: 5515999999999 (se omitir 55, será adicionado automaticamente).</small>
           </div>
 
           <div id="pairing-result-box" class="pairing-box hidden">
@@ -905,13 +855,12 @@
 
           <div class="form-row">
             <div class="form-group flex-1">
-              <label for="modelo-tier">Tier / Classificação de Roteamento *</label>
+              <label for="modelo-tier">Nível do Modelo *</label>
               <select id="modelo-tier" required class="input">
-                <option value="tier_1">[Tier 1] Texto Puro / Econômico (Conversação, FAQs, Dúvidas)</option>
-                <option value="tier_2">[Tier 2] Ferramentas / Tool Calling (Estoque, Banco, APIs n8n)</option>
-                <option value="tier_3">[Tier 3] Raciocínio Complexo / Crítico (Cálculos, Lógica, Contratos)</option>
+                <option value="tier_1">Nível 1</option>
+                <option value="tier_2">Nível 2</option>
+                <option value="tier_3">Nível 3</option>
               </select>
-              <small class="field-hint">Usado pelo router (Mini JEV) para direcionar cada tipo de mensagem com máximo custo-benefício.</small>
             </div>
           </div>
 
@@ -1000,119 +949,6 @@
 
       <div class="modal-footer">
         <button type="button" class="btn btn-secondary" data-close="modal-test-model">Fechar</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- Modal: Cadastrar / Editar Prompt Padrão -->
-  <div id="modal-prompt" class="modal-backdrop hidden">
-    <div class="modal modal-lg">
-      <div class="modal-header">
-        <div>
-          <h3 id="modal-prompt-title">Cadastrar Prompt Padrão</h3>
-          <p class="subtitle text-sm">Defina templates de sistema e regras de roteamento consumidas pelos fluxos n8n.</p>
-        </div>
-        <button class="btn-close" data-close="modal-prompt">&times;</button>
-      </div>
-
-      <form id="form-prompt">
-        <input type="hidden" id="prompt-id">
-        <div class="modal-body">
-          <div class="form-row">
-            <div class="form-group flex-1">
-              <label for="prompt-chave">Chave Única (Slug n8n) *</label>
-              <input type="text" id="prompt-chave" required pattern="^[a-z0-9_-]{3,100}$" class="input font-mono" placeholder="ex: roteador_modelos_economia" autocomplete="off">
-              <small class="field-hint">Chave de busca para queries no n8n (letras minúsculas, números, hífen e underline).</small>
-            </div>
-            <div class="form-group flex-1">
-              <label for="prompt-nome">Nome do Prompt *</label>
-              <input type="text" id="prompt-nome" required class="input" placeholder="Ex: Roteador de Modelos Econômico">
-            </div>
-          </div>
-
-          <div class="form-row">
-            <div class="form-group flex-1">
-              <label for="prompt-modelo">Modelo Vinculado (Opcional)</label>
-              <select id="prompt-modelo" class="input font-mono">
-                <option value="">(Nenhum / Definido dinamicamente no fluxo n8n)</option>
-              </select>
-              <small class="field-hint">Selecione um modelo já cadastrado e ativo no catálogo para consumo deste prompt.</small>
-            </div>
-            <div class="form-group flex-1">
-              <label for="prompt-descricao">Descrição / Finalidade</label>
-              <input type="text" id="prompt-descricao" class="input" placeholder="Breve resumo da regra ou objetivo do prompt...">
-            </div>
-          </div>
-
-          <div class="form-group">
-            <label for="prompt-conteudo">Conteúdo do Prompt (System Message) *</label>
-            <textarea id="prompt-conteudo" required class="input prompt-editor-textarea" placeholder="Digite ou cole aqui o prompt estruturado com tags XML..."></textarea>
-            <div class="prompt-meta-counter">
-              <span id="prompt-char-count">0 caracteres</span>
-              <span class="token-est-badge" id="prompt-token-est">~0 tokens estimados</span>
-            </div>
-          </div>
-
-          <div class="form-group">
-            <label class="switch-row">
-              <input type="checkbox" id="prompt-ativo" checked>
-              <span>Prompt ativo para consumo imediato no n8n</span>
-            </label>
-          </div>
-        </div>
-
-        <div class="modal-footer">
-          <button type="button" class="btn btn-secondary" data-close="modal-prompt">Cancelar</button>
-          <button type="submit" class="btn btn-primary" id="btn-save-prompt">Salvar Prompt</button>
-        </div>
-      </form>
-    </div>
-  </div>
-
-  <!-- Modal: Visualização Rápida e Cópia do Prompt -->
-  <div id="modal-view-prompt" class="modal-backdrop hidden">
-    <div class="modal modal-lg">
-      <div class="modal-header">
-        <div>
-          <div class="modal-header-top">
-            <h3 id="view-prompt-nome">Detalhes do Prompt</h3>
-          </div>
-          <p id="view-prompt-chave" class="subtitle text-xs font-mono text-muted">chave: --</p>
-        </div>
-        <button class="btn-close" data-close="modal-view-prompt">&times;</button>
-      </div>
-
-      <div class="modal-body">
-        <div class="ficha-readonly-banner mb-3">
-          <div>
-            <span class="ficha-label">Modelo Vinculado:</span>
-            <code id="view-prompt-modelo" class="ficha-code">--</code>
-          </div>
-          <div class="ficha-meta-dates">
-            <div><span class="ficha-label">Versão:</span> <span id="view-prompt-versao">v1</span></div>
-            <div><span class="ficha-label">Status:</span> <span id="view-prompt-status">Ativo</span></div>
-          </div>
-        </div>
-
-        <p id="view-prompt-descricao" class="text-xs text-muted mb-2">--</p>
-        <div id="view-prompt-vars-container" class="mb-3 text-xs text-muted">
-          <span class="ficha-label">Variáveis esperadas:</span> <code id="view-prompt-variaveis" class="font-mono text-xs">--</code>
-        </div>
-
-        <div class="form-group">
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-            <label class="ficha-label">Conteúdo do Prompt:</label>
-            <button type="button" id="btn-copy-view-prompt" class="btn btn-xs btn-primary">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-              Copiar para n8n
-            </button>
-          </div>
-          <pre id="view-prompt-content" class="prompt-view-code">--</pre>
-        </div>
-      </div>
-
-      <div class="modal-footer">
-        <button type="button" class="btn btn-secondary" data-close="modal-view-prompt">Fechar</button>
       </div>
     </div>
   </div>
@@ -1216,6 +1052,46 @@
           <button type="submit" class="btn btn-primary" id="btn-save-rag-doc">Salvar Fragmento</button>
         </div>
       </form>
+    </div>
+  </div>
+
+  <!-- Modal: Gateway / Cobrança do Cliente (Preparação Industrial) -->
+  <div id="modal-billing-client" class="modal-backdrop hidden">
+    <div class="modal">
+      <div class="modal-header">
+        <div>
+          <h3 id="billing-client-title">Cobrança e Faturamento</h3>
+          <p class="subtitle text-sm">Resumo financeiro do cliente e link de pagamento do gateway.</p>
+        </div>
+        <button class="btn-close" data-close="modal-billing-client">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="card mb-3" style="background-color: var(--bg-subtle);">
+          <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
+            <span class="text-xs text-muted">Cliente:</span>
+            <strong id="billing-modal-client-name" class="text-sm">--</strong>
+          </div>
+          <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
+            <span class="text-xs text-muted">Consumo Período:</span>
+            <span id="billing-modal-cost" class="font-mono text-sm">$0.00</span>
+          </div>
+          <div style="display: flex; justify-content: space-between;">
+            <span class="text-xs text-muted">Status:</span>
+            <span class="badge-billing active">Aguardando Pagamento</span>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="billing-payment-link">Link de Pagamento (Gateway Integrado):</label>
+          <div class="pairing-input-row">
+            <input type="text" id="billing-payment-link" class="input font-mono text-xs" readonly value="https://pay.anneia.app/inv_">
+            <button type="button" id="btn-copy-billing-link" class="btn btn-secondary">Copiar</button>
+          </div>
+          <small class="field-hint">Compartilhe este link seguro com o cliente para liquidação via PIX ou Cartão.</small>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-close="modal-billing-client">Fechar</button>
+      </div>
     </div>
   </div>
 

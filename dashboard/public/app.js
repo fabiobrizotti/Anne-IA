@@ -8,13 +8,16 @@
   let currentSettingsInstanceId = null;
   let currentFichaInstanceId = null;
   let pollStatusTimer = null;
-  let currentFinancePeriod = 30;
+  let currentFinancePeriod = 'mes_atual';
   let financeData = null;
   let financeDailyTableView = false;
   let activePageTab = 'tab-instancias';
 
   // Elementos do DOM
   const elements = {
+    btnThemeToggle: document.getElementById('btn-theme-toggle'),
+    themeIconSun: document.getElementById('theme-icon-sun'),
+    themeIconMoon: document.getElementById('theme-icon-moon'),
     instancesTbody: document.getElementById('instances-tbody'),
     searchInput: document.getElementById('search-input'),
     btnRefresh: document.getElementById('btn-refresh'),
@@ -120,6 +123,15 @@
     modelChartContainer: document.getElementById('finance-model-chart-container'),
     financeClientsTbody: document.getElementById('finance-clients-tbody'),
     financeSearchInput: document.getElementById('finance-search-input'),
+    financeCustomDates: document.getElementById('finance-custom-dates'),
+    financeDateStart: document.getElementById('finance-date-start'),
+    financeDateEnd: document.getElementById('finance-date-end'),
+    btnApplyFinanceDates: document.getElementById('btn-apply-finance-dates'),
+    modalBillingClient: document.getElementById('modal-billing-client'),
+    billingModalClientName: document.getElementById('billing-modal-client-name'),
+    billingModalCost: document.getElementById('billing-modal-cost'),
+    billingPaymentLink: document.getElementById('billing-payment-link'),
+    btnCopyBillingLink: document.getElementById('btn-copy-billing-link'),
 
     // Elementos da Aba Modelos de IA
     metricModelosTotal: document.getElementById('metric-modelos-total'),
@@ -167,41 +179,6 @@
     iaSubTabs: document.querySelectorAll('.sub-tab'),
     iaSubcontents: document.querySelectorAll('.ia-subcontent'),
 
-    // Elementos da Aba Prompts Padrão
-    metricPromptsTotal: document.getElementById('metric-prompts-total'),
-    metricPromptsAtivos: document.getElementById('metric-prompts-ativos'),
-    metricPromptsInativos: document.getElementById('metric-prompts-inativos'),
-    metricPromptsDefaultModel: document.getElementById('metric-prompts-default-model'),
-    promptsSearchInput: document.getElementById('prompts-search-input'),
-    promptsTbody: document.getElementById('prompts-tbody'),
-    btnNewPrompt: document.getElementById('btn-new-prompt'),
-
-    // Modal Prompt
-    modalPrompt: document.getElementById('modal-prompt'),
-    modalPromptTitle: document.getElementById('modal-prompt-title'),
-    formPrompt: document.getElementById('form-prompt'),
-    promptId: document.getElementById('prompt-id'),
-    promptChave: document.getElementById('prompt-chave'),
-    promptNome: document.getElementById('prompt-nome'),
-    promptModelo: document.getElementById('prompt-modelo'),
-    promptDescricao: document.getElementById('prompt-descricao'),
-    promptConteudo: document.getElementById('prompt-conteudo'),
-    promptCharCount: document.getElementById('prompt-char-count'),
-    promptTokenEst: document.getElementById('prompt-token-est'),
-    promptAtivo: document.getElementById('prompt-ativo'),
-
-    // Modal Visualizar Prompt
-    modalViewPrompt: document.getElementById('modal-view-prompt'),
-    viewPromptNome: document.getElementById('view-prompt-nome'),
-    viewPromptChave: document.getElementById('view-prompt-chave'),
-    viewPromptModelo: document.getElementById('view-prompt-modelo'),
-    viewPromptVariaveis: document.getElementById('view-prompt-variaveis'),
-    viewPromptVersao: document.getElementById('view-prompt-versao'),
-    viewPromptStatus: document.getElementById('view-prompt-status'),
-    viewPromptDescricao: document.getElementById('view-prompt-descricao'),
-    viewPromptContent: document.getElementById('view-prompt-content'),
-    btnCopyViewPrompt: document.getElementById('btn-copy-view-prompt'),
-
     // Elementos da Aba Conhecimento (RAG / pgvector)
     metricRagTotal: document.getElementById('metric-rag-total'),
     metricRagTenants: document.getElementById('metric-rag-tenants'),
@@ -246,7 +223,6 @@
 
   let modelsList = [];
   let nineRouterModels = [];
-  let standardPrompts = [];
   let knowledgeDocs = [];
   let knowledgePagination = { page: 1, limit: 25, total: 0, totalPages: 1 };
   let ragSearchDebounceTimer = null;
@@ -978,9 +954,7 @@
     if (targetTabId === 'tab-financeiro') {
       loadFinanceData();
     } else if (targetTabId === 'tab-ia' || targetTabId === 'tab-modelos') {
-      if (activeIaSubTab === 'subtab-prompts') {
-        loadStandardPrompts();
-      } else if (activeIaSubTab === 'subtab-conhecimento') {
+      if (activeIaSubTab === 'subtab-conhecimento') {
         loadKnowledge();
       } else {
         loadModels();
@@ -998,9 +972,7 @@
       content.classList.toggle('active', content.id === subTabId);
     });
 
-    if (subTabId === 'subtab-prompts') {
-      loadStandardPrompts();
-    } else if (subTabId === 'subtab-conhecimento') {
+    if (subTabId === 'subtab-conhecimento') {
       loadKnowledge();
     } else {
       loadModels();
@@ -1015,16 +987,43 @@
     btn.addEventListener('click', () => switchIaSubTab(btn.dataset.iaSubtab));
   });
 
-  // Filtro de período (7d / 30d / 90d)
+  // Filtro de período (mes_atual / 7 / 30 / custom)
   elements.pillBtns.forEach(btn => {
     btn.addEventListener('click', () => {
-      const period = parseInt(btn.dataset.period, 10);
+      const period = btn.dataset.period;
       if (period === currentFinancePeriod) return;
       currentFinancePeriod = period;
       elements.pillBtns.forEach(b => b.classList.toggle('active', b === btn));
-      loadFinanceData();
+
+      if (period === 'custom') {
+        if (elements.financeCustomDates) elements.financeCustomDates.classList.remove('hidden');
+        const now = new Date();
+        const startStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+        const endStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+        if (elements.financeDateStart && !elements.financeDateStart.value) elements.financeDateStart.value = startStr;
+        if (elements.financeDateEnd && !elements.financeDateEnd.value) elements.financeDateEnd.value = endStr;
+      } else {
+        if (elements.financeCustomDates) elements.financeCustomDates.classList.add('hidden');
+        loadFinanceData();
+      }
     });
   });
+
+  if (elements.btnApplyFinanceDates) {
+    elements.btnApplyFinanceDates.addEventListener('click', () => {
+      const start = elements.financeDateStart?.value;
+      const end = elements.financeDateEnd?.value;
+      if (!start || !end) {
+        showToast('Selecione as datas de início e fim.', 'error');
+        return;
+      }
+      if (start > end) {
+        showToast('A data inicial não pode ser posterior à data final.', 'error');
+        return;
+      }
+      loadFinanceData();
+    });
+  }
 
   // Alternador de visão diária: Gráfico vs Tabela
   if (elements.btnToggleDailyView) {
@@ -1037,12 +1036,70 @@
   }
 
   // ---------------------------------------------------------------------------
-  // DASHBOARD FINANCEIRO: CARREGAMENTO E RENDERIZAÇÃO
+  // DASHBOARD FINANCEIRO: CARREGAMENTO E RENDERIZAÇÃO CLIENT-SIDE
   // ---------------------------------------------------------------------------
+
+  function formatCurrency(val) {
+    const num = Number(val || 0);
+    if (num > 0 && num < 0.01) {
+      return `$${num.toFixed(4)}`;
+    }
+    return `$${num.toFixed(2)}`;
+  }
+
+  // Offloading de processamento: construção contínua da série diária no cliente
+  function buildClientContinuousSeries(rawSeries, inicioStr, fimStr) {
+    const map = new Map();
+    (rawSeries || []).forEach(r => {
+      map.set(r.dia, {
+        dia: r.dia,
+        custo_usd: Number(r.custo_usd || 0),
+        tokens: Number(r.tokens || 0),
+        requisicoes: Number(r.requisicoes || 0)
+      });
+    });
+
+    if (!inicioStr || !fimStr) return Array.from(map.values());
+
+    const start = new Date(`${inicioStr}T00:00:00`);
+    const end = new Date(`${fimStr}T00:00:00`);
+    if (isNaN(start.getTime()) || isNaN(end.getTime()) || start > end) {
+      return Array.from(map.values());
+    }
+
+    const result = [];
+    const curr = new Date(start);
+    let safety = 0;
+    while (curr <= end && safety < 366) {
+      const y = curr.getFullYear();
+      const m = String(curr.getMonth() + 1).padStart(2, '0');
+      const d = String(curr.getDate()).padStart(2, '0');
+      const chave = `${y}-${m}-${d}`;
+      if (map.has(chave)) {
+        result.push(map.get(chave));
+      } else {
+        result.push({ dia: chave, custo_usd: 0, tokens: 0, requisicoes: 0 });
+      }
+      curr.setDate(curr.getDate() + 1);
+      safety++;
+    }
+    return result;
+  }
 
   async function loadFinanceData() {
     try {
-      const res = await api(`/api/v1/financeiro?dias=${currentFinancePeriod}`);
+      let queryParam = '';
+      if (currentFinancePeriod === 'custom') {
+        const start = elements.financeDateStart?.value;
+        const end = elements.financeDateEnd?.value;
+        queryParam = `inicio=${encodeURIComponent(start)}&fim=${encodeURIComponent(end)}`;
+      } else if (currentFinancePeriod === 'mes_atual') {
+        queryParam = 'periodo=mes_atual';
+      } else {
+        queryParam = `dias=${currentFinancePeriod}`;
+      }
+
+      const res = await api(`/api/v1/financeiro?${queryParam}`);
       financeData = res.data || {};
       renderFinanceDashboard();
     } catch (err) {
@@ -1053,17 +1110,19 @@
 
   function renderFinanceDashboard() {
     if (!financeData) return;
-    const { kpis = {}, kpis_anteriores = {}, serie_diaria = [], por_cliente = [], por_modelo = [] } = financeData;
+    const { kpis = {}, kpis_anteriores = {}, serie_diaria = [], por_cliente = [], por_modelo = [], inicio, fim } = financeData;
+
+    const seriesContinous = buildClientContinuousSeries(serie_diaria, inicio, fim);
 
     renderKPIs(kpis, kpis_anteriores);
-    renderDailyAreaChart(serie_diaria);
-    renderDailyTable(serie_diaria);
+    renderDailyAreaChart(seriesContinous);
+    renderDailyTable(seriesContinous);
     renderClientRanking(por_cliente);
     renderModelRanking(por_modelo);
     renderFinanceClientsTable(por_cliente);
   }
 
-  function formatDelta(current, prev, isCurrency = false) {
+  function formatDelta(current, prev) {
     if (!prev || prev === 0) {
       return { text: current > 0 ? '+100%' : '0%', class: 'neutral' };
     }
@@ -1084,12 +1143,13 @@
     const prevReqs = Number(kpisPrev.requisicoes || 0);
     const tokens = Number(kpis.tokens_total || 0);
     const prevTokens = Number(kpisPrev.tokens_total || 0);
+    const tokensCached = Number(kpis.tokens_cached || 0);
 
     const deltaCusto = formatDelta(custo, prevCusto);
     const deltaReqs = formatDelta(reqs, prevReqs);
     const deltaTokens = formatDelta(tokens, prevTokens);
 
-    elements.kpiCusto.textContent = `$${custo.toFixed(4)}`;
+    elements.kpiCusto.textContent = formatCurrency(custo);
     elements.kpiCustoDelta.textContent = deltaCusto.text;
     elements.kpiCustoDelta.className = `delta-badge ${deltaCusto.class}`;
 
@@ -1105,12 +1165,14 @@
     const compT = Number(kpis.tokens_completion || 0);
     elements.kpiTokensSplit.textContent = `${promptT.toLocaleString('pt-BR')} prompt / ${compT.toLocaleString('pt-BR')} completion`;
 
-    elements.kpiCacheRate.textContent = `${Number(kpis.cache_rate || 0).toFixed(1)}%`;
-    elements.kpiCustoMedio.textContent = `Custo médio: $${Number(kpis.custo_medio_requisicao || 0).toFixed(6)} / req`;
+    const cacheRate = tokens > 0 ? ((tokensCached / tokens) * 100).toFixed(1) : '0.0';
+    elements.kpiCacheRate.textContent = `${cacheRate}%`;
+    elements.kpiCustoMedio.textContent = reqs > 0
+      ? `Custo médio: $${(custo / reqs < 0.01 ? (custo / reqs).toFixed(4) : (custo / reqs).toFixed(2))} / req`
+      : 'Custo médio: $0.00 / req';
 
     // Cálculos 100% no cliente (browser) para zero impacto no servidor pai
     const avgTokensPerReq = reqs > 0 ? Math.round(tokens / reqs) : 0;
-    const custoMedioReq = reqs > 0 ? (custo / reqs) : 0;
 
     let reqsPorDolarText = '--';
     let msgsPorDolarText = '--';
@@ -1120,21 +1182,20 @@
       const rpd = Math.round(reqs / custo);
       const tpd = Math.round(tokens / custo);
       reqsPorDolarText = rpd.toLocaleString('pt-BR');
-      msgsPorDolarText = rpd.toLocaleString('pt-BR');
+      msgsPorDolarText = Math.round(rpd * 0.8).toLocaleString('pt-BR');
       tokensPorDolarText = tpd >= 1000000
         ? `${(tpd / 1000000).toFixed(2)}M`
         : tpd.toLocaleString('pt-BR');
     } else if (reqs > 0) {
-      reqsPorDolarText = 'Ilimitado (Gratuito)';
-      msgsPorDolarText = 'Ilimitado (Gratuito)';
-      tokensPorDolarText = 'Ilimitado (Gratuito)';
+      reqsPorDolarText = 'Ilimitado';
+      msgsPorDolarText = 'Ilimitado';
+      tokensPorDolarText = 'Ilimitado';
     }
 
     if (elements.kpiReqsPorDolar) elements.kpiReqsPorDolar.textContent = reqsPorDolarText;
     if (elements.kpiMsgsPorDolar) elements.kpiMsgsPorDolar.textContent = msgsPorDolarText;
     if (elements.kpiTokensPorDolar) elements.kpiTokensPorDolar.textContent = tokensPorDolarText;
     if (elements.kpiMediaTokensMsg) elements.kpiMediaTokensMsg.textContent = `${avgTokensPerReq.toLocaleString('pt-BR')} tok`;
-    if (elements.kpiMediaCustoMsg) elements.kpiMediaCustoMsg.textContent = `$${custoMedioReq.toFixed(6)} / msg`;
   }
 
   // Gráfico Diário de Área em SVG Puro
@@ -1312,7 +1373,7 @@
     if (filtered.length === 0) {
       elements.financeClientsTbody.innerHTML = `
         <tr>
-          <td colspan="5" class="text-center py-8 text-muted">
+          <td colspan="6" class="text-center py-8 text-muted">
             ${term ? 'Nenhum cliente encontrado para o filtro.' : 'Nenhum registro de uso de tokens encontrado.'}
           </td>
         </tr>
@@ -1320,18 +1381,62 @@
       return;
     }
 
-    elements.financeClientsTbody.innerHTML = filtered.map(c => `
-      <tr>
-        <td>
-          <strong>${escapeHtml(c.nome)}</strong>
-          <div class="text-muted text-xs"><code>${escapeHtml(c.cliente_id)}</code></div>
-        </td>
-        <td>${c.requisicoes.toLocaleString('pt-BR')}</td>
-        <td>${c.tokens.toLocaleString('pt-BR')}</td>
-        <td>${c.cache_rate.toFixed(1)}%</td>
-        <td class="text-right font-bold">$${c.custo_usd.toFixed(6)}</td>
-      </tr>
-    `).join('');
+    elements.financeClientsTbody.innerHTML = filtered.map(c => {
+      const custoNum = Number(c.custo_usd || 0);
+      const tokensNum = Number(c.tokens || 0);
+      const cacheRate = tokensNum > 0 ? ((Number(c.tokens_cached || 0) / tokensNum) * 100).toFixed(1) : '0.0';
+
+      return `
+        <tr>
+          <td>
+            <strong>${escapeHtml(c.nome)}</strong>
+            <div class="text-muted text-xs"><code>${escapeHtml(c.cliente_id)}</code></div>
+          </td>
+          <td>${Number(c.requisicoes || 0).toLocaleString('pt-BR')}</td>
+          <td>${tokensNum.toLocaleString('pt-BR')}</td>
+          <td>${cacheRate}%</td>
+          <td class="font-bold">${formatCurrency(custoNum)}</td>
+          <td class="text-right">
+            <button class="btn btn-xs btn-secondary" onclick="window.AnneUI.openBillingModal('${escapeHtml(String(c.cliente_id))}', '${escapeHtml(String(c.nome))}', ${custoNum})" title="Gerar cobrança e link de pagamento">
+              Cobrança
+            </button>
+          </td>
+        </tr>
+      `;
+    }).join('');
+  }
+
+  function openBillingModal(clienteId, clienteNome, custo) {
+    if (elements.billingModalClientName) elements.billingModalClientName.textContent = clienteNome || clienteId;
+    if (elements.billingModalCost) elements.billingModalCost.textContent = formatCurrency(custo);
+    if (elements.billingPaymentLink) {
+      const slug = (clienteId || 'cli').replace(/[^a-zA-Z0-9_-]/g, '');
+      const mesAno = new Date().toISOString().slice(0, 7).replace('-', '');
+      elements.billingPaymentLink.value = `https://pay.anneia.app/inv_${slug}_${mesAno}`;
+    }
+    openModal(elements.modalBillingClient);
+  }
+
+  if (elements.btnCopyBillingLink) {
+    elements.btnCopyBillingLink.addEventListener('click', async () => {
+      const link = elements.billingPaymentLink?.value;
+      if (!link) return;
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(link);
+        } else {
+          const ta = document.createElement('textarea');
+          ta.value = link;
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+        }
+        showToast('Link de pagamento copiado com sucesso!');
+      } catch (e) {
+        showToast('Erro ao copiar link de pagamento', 'error');
+      }
+    });
   }
 
   if (elements.financeSearchInput) {
@@ -1442,11 +1547,11 @@
       const provEsc = escapeHtml(m.provedor || '');
       const modEsc = escapeHtml(m.modelo || '');
 
-      let tierBadge = '<span class="badge badge-tier-1">Tier 1 • Texto</span>';
+      let tierBadge = '<span class="badge badge-tier-1">Nível 1</span>';
       if (m.tier === 'tier_2') {
-        tierBadge = '<span class="badge badge-tier-2">Tier 2 • Ferramentas</span>';
+        tierBadge = '<span class="badge badge-tier-2">Nível 2</span>';
       } else if (m.tier === 'tier_3') {
-        tierBadge = '<span class="badge badge-tier-3">Tier 3 • Raciocínio</span>';
+        tierBadge = '<span class="badge badge-tier-3">Nível 3</span>';
       }
 
       return `
@@ -1644,339 +1749,12 @@
     elements.modelosSearchInput.addEventListener('input', renderModels);
   }
 
-  // ---------------------------------------------------------------------------
-  // GESTÃO DE PROMPTS PADRÃO (/api/v1/prompts-padrao)
-  // ---------------------------------------------------------------------------
-
-  function updatePromptCounters() {
-    if (!elements.promptConteudo) return;
-    const text = elements.promptConteudo.value || '';
-    const chars = text.length;
-    // Estimativa de tokens (~4 caracteres por token)
-    const estTokens = Math.ceil(chars / 4);
-
-    if (elements.promptCharCount) {
-      elements.promptCharCount.textContent = `${chars.toLocaleString('pt-BR')} caracteres`;
-    }
-    if (elements.promptTokenEst) {
-      elements.promptTokenEst.textContent = `~${estTokens.toLocaleString('pt-BR')} tokens estimados`;
-    }
-  }
-
-  async function copyPromptToClipboard(text, customMessage = 'Prompt copiado com sucesso!') {
-    try {
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        await navigator.clipboard.writeText(text);
-      } else {
-        const textarea = document.createElement('textarea');
-        textarea.value = text;
-        textarea.style.position = 'fixed';
-        textarea.style.opacity = '0';
-        document.body.appendChild(textarea);
-        textarea.select();
-        document.execCommand('copy');
-        document.body.removeChild(textarea);
-      }
-      showToast(customMessage);
-    } catch (err) {
-      console.error('Falha ao copiar prompt:', err);
-      showToast('Erro ao copiar para a área de transferência', 'error');
-    }
-  }
-
-  async function loadStandardPrompts() {
-    if (!elements.promptsTbody) return;
-    elements.promptsTbody.innerHTML = '<tr><td colspan="6" class="text-center py-8 text-muted">Carregando prompts padrão...</td></tr>';
-
-    try {
-      const res = await api('/api/v1/prompts-padrao');
-      standardPrompts = Array.isArray(res.data) ? res.data : [];
-      renderStandardPrompts();
-      updatePromptsMetrics();
-    } catch (err) {
-      console.error('Erro ao carregar prompts padrão:', err);
-      elements.promptsTbody.innerHTML = `<tr><td colspan="6" class="text-center py-8 text-danger">Falha ao carregar prompts: ${err.message}</td></tr>`;
-      showToast('Erro ao listar prompts padrão', 'error');
-    }
-  }
-
-  function updatePromptsMetrics() {
-    if (!elements.metricPromptsTotal) return;
-    const total = standardPrompts.length;
-    const ativos = standardPrompts.filter(p => p.ativo).length;
-    const inativos = total - ativos;
-
-    // Acha o modelo sugerido do roteador principal
-    const mainRouter = standardPrompts.find(p => p.chave === 'roteador_modelos_economia');
-    const defaultModel = mainRouter?.modelo_sugerido || 'deepseek/deepseek-chat';
-
-    elements.metricPromptsTotal.textContent = total;
-    if (elements.metricPromptsAtivos) elements.metricPromptsAtivos.textContent = ativos;
-    if (elements.metricPromptsInativos) elements.metricPromptsInativos.textContent = inativos;
-    if (elements.metricPromptsDefaultModel) {
-      elements.metricPromptsDefaultModel.textContent = defaultModel.split('/').pop() || defaultModel;
-      elements.metricPromptsDefaultModel.title = defaultModel;
-    }
-  }
-
-  function renderStandardPrompts() {
-    if (!elements.promptsTbody) return;
-
-    const searchTerm = (elements.promptsSearchInput?.value || '').trim().toLowerCase();
-
-    const filtered = standardPrompts.filter(p => {
-      return !searchTerm ||
-        p.chave.toLowerCase().includes(searchTerm) ||
-        p.nome.toLowerCase().includes(searchTerm) ||
-        (p.descricao && p.descricao.toLowerCase().includes(searchTerm));
-    });
-
-    if (filtered.length === 0) {
-      elements.promptsTbody.innerHTML = '<tr><td colspan="6" class="text-center py-8 text-muted">Nenhum prompt padrão encontrado.</td></tr>';
-      return;
-    }
-
-    elements.promptsTbody.innerHTML = filtered.map(p => {
-      const statusBadge = p.ativo
-        ? '<span class="badge badge-model-active">Ativo</span>'
-        : '<span class="badge badge-model-inactive">Inativo</span>';
-
-      return `
-        <tr>
-          <td>
-            <code class="font-mono text-xs font-semibold" style="color: var(--text-main);">${escapeHtml(p.chave)}</code>
-          </td>
-          <td>
-            <div style="font-weight: 500;">${escapeHtml(p.nome)}</div>
-            ${p.descricao ? `<div class="text-xs text-muted" style="max-width: 280px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${escapeHtml(p.descricao)}</div>` : ''}
-          </td>
-          <td>
-            <code class="font-mono text-xs text-muted">${escapeHtml(p.modelo_sugerido || '--')}</code>
-          </td>
-          <td>
-            <span class="text-xs text-muted font-mono">v${p.versao || 1}</span>
-          </td>
-          <td>${statusBadge}</td>
-          <td class="text-right">
-            <div style="display: inline-flex; gap: 4px;">
-              <button class="btn btn-xs btn-secondary" onclick="window.AnneUI.quickCopyPrompt('${escapeHtml(String(p.id))}')" title="Copiar conteúdo completo">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-                Copiar
-              </button>
-              <button class="btn btn-xs btn-secondary" onclick="window.AnneUI.viewPrompt('${escapeHtml(String(p.id))}')" title="Ver prompt formatado">
-                Ver
-              </button>
-              <button class="btn btn-xs btn-secondary" onclick="window.AnneUI.openPromptModal('${escapeHtml(String(p.id))}')" title="Editar prompt">
-                Editar
-              </button>
-              <button class="btn btn-xs btn-danger" onclick="window.AnneUI.deletePrompt('${escapeHtml(String(p.id))}')" title="Excluir ou desativar">
-                Excluir
-              </button>
-            </div>
-          </td>
-        </tr>
-      `;
-    }).join('');
-  }
-
-  let editingPromptVariaveis = [];
-
-  async function populatePromptModelOptions(selectedModel = '') {
-    if (!elements.promptModelo) return;
-
-    // Se a lista de modelos ainda não foi carregada, busca da API
-    if (!modelsList || modelsList.length === 0) {
-      try {
-        const res = await api('/api/v1/modelos');
-        modelsList = Array.isArray(res.data) ? res.data : [];
-      } catch (_e) {
-        modelsList = [];
-      }
-    }
-
-    const activeModels = modelsList.filter(m => m.ativo);
-    let optionsHtml = '<option value="">(Nenhum / Definido dinamicamente no fluxo n8n)</option>';
-
-    const tierLabels = {
-      tier_1: 'Tier 1 - Texto',
-      tier_2: 'Tier 2 - Ferramentas',
-      tier_3: 'Tier 3 - Raciocínio'
-    };
-
-    optionsHtml += activeModels.map(m => {
-      const isSel = selectedModel && m.modelo === selectedModel ? 'selected' : '';
-      const tLabel = tierLabels[m.tier] || 'Tier 1';
-      const label = `[${tLabel}] ${m.modelo} (${m.provedor})`;
-      return `<option value="${escapeHtml(m.modelo)}" ${isSel}>${escapeHtml(label)}</option>`;
-    }).join('');
-
-    elements.promptModelo.innerHTML = optionsHtml;
-    if (selectedModel) {
-      elements.promptModelo.value = selectedModel;
-    }
-  }
-
-  async function openPromptModal(id = null) {
-    if (!elements.modalPrompt) return;
-
-    if (elements.formPrompt) elements.formPrompt.reset();
-    if (elements.promptId) elements.promptId.value = '';
-    editingPromptVariaveis = [];
-
-    let selectedModel = '';
-
-    if (id !== null && id !== undefined && id !== '') {
-      const p = standardPrompts.find(item => String(item.id) === String(id));
-      if (!p) return;
-
-      if (elements.modalPromptTitle) elements.modalPromptTitle.textContent = 'Editar Prompt Padrão';
-      if (elements.promptId) elements.promptId.value = p.id;
-      if (elements.promptChave) {
-        elements.promptChave.value = p.chave;
-        // Se for o prompt mestre do sistema, trava edição da chave para não quebrar workflows do n8n
-        elements.promptChave.readOnly = p.chave === 'roteador_modelos_economia';
-      }
-      if (elements.promptNome) elements.promptNome.value = p.nome;
-      selectedModel = p.modelo_sugerido || '';
-      if (elements.promptDescricao) elements.promptDescricao.value = p.descricao || '';
-      if (elements.promptConteudo) elements.promptConteudo.value = p.conteudo || '';
-      if (elements.promptAtivo) elements.promptAtivo.checked = p.ativo !== false;
-      editingPromptVariaveis = Array.isArray(p.variaveis) ? p.variaveis : [];
-    } else {
-      if (elements.modalPromptTitle) elements.modalPromptTitle.textContent = 'Cadastrar Prompt Padrão';
-      if (elements.promptChave) {
-        elements.promptChave.value = '';
-        elements.promptChave.readOnly = false;
-      }
-      selectedModel = 'deepseek/deepseek-chat';
-      if (elements.promptAtivo) elements.promptAtivo.checked = true;
-    }
-
-    await populatePromptModelOptions(selectedModel);
-    updatePromptCounters();
-    openModal(elements.modalPrompt);
-  }
-
-  function viewPrompt(id) {
-    if (!elements.modalViewPrompt) return;
-    const p = standardPrompts.find(item => String(item.id) === String(id));
-    if (!p) return;
-
-    if (elements.viewPromptNome) elements.viewPromptNome.textContent = p.nome;
-    if (elements.viewPromptChave) elements.viewPromptChave.textContent = `chave n8n: ${p.chave}`;
-    if (elements.viewPromptModelo) elements.viewPromptModelo.textContent = p.modelo_sugerido || '(nenhum / dinâmico)';
-    if (elements.viewPromptVersao) elements.viewPromptVersao.textContent = `v${p.versao || 1}`;
-    if (elements.viewPromptStatus) {
-      elements.viewPromptStatus.textContent = p.ativo ? 'Ativo' : 'Inativo';
-      elements.viewPromptStatus.className = p.ativo ? 'text-success' : 'text-muted';
-    }
-    if (elements.viewPromptDescricao) elements.viewPromptDescricao.textContent = p.descricao || 'Sem descrição adicional.';
-
-    const vars = Array.isArray(p.variaveis) && p.variaveis.length > 0
-      ? p.variaveis.map(v => `{{${v}}}`).join(', ')
-      : '(nenhuma variável declarada)';
-    if (elements.viewPromptVariaveis) elements.viewPromptVariaveis.textContent = vars;
-
-    if (elements.viewPromptContent) elements.viewPromptContent.textContent = p.conteudo || '';
-
-    if (elements.btnCopyViewPrompt) {
-      elements.btnCopyViewPrompt.onclick = () => {
-        copyPromptToClipboard(p.conteudo, `Prompt "${p.nome}" copiado! Pronto para colar no nó do n8n.`);
-      };
-    }
-
-    openModal(elements.modalViewPrompt);
-  }
-
-  function quickCopyPrompt(id) {
-    const p = standardPrompts.find(item => String(item.id) === String(id));
-    if (!p) return;
-    copyPromptToClipboard(p.conteudo, `Prompt "${p.chave}" copiado!`);
-  }
-
-  async function savePrompt(e) {
-    e.preventDefault();
-    const id = elements.promptId?.value ? parseInt(elements.promptId.value, 10) : null;
-
-    const payload = {
-      chave: elements.promptChave?.value.trim().toLowerCase(),
-      nome: elements.promptNome?.value.trim(),
-      modelo_sugerido: elements.promptModelo?.value.trim() || null,
-      descricao: elements.promptDescricao?.value.trim(),
-      conteudo: elements.promptConteudo?.value.trim(),
-      variaveis: editingPromptVariaveis,
-      ativo: elements.promptAtivo?.checked !== false
-    };
-
-    if (!payload.chave || !/^[a-z0-9_-]{3,100}$/.test(payload.chave)) {
-      showToast('Chave inválida. Use de 3 a 100 caracteres minúsculos, números, underline ou hífen.', 'error');
-      return;
-    }
-    if (!payload.nome) {
-      showToast('Nome do prompt é obrigatório.', 'error');
-      return;
-    }
-    if (!payload.conteudo) {
-      showToast('Conteúdo do prompt é obrigatório.', 'error');
-      return;
-    }
-
-    const saveBtn = document.getElementById('btn-save-prompt');
-    if (saveBtn) saveBtn.disabled = true;
-
-    try {
-      const url = id ? `/api/v1/prompts-padrao/${id}` : '/api/v1/prompts-padrao';
-      const method = id ? 'PUT' : 'POST';
-
-      await api(url, { method, body: JSON.stringify(payload) });
-      showToast(id ? 'Prompt padrão atualizado com sucesso!' : 'Prompt padrão cadastrado com sucesso!');
-      closeModal(elements.modalPrompt);
-      loadStandardPrompts();
-    } catch (err) {
-      showToast(err.message || 'Falha ao salvar prompt padrão', 'error');
-    } finally {
-      if (saveBtn) saveBtn.disabled = false;
-    }
-  }
-
-  async function deletePrompt(id) {
-    const p = standardPrompts.find(item => String(item.id) === String(id));
-    if (!p) return;
-
-    const isCore = p.chave === 'roteador_modelos_economia';
-    const confirmMsg = isCore
-      ? `O prompt "${p.nome}" é o roteador principal do sistema. Deseja desativá-lo para auditoria em vez de excluir?`
-      : `Deseja realmente remover o prompt padrão "${p.nome}" (${p.chave})?`;
-
-    if (!confirm(confirmMsg)) return;
-
-    try {
-      const res = await api(`/api/v1/prompts-padrao/${id}`, { method: 'DELETE' });
-      showToast(res.message || 'Operação realizada com sucesso!');
-      loadStandardPrompts();
-    } catch (err) {
-      showToast(err.message || 'Falha ao remover prompt', 'error');
-    }
-  }
-
-  // Event Listeners dos Prompts Padrão
-  if (elements.btnNewPrompt) {
-    elements.btnNewPrompt.addEventListener('click', () => openPromptModal(null));
-  }
-  if (elements.formPrompt) {
-    elements.formPrompt.addEventListener('submit', savePrompt);
-  }
-  if (elements.promptsSearchInput) {
-    elements.promptsSearchInput.addEventListener('input', renderStandardPrompts);
-  }
-  if (elements.promptConteudo) {
-    elements.promptConteudo.addEventListener('input', updatePromptCounters);
-  }
-
   // Redimensionamento responsivo do gráfico diário
   window.addEventListener('resize', () => {
     if (activePageTab === 'tab-financeiro' && financeData?.serie_diaria) {
-      renderDailyAreaChart(financeData.serie_diaria);
+      const { serie_diaria = [], inicio, fim } = financeData;
+      const continuous = buildClientContinuousSeries(serie_diaria, inicio, fim);
+      renderDailyAreaChart(continuous);
     }
   });
 
@@ -2320,15 +2098,49 @@
     if (activePageTab === 'tab-financeiro') {
       loadFinanceData();
     } else if (activePageTab === 'tab-ia' || activePageTab === 'tab-modelos') {
-      if (activeIaSubTab === 'subtab-prompts') {
-        loadStandardPrompts();
-      } else if (activeIaSubTab === 'subtab-conhecimento') {
+      if (activeIaSubTab === 'subtab-conhecimento') {
         loadKnowledge(knowledgePagination.page || 1);
       } else {
         loadModels();
       }
     }
   });
+
+  // ---------------------------------------------------------------------------
+  // GESTÃO DE TEMA (CLARO / ESCURO)
+  // ---------------------------------------------------------------------------
+
+  function syncThemeIcons(theme) {
+    if (!elements.themeIconSun || !elements.themeIconMoon) return;
+    const isDark = theme === 'dark';
+    elements.themeIconSun.classList.toggle('hidden', !isDark);
+    elements.themeIconMoon.classList.toggle('hidden', isDark);
+  }
+
+  function initTheme() {
+    const currentTheme = document.documentElement.getAttribute('data-theme') || 'light';
+    syncThemeIcons(currentTheme);
+
+    if (elements.btnThemeToggle) {
+      elements.btnThemeToggle.addEventListener('click', () => {
+        const activeTheme = document.documentElement.getAttribute('data-theme') || 'light';
+        const nextTheme = activeTheme === 'dark' ? 'light' : 'dark';
+        document.documentElement.setAttribute('data-theme', nextTheme);
+        localStorage.setItem('anne_theme', nextTheme);
+        syncThemeIcons(nextTheme);
+      });
+    }
+
+    if (window.matchMedia) {
+      window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
+        if (!localStorage.getItem('anne_theme')) {
+          const sysTheme = e.matches ? 'dark' : 'light';
+          document.documentElement.setAttribute('data-theme', sysTheme);
+          syncThemeIcons(sysTheme);
+        }
+      });
+    }
+  }
 
   // Expõe métodos para chamadas inline nos botões da tabela
   window.AnneUI = {
@@ -2340,16 +2152,14 @@
     openModelModal,
     deleteModel,
     testModel,
-    openPromptModal,
-    viewPrompt,
-    quickCopyPrompt,
-    deletePrompt,
     openRagViewModal,
     openRagNewModal,
     deleteRagDoc,
-    quickCopyRagText
+    quickCopyRagText,
+    openBillingModal
   };
 
   // Inicialização
+  initTheme();
   loadInstances();
 })();
