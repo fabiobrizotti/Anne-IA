@@ -17,12 +17,13 @@ WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'anneia')\gexec
 -- Conecta ao banco de negócio.
 \connect anneia
 
--- 1. Habilita as extensões de Inteligência Artificial e Busca
+-- 1. Habilita as extensões de Inteligência Artificial, Busca e Criptografia (LGPD)
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
 CREATE EXTENSION IF NOT EXISTS vector;
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
--- 2. Cria a Tabela de Produtos
-CREATE TABLE produtos (
+-- 2. Cria a Tabela de Produtos (Idempotente)
+CREATE TABLE IF NOT EXISTS produtos (
   id_produto SERIAL PRIMARY KEY,
   nome_produto VARCHAR(150) NOT NULL,
   preco DECIMAL(10,2) NOT NULL,
@@ -30,7 +31,7 @@ CREATE TABLE produtos (
 );
 
 -- 3. Cria a Tabela de Movimentações (A trava da Idempotência)
-CREATE TABLE movimentacoes_estoque (
+CREATE TABLE IF NOT EXISTS movimentacoes_estoque (
   id_movimentacao SERIAL PRIMARY KEY,
   id_mensagem VARCHAR(120) UNIQUE NOT NULL,
   id_produto INT NOT NULL,
@@ -41,22 +42,20 @@ CREATE TABLE movimentacoes_estoque (
 );
 
 -- 4. Cria a Memória da IA (LangChain / Postgres Chat Memory do n8n)
---    sessionId (sem underscore) para compatibilidade com o node do n8n.
-CREATE TABLE memorypostgreschat (
+--    session_id compatível com o node do n8n; criado_em permite retenção/expurgo LGPD.
+CREATE TABLE IF NOT EXISTS memorypostgreschat (
   id SERIAL PRIMARY KEY,
   session_id VARCHAR NOT NULL,
-  message JSONB NOT NULL
+  message JSONB NOT NULL,
+  criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- 5. Cria a Base de Conhecimento Institucional (RAG / pgvector)
-CREATE TABLE base_conhecimento (
-  id SERIAL PRIMARY KEY,
-  text TEXT NOT NULL,
-  metadata JSONB NOT NULL,
-  embedding VECTOR(3072)
-);
+ALTER TABLE memorypostgreschat ADD COLUMN IF NOT EXISTS criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW();
 
--- 6. Tabela de Clientes (Multi-tenant vinculado às Instâncias Evolution API)
+CREATE INDEX IF NOT EXISTS idx_memorypostgreschat_session ON memorypostgreschat (session_id);
+CREATE INDEX IF NOT EXISTS idx_memorypostgreschat_criado_em ON memorypostgreschat (criado_em);
+
+-- 5. Tabela de Clientes (Multi-tenant vinculado às Instâncias Evolution API)
 --    O campo id é a chave primária e corresponde ao instanceId / instanceName da Evolution API
 --    Relação 1:1 com public."Instance" (Evolution API) pelo MESMO ID: clientes.id = "Instance".id
 CREATE TABLE IF NOT EXISTS clientes (
@@ -77,9 +76,68 @@ ALTER TABLE clientes ADD COLUMN IF NOT EXISTS historico_telefones JSONB NOT NULL
 ALTER TABLE clientes ADD COLUMN IF NOT EXISTS atualizado_em TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP;
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_clientes_codigo ON clientes (codigo);
-
 CREATE INDEX IF NOT EXISTS idx_clientes_nome ON clientes (nome);
 CREATE INDEX IF NOT EXISTS idx_clientes_ativo ON clientes (ativo);
+
+-- 6. Cria a Base de Conhecimento Institucional (RAG / pgvector)
+--    Multi-tenant isolado estritamente por instance_id (clientes.id)
+CREATE TABLE IF NOT EXISTS base_conhecimento (
+  id SERIAL PRIMARY KEY,
+  instance_id VARCHAR(100) REFERENCES clientes(id) ON DELETE CASCADE,
+  text TEXT NOT NULL,
+  metadata JSONB NOT NULL,
+  embedding VECTOR(3072),
+  criado_em TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+  atualizado_em TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+ALTER TABLE base_conhecimento ADD COLUMN IF NOT EXISTS instance_id VARCHAR(100) REFERENCES clientes(id) ON DELETE CASCADE;
+ALTER TABLE base_conhecimento ADD COLUMN IF NOT EXISTS criado_em TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE base_conhecimento ADD COLUMN IF NOT EXISTS atualizado_em TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP;
+
+-- Backfill idempotente: sincroniza instance_id a partir de metadata->>'instance_id' quando válido
+UPDATE base_conhecimento
+SET instance_id = metadata->>'instance_id'
+WHERE (instance_id IS NULL OR instance_id = '')
+  AND metadata IS NOT NULL
+  AND metadata->>'instance_id' IS NOT NULL
+  AND EXISTS (SELECT 1 FROM clientes c WHERE c.id = metadata->>'instance_id');
+
+CREATE INDEX IF NOT EXISTS idx_base_conhecimento_instance ON base_conhecimento (instance_id);
+CREATE INDEX IF NOT EXISTS idx_base_conhecimento_tenant_pagination ON base_conhecimento (instance_id, id DESC);
+CREATE INDEX IF NOT EXISTS idx_base_conhecimento_text_trgm ON base_conhecimento USING gin (text gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_base_conhecimento_metadata_gin ON base_conhecimento USING gin (metadata);
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_indexes
+    WHERE tablename = 'base_conhecimento' AND indexname = 'idx_base_conhecimento_hnsw'
+  ) THEN
+    BEGIN
+      CREATE INDEX idx_base_conhecimento_hnsw ON base_conhecimento USING hnsw (embedding vector_cosine_ops);
+    EXCEPTION WHEN program_limit_exceeded THEN
+      CREATE INDEX idx_base_conhecimento_hnsw ON base_conhecimento USING hnsw ((embedding::halfvec(3072)) halfvec_cosine_ops);
+    END;
+  END IF;
+END $$;
+
+-- Trigger automático para sincronizar instance_id caso inserido via LangChain/n8n em metadata JSONB
+CREATE OR REPLACE FUNCTION trg_base_conhecimento_sync_instance_id()
+RETURNS TRIGGER AS $$
+BEGIN
+  IF (NEW.instance_id IS NULL OR NEW.instance_id = '') AND NEW.metadata IS NOT NULL AND NEW.metadata->>'instance_id' IS NOT NULL THEN
+    NEW.instance_id := NEW.metadata->>'instance_id';
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_sync_instance_id ON base_conhecimento;
+CREATE TRIGGER trg_sync_instance_id
+BEFORE INSERT OR UPDATE ON base_conhecimento
+FOR EACH ROW
+EXECUTE FUNCTION trg_base_conhecimento_sync_instance_id();
 
 -- 6b. Config de Prompts por Cliente (persona/role/playbook usados pelo n8n)
 --     Schema casado com o SQL do workflow ANNE-AI-ORQUESTRAÇÃO:
@@ -331,5 +389,191 @@ Classificar a intenção e determinar se a solicitação pode ser atendida diret
   1
 )
 ON CONFLICT (chave) DO NOTHING;
+
+-- ============================================================================
+-- 12. GOVERNANÇA DE DADOS, PRIVACIDADE POR DESIGN & CONFORMIDADE LGPD (Lei 13.709/2018)
+-- ============================================================================
+-- Art. 6º, III (Necessidade / Minimização), Art. 15/16 (Término e Retenção),
+-- Art. 18, IV e VI (Anonimização / Eliminação) e Art. 37/46 (Auditoria e Segurança).
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS lgpd_auditoria (
+  id BIGSERIAL PRIMARY KEY,
+  evento VARCHAR(60) NOT NULL,
+  entidade VARCHAR(60) NOT NULL,
+  titular_hash_sha256 CHAR(64) NOT NULL,
+  detalhes JSONB NOT NULL DEFAULT '{}'::jsonb,
+  executado_por VARCHAR(100) NOT NULL DEFAULT CURRENT_USER,
+  criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_lgpd_auditoria_hash ON lgpd_auditoria (titular_hash_sha256);
+CREATE INDEX IF NOT EXISTS idx_lgpd_auditoria_criado ON lgpd_auditoria (criado_em DESC);
+
+-- View de clientes com mascaramento nativo de PII (Privacy by Design para relatórios/auditoria)
+CREATE OR REPLACE VIEW vw_clientes_mascarado AS
+SELECT
+  c.id,
+  c.codigo,
+  c.nome,
+  CASE
+    WHEN c.telefone IS NULL OR length(c.telefone) < 6 THEN '***'
+    ELSE left(c.telefone, 4) || repeat('*', GREATEST(length(c.telefone) - 8, 4)) || right(c.telefone, 4)
+  END AS telefone_mascarado,
+  CASE
+    WHEN c.email IS NULL OR position('@' IN c.email) <= 1 THEN '***'
+    ELSE left(c.email, 1) || '***' || substring(c.email FROM position('@' IN c.email))
+  END AS email_mascarado,
+  c.ativo,
+  c.criado_em,
+  c.atualizado_em
+FROM clientes c;
+
+-- Direito ao Esquecimento / Eliminação de Titular Final do WhatsApp (Art. 18, VI LGPD)
+-- Remove mensagens em memorypostgreschat e grava hash SHA-256 pseudonimizado na trilha de auditoria.
+CREATE OR REPLACE FUNCTION fn_lgpd_anonimizar_titular(
+  p_identificador TEXT,
+  p_motivo TEXT DEFAULT 'Solicitação do titular (Art. 18 LGPD)'
+)
+RETURNS JSONB AS $$
+DECLARE
+  v_clean TEXT;
+  v_digits TEXT;
+  v_hash CHAR(64);
+  v_deleted_mem BIGINT := 0;
+BEGIN
+  v_clean := btrim(COALESCE(p_identificador, ''));
+  IF v_clean = '' THEN
+    RAISE EXCEPTION 'Identificador do titular não pode ser vazio';
+  END IF;
+
+  v_digits := regexp_replace(v_clean, '\D', '', 'g');
+  v_hash := encode(digest( COALESCE(NULLIF(v_digits, ''), lower(v_clean)), 'sha256' ), 'hex');
+
+  DELETE FROM memorypostgreschat
+  WHERE session_id = v_clean
+     OR (v_digits <> '' AND (
+          session_id = v_digits
+          OR session_id = v_digits || '@s.whatsapp.net'
+          OR session_id LIKE '%' || v_digits || '%'
+        ));
+  GET DIAGNOSTICS v_deleted_mem = ROW_COUNT;
+
+  INSERT INTO lgpd_auditoria (evento, entidade, titular_hash_sha256, detalhes)
+  VALUES (
+    'ELIMINACAO_TITULAR',
+    'memorypostgreschat',
+    v_hash,
+    jsonb_build_object(
+      'mensagens_removidas', v_deleted_mem,
+      'motivo', COALESCE(p_motivo, 'Solicitação do titular (Art. 18 LGPD)')
+    )
+  );
+
+  RETURN jsonb_build_object(
+    'sucesso', true,
+    'titular_hash_sha256', v_hash,
+    'mensagens_removidas', v_deleted_mem
+  );
+END;
+$$ LANGUAGE plpgsql;
+
+-- Anonimização de Cliente / Tenant (Art. 16, I e Art. 18, IV LGPD)
+-- Desidentifica PII em clientes e limpa base_conhecimento, preservando o ledger contábil uso_tokens.
+CREATE OR REPLACE FUNCTION fn_lgpd_anonimizar_cliente(
+  p_cliente_id VARCHAR(100),
+  p_motivo TEXT DEFAULT 'Encerramento contratual / Anonimização LGPD'
+)
+RETURNS JSONB AS $$
+DECLARE
+  v_codigo BIGINT;
+  v_hash CHAR(64);
+  v_deleted_rag BIGINT := 0;
+BEGIN
+  SELECT codigo INTO v_codigo FROM clientes WHERE id = p_cliente_id;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Cliente % não encontrado', p_cliente_id;
+  END IF;
+
+  v_hash := encode(digest(lower(btrim(p_cliente_id)), 'sha256'), 'hex');
+
+  UPDATE clientes
+  SET nome = 'ANONIMIZADO-' || v_codigo,
+      telefone = NULL,
+      email = NULL,
+      configuracoes = '{}'::jsonb,
+      historico_telefones = '[]'::jsonb,
+      ativo = false,
+      atualizado_em = NOW()
+  WHERE id = p_cliente_id;
+
+  DELETE FROM base_conhecimento WHERE instance_id = p_cliente_id;
+  GET DIAGNOSTICS v_deleted_rag = ROW_COUNT;
+
+  INSERT INTO lgpd_auditoria (evento, entidade, titular_hash_sha256, detalhes)
+  VALUES (
+    'ANONIMIZACAO_CLIENTE',
+    'clientes',
+    v_hash,
+    jsonb_build_object(
+      'codigo_cliente', v_codigo,
+      'fragmentos_rag_removidos', v_deleted_rag,
+      'motivo', COALESCE(p_motivo, 'Encerramento contratual / Anonimização LGPD')
+    )
+  );
+
+  RETURN jsonb_build_object(
+    'sucesso', true,
+    'cliente_hash_sha256', v_hash,
+    'codigo_preservado', v_codigo,
+    'fragmentos_rag_removidos', v_deleted_rag
+  );
+END;
+$$ LANGUAGE plpgsql;
+
+-- Política Automatizada de Retenção e Minimização de Dados (Art. 6º, III e Art. 15 LGPD)
+CREATE OR REPLACE FUNCTION fn_lgpd_expurgo_retencao(
+  p_dias_memoria INT DEFAULT 90,
+  p_dias_auditoria INT DEFAULT 365
+)
+RETURNS JSONB AS $$
+DECLARE
+  v_expurgados_mem BIGINT := 0;
+  v_expurgados_aud BIGINT := 0;
+BEGIN
+  IF p_dias_memoria < 1 OR p_dias_auditoria < 30 THEN
+    RAISE EXCEPTION 'Janela mínima de retenção inválida (memória >= 1d, auditoria >= 30d)';
+  END IF;
+
+  DELETE FROM memorypostgreschat
+  WHERE criado_em < NOW() - make_interval(days => p_dias_memoria);
+  GET DIAGNOSTICS v_expurgados_mem = ROW_COUNT;
+
+  DELETE FROM lgpd_auditoria
+  WHERE criado_em < NOW() - make_interval(days => p_dias_auditoria);
+  GET DIAGNOSTICS v_expurgados_aud = ROW_COUNT;
+
+  IF v_expurgados_mem > 0 OR v_expurgados_aud > 0 THEN
+    INSERT INTO lgpd_auditoria (evento, entidade, titular_hash_sha256, detalhes)
+    VALUES (
+      'EXPURGO_RETENCAO',
+      'memorypostgreschat',
+      encode(digest('system:retention_policy', 'sha256'), 'hex'),
+      jsonb_build_object(
+        'dias_memoria', p_dias_memoria,
+        'mensagens_expurgadas', v_expurgados_mem,
+        'auditorias_antigas_expurgadas', v_expurgados_aud
+      )
+    );
+  END IF;
+
+  RETURN jsonb_build_object(
+    'sucesso', true,
+    'mensagens_expurgadas', v_expurgados_mem,
+    'auditorias_expurgadas', v_expurgados_aud
+  );
+END;
+$$ LANGUAGE plpgsql;
+
 
 
