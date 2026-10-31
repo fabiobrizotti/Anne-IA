@@ -6,6 +6,8 @@ services:
       - "${N8N_PORT}:${N8N_PORT}"
     env_file:
       - .env
+    environment:
+      NODE_OPTIONS: ${N8N_NODE_OPTIONS}
     volumes:
       - ./data/n8n:/home/node/.n8n
       - ./files:/home/node/.n8n-files

@@ -7,7 +7,7 @@ A stack é auto-inicializável a partir de um clone limpo. A pasta `setup/` conc
 | `setup/rabbitmq/rabbitmq.conf` | Limites de memória/disco, paginação, timeout de LLM e carga de definições. |
 | `setup/rabbitmq/definitions.json.template` | Topologia padrão industrial: exchanges diretas, pipeline em 3 etapas com Quorum Queues e DLX/DLQ (senha via `.env`). |
 | `setup/rabbitmq/entrypoint.sh` | Injeta a senha no template e gera o `definitions.json`. |
-| `setup/postgres/init.sql` | **Fonte única**: schema do negócio, memória LangChain (`memorypostgreschat`), base RAG (`base_conhecimento`), `clientes` + `Instance` (Evolution API), **alinhamento 1:1** entre `public."Instance"` e `public.clientes` pelo mesmo ID (`clientes.id = Instance.id`), `prompt_config` (persona/role/playbook por cliente), `prompts_padrao` (prompts mestres globais para roteamento e economia de modelos), **ledger de custos** (`precos_modelos`, `uso_tokens` por requisição com idempotência). Backfill idempotente e não-destrutivo. |
+| `setup/postgres/init.sql` | **Fonte única**: schema do negócio, memória LangChain indexada (`memorypostgreschat` com `idx_memorypostgreschat_session`), base RAG isolada multi-tenant (`base_conhecimento` com `instance_id`, índices HNSW vetoriais, B-tree composto de paginação e GIN trigram `pg_trgm`), `clientes` + `Instance` (Evolution API), **alinhamento 1:1** entre `public."Instance"` e `public.clientes` pelo mesmo ID (`clientes.id = Instance.id`), `prompt_config` (persona/role/playbook por cliente), `prompts_padrao` (prompts mestres globais para roteamento e economia de modelos), **ledger de custos** (`precos_modelos`, `uso_tokens` por requisição com idempotência). Backfill idempotente e não-destrutivo. |
 | `setup/pgadmin/servers.json` | Auto-provisionamento da conexão do PostgreSQL no pgAdmin 4. |
 | `setup/n8n/clean-workflows.js` | Limpa workflows antigos no SQLite antes de reimportar (idempotência). |
 | `setup/n8n/sanitize-workflow.js` | Remove rastros da instância de origem para evitar falhas no import. |
@@ -214,6 +214,27 @@ O RabbitMQ opera como o barramento assíncrono de alta confiabilidade da Anne-IA
 
 ---
 
+### 7.5. Tuning Industrial do n8n & Comparativo de Escala (Queue Mode vs Single-Instance)
+
+O n8n padrão sem parametrização grava o payload JSON de cada execução no SQLite, provocando lentidão extrema e `database is locked` sob tráfego contínuo. A stack Anne-IA adota práticas recomendadas para operação industrial:
+
+| Dimensão | n8n Padrão (Sem Tuning) | n8n Anne-IA (Tuned) | n8n Queue Mode (Escala Multi-Node) |
+|---|---|---|---|
+| **Persistência de Execuções** | Grava 100% dos dados em disco | `SAVE_ON_SUCCESS=none` (Zero I/O no sucesso) | `SAVE_ON_SUCCESS=none` |
+| **Diagnóstico de Erros** | Misturado com logs normais | `SAVE_ON_ERROR=all` (Logs completos em falha) | `SAVE_ON_ERROR=all` |
+| **Limpeza de Histórico** | 336h / 10.000 execuções | `EXECUTIONS_DATA_MAX_AGE=48` (hard delete automático a cada 15min) | Pruning automatizado |
+| **Modelo de Execução** | Processo único (`regular`) | Processo único (`regular`) | Distribuído em workers independentes (`queue`) |
+| **Broker de Tarefas** | Nenhum | RabbitMQ desacopla ingestão externa | Redis (BullMQ interno) + RabbitMQ (negócio) |
+| **Banco de Metadados** | SQLite (mono-instância) | SQLite sem escrita em execuções de sucesso | PostgreSQL compartilhado obrigatório |
+| **Consumo de Memória** | Heap padrão do Node | Heap de 2GB só no n8n (`N8N_NODE_OPTIONS`) | ~400MB por worker + Redis + Main + Webhook |
+
+> Todas as variáveis acima foram conferidas na config efetiva do n8n 2.36.5 (`GlobalConfig`). Nomes como `EXECUTIONS_PROCESS` e `EXECUTIONS_DATA_PRUNE_MAX_AGE` são de versões antigas e são **ignorados em silêncio** pelo n8n 2.x.
+
+> **Quando migrar para o Queue Mode?**  
+> O n8n Queue Mode separa o n8n em 3 processos (`main`, `webhook` e múltiplos `workers`) coordenados por filas BullMQ no **Redis** e banco **PostgreSQL**. Ele é indicado quando a volumetria exige múltiplos nós físicos ou dezenas de mensagens por segundo simultâneas. Na topologia atual da Anne-IA, o **RabbitMQ já atua como buffer de absorção assíncrona com prefetch e Quorum Queues**, e com `SAVE_ON_SUCCESS=none` as execuções bem-sucedidas não escrevem no banco do n8n.
+
+---
+
 ## 8. Painel Administrativo Vanilla (Gestão de Instâncias e Clientes)
 
 O Dashboard administrativo é uma aplicação web ultra-leve construída em **Vanilla HTML5, CSS puro e JavaScript nativo** (com backend enxuto em Node.js 20 Alpine). Ele consome menos de 30MB de memória RAM no servidor e inicia automaticamente junto ao Docker Compose.
@@ -257,6 +278,11 @@ O Dashboard administrativo é uma aplicação web ultra-leve construída em **Va
    - Prompt mestre `roteador_modelos_economia` (Mini JEV) estruturado com suporte a catálogo dinâmico (`{{catalogo_modelos}}`), integrando modelos cadastrados na tabela e classificados por tiers de complexidade e custo.
    - Seleção de modelo recomendado vinculada estritamente aos modelos ativos da tabela de preços (com indicação visual do Tier correspondente).
    - Estimativa de caracteres/tokens, versionamento automático e soft-delete protegido para o prompt mestre do sistema.
+7. **Base de Conhecimento RAG & Vetores pgvector (Sub-aba Base de Conhecimento)**:
+   - Central de auditoria e inspeção de fragmentos (chunks) textuais, metadados JSONB e embeddings na tabela `base_conhecimento`.
+   - Índices de performance industrial: B-tree composto `(instance_id, id DESC)` para paginação multi-tenant instantânea e GIN `pg_trgm` para buscas textuais rápidas.
+   - Projeção de dados otimizada sem tráfego de vetores brutos (zero vector leakage).
+   - Filtro por tenant/empresa, busca textual em tempo real, visualizador completo com syntax highlighting de metadados, contagem de tokens e exclusão/cadastro rápido.
 
 ### 8.4. Endpoints da API REST (v1)
 
@@ -284,6 +310,14 @@ O Dashboard administrativo é uma aplicação web ultra-leve construída em **Va
 | `POST` | `/api/v1/prompts-padrao` | Cadastra novo prompt padrão com modelo validado contra a tabela de modelos |
 | `PUT` | `/api/v1/prompts-padrao/:id` | Atualiza prompt padrão, incrementando versão automaticamente |
 | `DELETE` | `/api/v1/prompts-padrao/:id` | Exclui ou desativa prompt padrão (protegendo chave mestre do sistema) |
+| `GET` | `/api/v1/conhecimento/stats` | Retorna métricas globais agregadas da base de conhecimento RAG |
+| `GET` | `/api/v1/conhecimento` | Lista fragmentos RAG paginados com filtro por tenant e busca trigram |
+| `GET` | `/api/v1/conhecimento/:id` | Detalha fragmento individual, texto integral e metadados JSONB |
+| `POST` | `/api/v1/conhecimento` | Cadastra novo fragmento textual na base de conhecimento de um tenant |
+| `DELETE` | `/api/v1/conhecimento/:id` | Remove fragmento individual da base de conhecimento |
+| `POST` | `/api/v1/conhecimento/bulk-delete` | Exclusão em lote segura de múltiplos fragmentos via array de IDs |
+| `POST` | `/api/v1/instances/:id/restart` | Reinicia a conexão da instância |
+| `DELETE` | `/api/v1/instances/:id` | Remove a instância na Evolution API e no banco de dados |
 | `POST` | `/api/v1/instances/:id/restart` | Reinicia a conexão da instância |
 | `DELETE` | `/api/v1/instances/:id` | Remove a instância na Evolution API e no banco de dados |
 
