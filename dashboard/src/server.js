@@ -12,10 +12,16 @@ const DATABASE_URL = process.env.DATABASE_URL || '';
 const NINE_ROUTER_URL = process.env.NINE_ROUTER_URL || 'http://9router:20000/v1';
 const NINE_ROUTER_API_KEY = process.env.NINE_ROUTER_API_KEY || process.env.NINE_ROUTER_PASSWORD || '';
 
-// Pool PostgreSQL
+// Pool PostgreSQL (dimensionado para alta concorrência e proteção contra queries lentas)
 let pool = null;
 if (DATABASE_URL) {
-  pool = new Pool({ connectionString: DATABASE_URL });
+  pool = new Pool({
+    connectionString: DATABASE_URL,
+    max: 15,
+    idleTimeoutMillis: 30000,
+    connectionTimeoutMillis: 5000,
+    statement_timeout: 15000
+  });
   pool.on('error', (err) => {
     console.error('[db] Erro inesperado no pool do Postgres:', err.message);
   });
@@ -23,8 +29,16 @@ if (DATABASE_URL) {
   console.error('[db] DATABASE_URL não configurada. Schema deve ser provisionado por setup/postgres/init.sql.');
 }
 
-// Middlewares
-app.use(express.json());
+// Middlewares de Parsing e Segurança Defensiva
+app.disable('x-powered-by');
+app.use(express.json({ limit: '256kb' }));
+app.use((_req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  next();
+});
 
 // Autenticação Basic Auth opcional
 const authEnabled = process.env.DASHBOARD_AUTH_ENABLED === 'true';
@@ -810,11 +824,24 @@ app.get('/api/v1/financeiro', async (req, res) => {
 // -----------------------------------------------------------------------------
 
 // Rate limit simples em memória para testes de modelo (máx 10 testes por minuto por IP)
+// ponytail: Map em memória com teto de 1000 entradas; migrar para Redis só se dashboard rodar em múltiplas réplicas
 const testRateLimits = new Map();
+const MAX_RATE_LIMIT_ENTRIES = 1000;
 function checkTestRateLimit(ip) {
   const now = Date.now();
   const windowMs = 60 * 1000;
   const maxRequests = 10;
+
+  if (testRateLimits.size >= MAX_RATE_LIMIT_ENTRIES && !testRateLimits.has(ip)) {
+    for (const [k, v] of testRateLimits.entries()) {
+      if (now > v.resetAt) testRateLimits.delete(k);
+    }
+    if (testRateLimits.size >= MAX_RATE_LIMIT_ENTRIES) {
+      const oldestKey = testRateLimits.keys().next().value;
+      if (oldestKey !== undefined) testRateLimits.delete(oldestKey);
+    }
+  }
+
   const record = testRateLimits.get(ip) || { count: 0, resetAt: now + windowMs };
 
   if (now > record.resetAt) {
@@ -1363,6 +1390,227 @@ app.delete('/api/v1/prompts-padrao/:id', async (req, res) => {
   } catch (err) {
     console.error('[api] Erro ao excluir prompt padrão:', err.message);
     res.status(500).json({ success: false, error: 'Falha ao excluir prompt padrão' });
+  }
+});
+
+// -----------------------------------------------------------------------------
+// BASE DE CONHECIMENTO & RAG (pgvector)
+// -----------------------------------------------------------------------------
+
+// GET /api/v1/conhecimento/stats - Métricas agregadas de conhecimento e vetores
+app.get('/api/v1/conhecimento/stats', async (_req, res) => {
+  if (!pool) return res.status(500).json({ success: false, error: 'Postgres não conectado' });
+  try {
+    const statsQuery = `
+      SELECT
+        COUNT(*)::int AS total_fragmentos,
+        COUNT(DISTINCT COALESCE(instance_id, metadata->>'instance_id'))::int AS total_tenants,
+        COUNT(CASE WHEN embedding IS NOT NULL THEN 1 END)::int AS com_vetor,
+        COUNT(CASE WHEN embedding IS NULL THEN 1 END)::int AS sem_vetor,
+        COALESCE(ROUND(AVG(LENGTH(text))), 0)::int AS media_caracteres
+      FROM base_conhecimento
+    `;
+    const result = await pool.query(statsQuery);
+    res.json({ success: true, data: result.rows[0] });
+  } catch (err) {
+    console.error('[api] Erro ao buscar métricas de conhecimento:', err.message);
+    res.status(500).json({ success: false, error: 'Falha ao consultar métricas da base de conhecimento' });
+  }
+});
+
+// GET /api/v1/conhecimento - Listar fragmentos com paginação, filtro e busca trigram
+app.get('/api/v1/conhecimento', async (req, res) => {
+  if (!pool) return res.status(500).json({ success: false, error: 'Postgres não conectado' });
+  try {
+    const { instance_id, busca, before_id } = req.query;
+    const page = Math.max(1, parseInt(req.query.page || '1', 10));
+    const limit = Math.min(100, Math.max(5, parseInt(req.query.limit || '25', 10)));
+    const offset = (page - 1) * limit;
+
+    const conditions = [];
+    const values = [];
+
+    if (instance_id && instance_id !== 'all') {
+      values.push(instance_id.trim());
+      conditions.push(`(b.instance_id = $${values.length} OR b.metadata->>'instance_id' = $${values.length})`);
+    }
+
+    if (busca && busca.trim().length > 0) {
+      values.push(`%${busca.trim()}%`);
+      conditions.push(`(b.text ILIKE $${values.length} OR b.metadata::text ILIKE $${values.length})`);
+    }
+
+    if (before_id && parseInt(before_id, 10) > 0) {
+      values.push(parseInt(before_id, 10));
+      conditions.push(`b.id < $${values.length}`);
+    }
+
+    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+    // Projeção segura: NUNCA trafegar o vetor float32 bruto de 3072 posições
+    const query = `
+      SELECT
+        b.id,
+        COALESCE(b.instance_id, b.metadata->>'instance_id') AS instance_id,
+        COALESCE(c.nome, b.instance_id, b.metadata->>'instance_id', 'Sem cliente') AS cliente_nome,
+        b.text,
+        b.metadata,
+        LENGTH(b.text) AS tamanho_caracteres,
+        (b.embedding IS NOT NULL) AS tem_vetor,
+        CASE WHEN b.embedding IS NOT NULL THEN 3072 ELSE 0 END AS dimensao_vetor,
+        COALESCE(b.criado_em, NOW()) AS criado_em,
+        COUNT(*) OVER() AS total_count
+      FROM base_conhecimento b
+      LEFT JOIN clientes c ON c.id = COALESCE(b.instance_id, b.metadata->>'instance_id')
+      ${whereClause}
+      ORDER BY b.id DESC
+      LIMIT $${values.length + 1} OFFSET $${values.length + 2}
+    `;
+
+    values.push(limit, offset);
+
+    const result = await pool.query(query, values);
+    const totalCount = result.rows.length > 0 ? parseInt(result.rows[0].total_count, 10) : 0;
+    const totalPages = Math.ceil(totalCount / limit);
+
+    // Remove total_count de cada item para payload limpo
+    const items = result.rows.map(row => {
+      const { total_count, ...clean } = row;
+      return clean;
+    });
+
+    res.json({
+      success: true,
+      data: items,
+      pagination: {
+        page,
+        limit,
+        total: totalCount,
+        totalPages
+      }
+    });
+  } catch (err) {
+    console.error('[api] Erro ao listar fragmentos de conhecimento:', err.message);
+    res.status(500).json({ success: false, error: 'Falha ao consultar fragmentos da base de conhecimento' });
+  }
+});
+
+// GET /api/v1/conhecimento/:id - Obter fragmento individual com metadados detalhados
+app.get('/api/v1/conhecimento/:id', async (req, res) => {
+  if (!pool) return res.status(500).json({ success: false, error: 'Postgres não conectado' });
+  const id = parseInt(req.params.id, 10);
+  if (isNaN(id)) return res.status(400).json({ success: false, error: 'ID inválido' });
+
+  try {
+    const query = `
+      SELECT
+        b.id,
+        COALESCE(b.instance_id, b.metadata->>'instance_id') AS instance_id,
+        COALESCE(c.nome, b.instance_id, b.metadata->>'instance_id', 'Sem cliente') AS cliente_nome,
+        b.text,
+        b.metadata,
+        LENGTH(b.text) AS tamanho_caracteres,
+        (b.embedding IS NOT NULL) AS tem_vetor,
+        CASE WHEN b.embedding IS NOT NULL THEN 3072 ELSE 0 END AS dimensao_vetor,
+        COALESCE(b.criado_em, NOW()) AS criado_em,
+        b.atualizado_em
+      FROM base_conhecimento b
+      LEFT JOIN clientes c ON c.id = COALESCE(b.instance_id, b.metadata->>'instance_id')
+      WHERE b.id = $1
+    `;
+    const result = await pool.query(query, [id]);
+    if (result.rowCount === 0) {
+      return res.status(404).json({ success: false, error: 'Fragmento não encontrado' });
+    }
+    res.json({ success: true, data: result.rows[0] });
+  } catch (err) {
+    console.error('[api] Erro ao obter fragmento de conhecimento:', err.message);
+    res.status(500).json({ success: false, error: 'Falha ao buscar fragmento de conhecimento' });
+  }
+});
+
+// POST /api/v1/conhecimento - Inserir novo fragmento textual de conhecimento
+app.post('/api/v1/conhecimento', async (req, res) => {
+  if (!pool) return res.status(500).json({ success: false, error: 'Postgres não conectado' });
+  const { instance_id, text, metadata } = req.body;
+
+  if (!instance_id || typeof instance_id !== 'string') {
+    return res.status(400).json({ success: false, error: 'ID da instância (cliente) é obrigatório' });
+  }
+  if (!text || typeof text !== 'string' || text.trim().length === 0) {
+    return res.status(400).json({ success: false, error: 'Conteúdo textual do documento é obrigatório' });
+  }
+
+  let parsedMetadata = {};
+  if (metadata) {
+    if (typeof metadata === 'object') {
+      parsedMetadata = metadata;
+    } else if (typeof metadata === 'string') {
+      try {
+        parsedMetadata = JSON.parse(metadata);
+      } catch (e) {
+        return res.status(400).json({ success: false, error: 'Metadados devem ser um JSON válido' });
+      }
+    }
+  }
+
+  try {
+    // Insere sem vetor (ficará com status pendente até n8n/processador gerar embedding)
+    const insertQuery = `
+      INSERT INTO base_conhecimento (instance_id, text, metadata, criado_em, atualizado_em)
+      VALUES ($1, $2, $3, NOW(), NOW())
+      RETURNING id, instance_id, LENGTH(text) AS tamanho_caracteres, criado_em
+    `;
+    const result = await pool.query(insertQuery, [instance_id.trim(), text.trim(), JSON.stringify(parsedMetadata)]);
+    res.status(201).json({ success: true, data: result.rows[0], message: 'Fragmento cadastrado com sucesso' });
+  } catch (err) {
+    console.error('[api] Erro ao cadastrar fragmento de conhecimento:', err.message);
+    res.status(500).json({ success: false, error: 'Falha ao salvar fragmento no banco de dados' });
+  }
+});
+
+// DELETE /api/v1/conhecimento/:id - Remover fragmento individual
+app.delete('/api/v1/conhecimento/:id', async (req, res) => {
+  if (!pool) return res.status(500).json({ success: false, error: 'Postgres não conectado' });
+  const id = parseInt(req.params.id, 10);
+  if (isNaN(id)) return res.status(400).json({ success: false, error: 'ID inválido' });
+
+  try {
+    const result = await pool.query('DELETE FROM base_conhecimento WHERE id = $1 RETURNING id', [id]);
+    if (result.rowCount === 0) {
+      return res.status(404).json({ success: false, error: 'Fragmento não encontrado' });
+    }
+    res.json({ success: true, message: 'Fragmento removido com sucesso' });
+  } catch (err) {
+    console.error('[api] Erro ao excluir fragmento de conhecimento:', err.message);
+    res.status(500).json({ success: false, error: 'Falha ao remover fragmento' });
+  }
+});
+
+// POST /api/v1/conhecimento/bulk-delete - Exclusão em lote industrial
+app.post('/api/v1/conhecimento/bulk-delete', async (req, res) => {
+  if (!pool) return res.status(500).json({ success: false, error: 'Postgres não conectado' });
+  const { ids } = req.body;
+
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return res.status(400).json({ success: false, error: 'Array de IDs é obrigatório' });
+  }
+
+  const cleanIds = ids.map(id => parseInt(id, 10)).filter(id => !isNaN(id) && id > 0);
+  if (cleanIds.length === 0) {
+    return res.status(400).json({ success: false, error: 'Nenhum ID numérico válido fornecido' });
+  }
+
+  try {
+    const result = await pool.query('DELETE FROM base_conhecimento WHERE id = ANY($1::int[]) RETURNING id', [cleanIds]);
+    res.json({
+      success: true,
+      removidos: result.rowCount,
+      message: `${result.rowCount} fragmento(s) removido(s) com sucesso`
+    });
+  } catch (err) {
+    console.error('[api] Erro na exclusão em lote de conhecimento:', err.message);
+    res.status(500).json({ success: false, error: 'Falha ao excluir fragmentos em lote' });
   }
 });
 

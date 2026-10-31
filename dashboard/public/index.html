@@ -276,6 +276,10 @@
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
             Prompts Padrão
           </button>
+          <button class="sub-tab" data-ia-subtab="subtab-conhecimento">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+            Base de Conhecimento (RAG)
+          </button>
         </div>
       </div>
 
@@ -419,6 +423,80 @@
           </div>
         </main>
       </div>
+
+      <!-- SUB-ABA 3: Base de Conhecimento (RAG / pgvector) -->
+      <div id="subtab-conhecimento" class="ia-subcontent">
+        <!-- Resumo de Métricas de Conhecimento -->
+        <section class="metrics">
+          <div class="card metric-card">
+            <span class="metric-label">Total de Fragmentos</span>
+            <span id="metric-rag-total" class="metric-value">0</span>
+          </div>
+          <div class="card metric-card">
+            <span class="metric-label">Tenants com RAG</span>
+            <span id="metric-rag-tenants" class="metric-value text-success">0</span>
+          </div>
+          <div class="card metric-card">
+            <span class="metric-label">Média de Caracteres</span>
+            <span id="metric-rag-avg-chars" class="metric-value font-mono">0</span>
+          </div>
+          <div class="card metric-card">
+            <span class="metric-label">Status Vetorial</span>
+            <span id="metric-rag-vetor-status" class="metric-value text-success">100%</span>
+            <span id="metric-rag-vetor-sub" class="metric-sublabel">0 indexados / 0 pendentes</span>
+          </div>
+        </section>
+
+        <!-- Tabela Principal de Conhecimento -->
+        <main class="card table-card">
+          <div class="table-header">
+            <div>
+              <h2>Documentos e Fragmentos Indexados (RAG)</h2>
+              <p class="subtitle text-xs">Chunks textuais, metadados e estado dos vetores no PostgreSQL pgvector.</p>
+            </div>
+            <div class="table-actions-header">
+              <select id="rag-tenant-filter" class="search-field" style="max-width: 220px;">
+                <option value="all">Todas as Empresas</option>
+              </select>
+              <input type="text" id="rag-search-input" placeholder="Buscar texto ou metadados..." class="search-field">
+              <button id="btn-new-rag-doc" class="btn btn-primary">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                Novo Fragmento
+              </button>
+            </div>
+          </div>
+
+          <div class="table-responsive">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th style="width: 60px;">ID</th>
+                  <th>Cliente / Tenant</th>
+                  <th>Fragmento de Texto (Preview)</th>
+                  <th>Origem / Metadados</th>
+                  <th>Vetor</th>
+                  <th class="text-right">Ações</th>
+                </tr>
+              </thead>
+              <tbody id="rag-tbody">
+                <tr>
+                  <td colspan="6" class="text-center py-8 text-muted">Carregando base de conhecimento...</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <!-- Paginação Industrial -->
+          <div class="table-footer-pagination" style="display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; border-top: 1px solid var(--border-color, #2d3748);">
+            <span id="rag-pagination-info" class="text-xs text-muted">Mostrando 0 de 0 fragmentos</span>
+            <div style="display: flex; gap: 8px; align-items: center;">
+              <button id="btn-rag-prev-page" class="btn btn-xs btn-secondary" disabled>Anterior</button>
+              <span id="rag-pagination-current" class="text-xs font-mono" style="padding: 4px 8px;">Pág 1</span>
+              <button id="btn-rag-next-page" class="btn btn-xs btn-secondary" disabled>Próxima</button>
+            </div>
+          </div>
+        </main>
+      </div>
     </div>
   </div>
 
@@ -557,6 +635,10 @@
         </div>
 
         <div class="modal-footer">
+          <button type="button" id="btn-ficha-view-rag" class="btn btn-secondary" style="margin-right: auto;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+            Ver Base RAG deste Cliente
+          </button>
           <button type="button" class="btn btn-secondary" data-close="modal-ficha">Fechar</button>
           <button type="submit" id="btn-save-ficha" class="btn btn-primary">Salvar Ficha</button>
         </div>
@@ -1035,9 +1117,111 @@
     </div>
   </div>
 
+  <!-- Modal: Detalhes do Fragmento RAG (Inspeção Profunda) -->
+  <div id="modal-rag-view" class="modal-backdrop hidden">
+    <div class="modal modal-lg">
+      <div class="modal-header">
+        <div>
+          <div class="modal-header-top">
+            <h3 id="rag-view-title">Fragmento de Conhecimento #--</h3>
+            <span id="rag-view-vetor-badge" class="badge">--</span>
+          </div>
+          <p id="rag-view-client" class="subtitle text-xs">Tenant: --</p>
+        </div>
+        <button class="btn-close" data-close="modal-rag-view">&times;</button>
+      </div>
+
+      <div class="modal-body">
+        <div class="ficha-readonly-banner mb-3">
+          <div>
+            <span class="ficha-label">Identificador Único (ID):</span>
+            <code id="rag-view-id" class="ficha-code">--</code>
+          </div>
+          <div class="ficha-meta-dates">
+            <div><span class="ficha-label">Caracteres:</span> <span id="rag-view-chars" class="font-mono">--</span></div>
+            <div><span class="ficha-label">Vetor:</span> <span id="rag-view-dims" class="font-mono">--</span></div>
+          </div>
+        </div>
+
+        <!-- Conteúdo Textual Integral -->
+        <div class="form-group mb-4">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+            <label class="ficha-label">Conteúdo do Documento (Texto Completo):</label>
+            <button type="button" id="btn-copy-rag-text" class="btn btn-xs btn-primary">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+              Copiar Texto
+            </button>
+          </div>
+          <pre id="rag-view-text" class="prompt-view-code" style="max-height: 280px; overflow-y: auto; white-space: pre-wrap; font-family: inherit; font-size: 0.875rem; line-height: 1.5; color: var(--text-main);">--</pre>
+        </div>
+
+        <!-- Metadados Estruturados JSONB -->
+        <div class="form-group">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+            <label class="ficha-label">Metadados Estruturados (JSONB):</label>
+            <button type="button" id="btn-copy-rag-metadata" class="btn btn-xs btn-secondary">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+              Copiar JSON
+            </button>
+          </div>
+          <pre id="rag-view-metadata" class="prompt-view-code font-mono text-xs" style="max-height: 160px; overflow-y: auto;">{}</pre>
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-close="modal-rag-view">Fechar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Novo Fragmento de Conhecimento RAG -->
+  <div id="modal-rag-new" class="modal-backdrop hidden">
+    <div class="modal modal-lg">
+      <div class="modal-header">
+        <div>
+          <h3>Cadastrar Fragmento de Conhecimento</h3>
+          <p class="subtitle text-sm">Insira textos e metadados contextuais diretamente na base da empresa.</p>
+        </div>
+        <button class="btn-close" data-close="modal-rag-new">&times;</button>
+      </div>
+
+      <form id="form-rag-new">
+        <div class="modal-body">
+          <div class="form-group mb-3">
+            <label for="rag-new-tenant">Empresa / Tenant *</label>
+            <select id="rag-new-tenant" required class="input">
+              <option value="">Selecione o cliente...</option>
+            </select>
+            <small class="field-hint">A qual cliente/instância este conhecimento pertence para isolamento estrito multi-tenant.</small>
+          </div>
+
+          <div class="form-group mb-3">
+            <label for="rag-new-text">Texto do Fragmento / Chunk *</label>
+            <textarea id="rag-new-text" required rows="6" class="input" placeholder="Cole aqui o conteúdo informativo, manual, política de atendimento ou catálogo da empresa..."></textarea>
+            <div class="prompt-meta-counter">
+              <span id="rag-new-char-count">0 caracteres</span>
+              <span class="token-est-badge" id="rag-new-token-est">~0 tokens estimados</span>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label for="rag-new-metadata">Metadados Opcionais (JSON)</label>
+            <textarea id="rag-new-metadata" rows="3" class="input font-mono text-xs" placeholder='{"origem": "manual_atendimento.pdf", "categoria": "faq", "pagina": 1}'>{"origem": "manual"}</textarea>
+            <small class="field-hint">Chaves JSON para identificação, rastreabilidade e filtros semânticos.</small>
+          </div>
+        </div>
+
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-close="modal-rag-new">Cancelar</button>
+          <button type="submit" class="btn btn-primary" id="btn-save-rag-doc">Salvar Fragmento</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
   <!-- Toast de Notificação -->
   <div id="toast" class="toast hidden"></div>
 
-  <script src="app.js?v=1.0.6"></script>
+  <script src="app.js?v=1.0.8"></script>
 </body>
 </html>

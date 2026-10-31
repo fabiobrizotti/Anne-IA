@@ -28,6 +28,16 @@ data/pgadmin/
 files/
 workflows/
 
+# Arquivos temporários de RAG, documentos e vetores
+temp_docs/
+uploads/
+datasets/
+rag_test_*.json
+*.pdf
+*.docx
+*.parquet
+*.embeddings
+
 # Dependências locais
 node_modules/
 dashboard/node_modules/

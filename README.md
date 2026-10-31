@@ -7,7 +7,7 @@ A stack é auto-inicializável a partir de um clone limpo. A pasta `setup/` conc
 | `setup/rabbitmq/rabbitmq.conf` | Limites de memória/disco, paginação, timeout de LLM e carga de definições. |
 | `setup/rabbitmq/definitions.json.template` | Topologia padrão industrial: exchanges diretas, pipeline em 3 etapas com Quorum Queues e DLX/DLQ (senha via `.env`). |
 | `setup/rabbitmq/entrypoint.sh` | Injeta a senha no template e gera o `definitions.json`. |
-| `setup/postgres/init.sql` | **Fonte única**: schema do negócio, memória LangChain indexada (`memorypostgreschat` com `idx_memorypostgreschat_session`), base RAG isolada multi-tenant (`base_conhecimento` com `instance_id`, índices HNSW vetoriais, B-tree composto de paginação e GIN trigram `pg_trgm`), `clientes` + `Instance` (Evolution API), **alinhamento 1:1** entre `public."Instance"` e `public.clientes` pelo mesmo ID (`clientes.id = Instance.id`), `prompt_config` (persona/role/playbook por cliente), `prompts_padrao` (prompts mestres globais para roteamento e economia de modelos), **ledger de custos** (`precos_modelos`, `uso_tokens` por requisição com idempotência). Backfill idempotente e não-destrutivo. |
+| `setup/postgres/init.sql` | **Fonte única (SSOT 100% idempotente)**: schema do negócio, memória LangChain indexada (`memorypostgreschat` com `idx_memorypostgreschat_session` e `criado_em` para retenção LGPD), base RAG isolada multi-tenant (`base_conhecimento` com `instance_id`, índices HNSW vetoriais, B-tree composto de paginação e GIN trigram `pg_trgm`), `clientes` + `Instance` (Evolution API), **alinhamento 1:1** entre `public."Instance"` e `public.clientes` pelo mesmo ID (`clientes.id = Instance.id`), `prompt_config` (persona/role/playbook por cliente), `prompts_padrao` (prompts mestres globais para roteamento e economia de modelos), **ledger de custos** (`precos_modelos`, `uso_tokens` por requisição com idempotência) e **governança LGPD nativa** (`lgpd_auditoria` com hash SHA-256 via `pgcrypto`, `vw_clientes_mascarado`, `fn_lgpd_anonimizar_titular`, `fn_lgpd_anonimizar_cliente` e `fn_lgpd_expurgo_retencao`). |
 | `setup/pgadmin/servers.json` | Auto-provisionamento da conexão do PostgreSQL no pgAdmin 4. |
 | `setup/n8n/clean-workflows.js` | Limpa workflows antigos no SQLite antes de reimportar (idempotência). |
 | `setup/n8n/sanitize-workflow.js` | Remove rastros da instância de origem para evitar falhas no import. |
@@ -318,14 +318,36 @@ O Dashboard administrativo é uma aplicação web ultra-leve construída em **Va
 | `POST` | `/api/v1/conhecimento/bulk-delete` | Exclusão em lote segura de múltiplos fragmentos via array de IDs |
 | `POST` | `/api/v1/instances/:id/restart` | Reinicia a conexão da instância |
 | `DELETE` | `/api/v1/instances/:id` | Remove a instância na Evolution API e no banco de dados |
-| `POST` | `/api/v1/instances/:id/restart` | Reinicia a conexão da instância |
-| `DELETE` | `/api/v1/instances/:id` | Remove a instância na Evolution API e no banco de dados |
 
 ---
 
-## 9. Recriar Banco e RabbitMQ
-Se alterar os scripts em `setup/` (como uma nova tabela no `init.sql`), aplique forçando a recriação. 
-**Atenção:** o `init.sql` do Postgres só roda se a pasta de dados estiver vazia.
+## 9. Atualizar Schema sem Perda de Dados, Governança LGPD e Recriação Total
+
+### 9.1. Reaplicar `init.sql` em Banco em Execução (Sem Apagar Dados)
+Como `setup/postgres/init.sql` é **100% idempotente** (`CREATE TABLE IF NOT EXISTS`, `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`, `CREATE OR REPLACE FUNCTION`), alterações de schema, índices ou funções podem ser aplicadas diretamente no container ativo sem derrubar volumes:
+
+```bash
+docker exec -i db-evolution psql -v ON_ERROR_STOP=1 -U evolution -d postgres < setup/postgres/init.sql
+```
+
+### 9.2. Rotinas Nativas de Conformidade LGPD (Lei nº 13.709/2018)
+O banco `anneia` inclui procedimentos armazenados auditáveis com pseudonimização criptográfica SHA-256 (`pgcrypto`):
+- **Direito ao Esquecimento de Titular WhatsApp (Art. 18, VI)**:
+  ```sql
+  SELECT fn_lgpd_anonimizar_titular('5515999999999@s.whatsapp.net', 'Solicitação do titular via canal oficial');
+  ```
+- **Anonimização de Cliente / Tenant preservando Ledger Contábil (Art. 16, I e Art. 18, IV)**:
+  ```sql
+  SELECT fn_lgpd_anonimizar_cliente('id_da_instancia', 'Encerramento contratual');
+  ```
+- **Expurgo Preventivo por Janela de Retenção (Art. 6º, III e Art. 15)**:
+  ```sql
+  SELECT fn_lgpd_expurgo_retencao(90, 365); -- 90 dias p/ memória de chat, 365 dias p/ auditoria
+  ```
+- **Consulta Mascarada (Privacy by Design)**: `SELECT * FROM vw_clientes_mascarado;`
+
+### 9.3. Recriar Banco e RabbitMQ do Zero (Destrutivo)
+Se desejar destruir todos os volumes e reinicializar o ambiente do zero:
 
 <details>
 <summary><img src="https://raw.githubusercontent.com/devicons/devicon/master/icons/linux/linux-original.svg" width="16" height="16" /> <strong>Recriar no Linux</strong></summary>

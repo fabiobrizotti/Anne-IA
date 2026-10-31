@@ -200,12 +200,56 @@
     viewPromptStatus: document.getElementById('view-prompt-status'),
     viewPromptDescricao: document.getElementById('view-prompt-descricao'),
     viewPromptContent: document.getElementById('view-prompt-content'),
-    btnCopyViewPrompt: document.getElementById('btn-copy-view-prompt')
+    btnCopyViewPrompt: document.getElementById('btn-copy-view-prompt'),
+
+    // Elementos da Aba Conhecimento (RAG / pgvector)
+    metricRagTotal: document.getElementById('metric-rag-total'),
+    metricRagTenants: document.getElementById('metric-rag-tenants'),
+    metricRagAvgChars: document.getElementById('metric-rag-avg-chars'),
+    metricRagVetorStatus: document.getElementById('metric-rag-vetor-status'),
+    metricRagVetorSub: document.getElementById('metric-rag-vetor-sub'),
+    ragTenantFilter: document.getElementById('rag-tenant-filter'),
+    ragSearchInput: document.getElementById('rag-search-input'),
+    btnNewRagDoc: document.getElementById('btn-new-rag-doc'),
+    ragTbody: document.getElementById('rag-tbody'),
+    ragPaginationInfo: document.getElementById('rag-pagination-info'),
+    btnRagPrevPage: document.getElementById('btn-rag-prev-page'),
+    btnRagNextPage: document.getElementById('btn-rag-next-page'),
+    ragPaginationCurrent: document.getElementById('rag-pagination-current'),
+
+    // Modal Detalhe RAG
+    modalRagView: document.getElementById('modal-rag-view'),
+    ragViewTitle: document.getElementById('rag-view-title'),
+    ragViewVetorBadge: document.getElementById('rag-view-vetor-badge'),
+    ragViewClient: document.getElementById('rag-view-client'),
+    ragViewId: document.getElementById('rag-view-id'),
+    ragViewChars: document.getElementById('rag-view-chars'),
+    ragViewDims: document.getElementById('rag-view-dims'),
+    ragViewText: document.getElementById('rag-view-text'),
+    btnCopyRagText: document.getElementById('btn-copy-rag-text'),
+    ragViewMetadata: document.getElementById('rag-view-metadata'),
+    btnCopyRagMetadata: document.getElementById('btn-copy-rag-metadata'),
+
+    // Modal Novo RAG
+    modalRagNew: document.getElementById('modal-rag-new'),
+    formRagNew: document.getElementById('form-rag-new'),
+    ragNewTenant: document.getElementById('rag-new-tenant'),
+    ragNewText: document.getElementById('rag-new-text'),
+    ragNewCharCount: document.getElementById('rag-new-char-count'),
+    ragNewTokenEst: document.getElementById('rag-new-token-est'),
+    ragNewMetadata: document.getElementById('rag-new-metadata'),
+    btnSaveRagDoc: document.getElementById('btn-save-rag-doc'),
+
+    // Atalho na Ficha
+    btnFichaViewRag: document.getElementById('btn-ficha-view-rag')
   };
 
   let modelsList = [];
   let nineRouterModels = [];
   let standardPrompts = [];
+  let knowledgeDocs = [];
+  let knowledgePagination = { page: 1, limit: 25, total: 0, totalPages: 1 };
+  let ragSearchDebounceTimer = null;
   let activeIaSubTab = 'subtab-modelos';
 
   // ---------------------------------------------------------------------------
@@ -936,6 +980,8 @@
     } else if (targetTabId === 'tab-ia' || targetTabId === 'tab-modelos') {
       if (activeIaSubTab === 'subtab-prompts') {
         loadStandardPrompts();
+      } else if (activeIaSubTab === 'subtab-conhecimento') {
+        loadKnowledge();
       } else {
         loadModels();
       }
@@ -954,6 +1000,8 @@
 
     if (subTabId === 'subtab-prompts') {
       loadStandardPrompts();
+    } else if (subTabId === 'subtab-conhecimento') {
+      loadKnowledge();
     } else {
       loadModels();
     }
@@ -1932,6 +1980,333 @@
     }
   });
 
+  // ---------------------------------------------------------------------------
+  // BASE DE CONHECIMENTO & RAG (pgvector)
+  // ---------------------------------------------------------------------------
+
+  function populateRagTenantOptions() {
+    if (!elements.ragTenantFilter && !elements.ragNewTenant) return;
+    const currentFilterVal = elements.ragTenantFilter?.value || 'all';
+
+    // Opções para o filtro de busca
+    if (elements.ragTenantFilter) {
+      elements.ragTenantFilter.innerHTML = '<option value="all">Todas as Empresas</option>';
+      instances.forEach(inst => {
+        const opt = document.createElement('option');
+        opt.value = inst.id;
+        opt.textContent = `${inst.nome || inst.id} (${inst.id})`;
+        elements.ragTenantFilter.appendChild(opt);
+      });
+      elements.ragTenantFilter.value = currentFilterVal;
+    }
+
+    // Opções para o modal de cadastro novo
+    if (elements.ragNewTenant) {
+      elements.ragNewTenant.innerHTML = '<option value="">Selecione o cliente...</option>';
+      instances.forEach(inst => {
+        const opt = document.createElement('option');
+        opt.value = inst.id;
+        opt.textContent = `${inst.nome || inst.id} (${inst.id})`;
+        elements.ragNewTenant.appendChild(opt);
+      });
+    }
+  }
+
+  async function loadKnowledgeStats() {
+    try {
+      const res = await api('/api/v1/conhecimento/stats');
+      if (!res?.data) return;
+      const s = res.data;
+
+      if (elements.metricRagTotal) elements.metricRagTotal.textContent = s.total_fragmentos || 0;
+      if (elements.metricRagTenants) elements.metricRagTenants.textContent = s.total_tenants || 0;
+      if (elements.metricRagAvgChars) elements.metricRagAvgChars.textContent = `${s.media_caracteres || 0} chars`;
+
+      if (elements.metricRagVetorStatus && elements.metricRagVetorSub) {
+        const total = (s.com_vetor || 0) + (s.sem_vetor || 0);
+        const pct = total > 0 ? Math.round((s.com_vetor / total) * 100) : 100;
+        elements.metricRagVetorStatus.textContent = `${pct}%`;
+        elements.metricRagVetorStatus.className = pct === 100 ? 'metric-value text-success' : 'metric-value text-warning';
+        elements.metricRagVetorSub.textContent = `${s.com_vetor || 0} indexados / ${s.sem_vetor || 0} pendentes`;
+      }
+    } catch (err) {
+      console.warn('[rag] Falha ao carregar métricas:', err.message);
+    }
+  }
+
+  async function loadKnowledge(page = 1) {
+    if (!elements.ragTbody) return;
+    populateRagTenantOptions();
+
+    elements.ragTbody.innerHTML = '<tr><td colspan="6" class="text-center py-8 text-muted">Carregando fragmentos da base...</td></tr>';
+
+    const tenant = elements.ragTenantFilter?.value || 'all';
+    const busca = (elements.ragSearchInput?.value || '').trim();
+    const limit = knowledgePagination.limit || 25;
+
+    let url = `/api/v1/conhecimento?page=${page}&limit=${limit}`;
+    if (tenant && tenant !== 'all') url += `&instance_id=${encodeURIComponent(tenant)}`;
+    if (busca) url += `&busca=${encodeURIComponent(busca)}`;
+
+    try {
+      const res = await api(url);
+      knowledgeDocs = res.data || [];
+      knowledgePagination = res.pagination || { page: 1, limit: 25, total: 0, totalPages: 1 };
+      renderKnowledge();
+      loadKnowledgeStats();
+    } catch (err) {
+      console.error('[rag] Erro ao listar conhecimento:', err);
+      elements.ragTbody.innerHTML = `<tr><td colspan="6" class="text-center py-8 text-danger">Falha ao carregar conhecimento: ${escapeHtml(err.message)}</td></tr>`;
+      showToast('Erro ao consultar base de conhecimento', 'error');
+    }
+  }
+
+  function renderKnowledge() {
+    if (!elements.ragTbody) return;
+
+    if (knowledgeDocs.length === 0) {
+      elements.ragTbody.innerHTML = '<tr><td colspan="6" class="text-center py-8 text-muted">Nenhum fragmento encontrado nesta consulta.</td></tr>';
+      updatePaginationControls();
+      return;
+    }
+
+    elements.ragTbody.innerHTML = knowledgeDocs.map(doc => {
+      const previewText = doc.text.length > 130 ? `${doc.text.substring(0, 130)}...` : doc.text;
+      const vetorBadge = doc.tem_vetor
+        ? `<span class="badge badge-model-active" title="Vetor de ${doc.dimensao_vetor || 3072} dimensões indexado">3072 dim</span>`
+        : `<span class="badge badge-model-inactive" title="Aguardando geração de embedding">Pendente</span>`;
+
+      // Formata tags de metadados
+      let metaSummary = '--';
+      if (doc.metadata && typeof doc.metadata === 'object' && Object.keys(doc.metadata).length > 0) {
+        metaSummary = Object.entries(doc.metadata)
+          .slice(0, 2)
+          .map(([k, v]) => `<span class="badge" style="font-size: 10px; background: rgba(255,255,255,0.06);">${escapeHtml(k)}: ${escapeHtml(String(v))}</span>`)
+          .join(' ');
+      }
+
+      return `
+        <tr>
+          <td>
+            <span class="font-mono text-xs text-muted font-semibold">#${doc.id}</span>
+          </td>
+          <td>
+            <div style="font-weight: 500;">${escapeHtml(doc.cliente_nome || doc.instance_id || 'Sem cliente')}</div>
+            <code class="font-mono text-xs text-muted">${escapeHtml(doc.instance_id || (doc.metadata && doc.metadata.instance_id) || '-')}</code>
+          </td>
+          <td>
+            <div style="max-width: 420px; line-height: 1.4; font-size: 0.8125rem;">${escapeHtml(previewText)}</div>
+            <div class="text-xs text-muted mt-1 font-mono">${doc.tamanho_caracteres || doc.text.length} chars</div>
+          </td>
+          <td>
+            <div>${metaSummary}</div>
+          </td>
+          <td>${vetorBadge}</td>
+          <td class="text-right">
+            <div style="display: inline-flex; gap: 4px;">
+              <button class="btn btn-xs btn-secondary" onclick="window.AnneUI.openRagViewModal(${doc.id})" title="Ver conteúdo completo e metadados">
+                Ver
+              </button>
+              <button class="btn btn-xs btn-secondary" onclick="window.AnneUI.quickCopyRagText(${doc.id})" title="Copiar texto do fragmento">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                Copiar
+              </button>
+              <button class="btn btn-xs btn-danger" onclick="window.AnneUI.deleteRagDoc(${doc.id})" title="Excluir fragmento">
+                Excluir
+              </button>
+            </div>
+          </td>
+        </tr>
+      `;
+    }).join('');
+
+    updatePaginationControls();
+  }
+
+  function updatePaginationControls() {
+    const { page, total, totalPages } = knowledgePagination;
+    if (elements.ragPaginationInfo) {
+      elements.ragPaginationInfo.textContent = `Mostrando ${knowledgeDocs.length} de ${total} fragmento(s)`;
+    }
+    if (elements.ragPaginationCurrent) {
+      elements.ragPaginationCurrent.textContent = `Pág ${page} de ${Math.max(1, totalPages)}`;
+    }
+    if (elements.btnRagPrevPage) {
+      elements.btnRagPrevPage.disabled = page <= 1;
+    }
+    if (elements.btnRagNextPage) {
+      elements.btnRagNextPage.disabled = page >= totalPages;
+    }
+  }
+
+  async function openRagViewModal(id) {
+    let doc = knowledgeDocs.find(d => d.id === id);
+    if (!doc) {
+      try {
+        const res = await api(`/api/v1/conhecimento/${id}`);
+        doc = res.data;
+      } catch (err) {
+        showToast('Falha ao abrir detalhes do fragmento', 'error');
+        return;
+      }
+    }
+    if (!doc) return;
+
+    if (elements.ragViewTitle) elements.ragViewTitle.textContent = `Fragmento de Conhecimento #${doc.id}`;
+    if (elements.ragViewId) elements.ragViewId.textContent = String(doc.id);
+    if (elements.ragViewClient) elements.ragViewClient.textContent = `Cliente: ${doc.cliente_nome || doc.instance_id} (${doc.instance_id})`;
+    if (elements.ragViewChars) elements.ragViewChars.textContent = `${doc.tamanho_caracteres || doc.text.length} chars`;
+    if (elements.ragViewDims) elements.ragViewDims.textContent = doc.tem_vetor ? `${doc.dimensao_vetor || 3072} dims (indexado)` : 'Pendente de embedding';
+
+    if (elements.ragViewVetorBadge) {
+      elements.ragViewVetorBadge.textContent = doc.tem_vetor ? 'Vetor HNSW Ativo' : 'Vetor Pendente';
+      elements.ragViewVetorBadge.className = doc.tem_vetor ? 'badge badge-model-active' : 'badge badge-model-inactive';
+    }
+
+    if (elements.ragViewText) elements.ragViewText.textContent = doc.text;
+    if (elements.ragViewMetadata) {
+      elements.ragViewMetadata.textContent = JSON.stringify(doc.metadata || {}, null, 2);
+    }
+
+    // Configura botões de cópia do modal de visualização
+    if (elements.btnCopyRagText) {
+      elements.btnCopyRagText.onclick = () => {
+        navigator.clipboard.writeText(doc.text)
+          .then(() => showToast('Texto completo copiado!'))
+          .catch(() => showToast('Erro ao copiar', 'error'));
+      };
+    }
+    if (elements.btnCopyRagMetadata) {
+      elements.btnCopyRagMetadata.onclick = () => {
+        navigator.clipboard.writeText(JSON.stringify(doc.metadata || {}, null, 2))
+          .then(() => showToast('JSON de metadados copiado!'))
+          .catch(() => showToast('Erro ao copiar', 'error'));
+      };
+    }
+
+    openModal(elements.modalRagView);
+  }
+
+  function openRagNewModal(defaultTenantId = null) {
+    populateRagTenantOptions();
+    if (elements.formRagNew) elements.formRagNew.reset();
+    if (elements.ragNewTenant && defaultTenantId) {
+      elements.ragNewTenant.value = defaultTenantId;
+    }
+    if (elements.ragNewMetadata) {
+      elements.ragNewMetadata.value = '{"origem": "manual"}';
+    }
+    updateRagNewCounters();
+    openModal(elements.modalRagNew);
+  }
+
+  function updateRagNewCounters() {
+    if (!elements.ragNewText) return;
+    const count = elements.ragNewText.value.length;
+    const estTokens = Math.ceil(count / 4);
+    if (elements.ragNewCharCount) elements.ragNewCharCount.textContent = `${count} caracteres`;
+    if (elements.ragNewTokenEst) elements.ragNewTokenEst.textContent = `~${estTokens} tokens estimados`;
+  }
+
+  async function saveRagDoc(e) {
+    e.preventDefault();
+    const instance_id = elements.ragNewTenant?.value?.trim();
+    const text = elements.ragNewText?.value?.trim();
+    const rawMetadata = elements.ragNewMetadata?.value?.trim() || '{}';
+
+    if (!instance_id) return showToast('Selecione uma empresa / tenant', 'error');
+    if (!text) return showToast('Digite o texto do fragmento', 'error');
+
+    let metadata = {};
+    try {
+      metadata = JSON.parse(rawMetadata);
+    } catch (err) {
+      return showToast('Metadados devem ser um JSON válido', 'error');
+    }
+
+    try {
+      await api('/api/v1/conhecimento', {
+        method: 'POST',
+        body: JSON.stringify({ instance_id, text, metadata })
+      });
+      showToast('Fragmento cadastrado com sucesso!');
+      closeModal(elements.modalRagNew);
+      loadKnowledge(1);
+    } catch (err) {
+      showToast(err.message || 'Falha ao cadastrar fragmento', 'error');
+    }
+  }
+
+  async function deleteRagDoc(id) {
+    if (!confirm(`Deseja realmente remover o fragmento #${id} da base de conhecimento?`)) return;
+
+    try {
+      await api(`/api/v1/conhecimento/${id}`, { method: 'DELETE' });
+      showToast('Fragmento removido com sucesso!');
+      loadKnowledge(knowledgePagination.page || 1);
+    } catch (err) {
+      showToast(err.message || 'Falha ao remover fragmento', 'error');
+    }
+  }
+
+  function quickCopyRagText(id) {
+    const doc = knowledgeDocs.find(d => d.id === id);
+    if (!doc) return;
+    navigator.clipboard.writeText(doc.text)
+      .then(() => showToast('Texto copiado com sucesso!'))
+      .catch(() => showToast('Erro ao copiar', 'error'));
+  }
+
+  // Event Listeners da Base de Conhecimento
+  if (elements.btnNewRagDoc) {
+    elements.btnNewRagDoc.addEventListener('click', () => openRagNewModal());
+  }
+  if (elements.formRagNew) {
+    elements.formRagNew.addEventListener('submit', saveRagDoc);
+  }
+  if (elements.ragNewText) {
+    elements.ragNewText.addEventListener('input', updateRagNewCounters);
+  }
+  if (elements.ragTenantFilter) {
+    elements.ragTenantFilter.addEventListener('change', () => loadKnowledge(1));
+  }
+  if (elements.ragSearchInput) {
+    elements.ragSearchInput.addEventListener('input', () => {
+      clearTimeout(ragSearchDebounceTimer);
+      ragSearchDebounceTimer = setTimeout(() => {
+        loadKnowledge(1);
+      }, 300);
+    });
+  }
+  if (elements.btnRagPrevPage) {
+    elements.btnRagPrevPage.addEventListener('click', () => {
+      if (knowledgePagination.page > 1) {
+        loadKnowledge(knowledgePagination.page - 1);
+      }
+    });
+  }
+  if (elements.btnRagNextPage) {
+    elements.btnRagNextPage.addEventListener('click', () => {
+      if (knowledgePagination.page < knowledgePagination.totalPages) {
+        loadKnowledge(knowledgePagination.page + 1);
+      }
+    });
+  }
+
+  // Atalho dentro da Ficha do Cliente para abrir RAG filtrado
+  if (elements.btnFichaViewRag) {
+    elements.btnFichaViewRag.addEventListener('click', () => {
+      if (!currentFichaInstanceId) return;
+      closeModal(elements.modalFicha);
+      switchPageTab('tab-ia');
+      switchIaSubTab('subtab-conhecimento');
+      if (elements.ragTenantFilter) {
+        elements.ragTenantFilter.value = currentFichaInstanceId;
+      }
+      loadKnowledge(1);
+    });
+  }
+
   // Fechar no Esc
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
@@ -1947,6 +2322,8 @@
     } else if (activePageTab === 'tab-ia' || activePageTab === 'tab-modelos') {
       if (activeIaSubTab === 'subtab-prompts') {
         loadStandardPrompts();
+      } else if (activeIaSubTab === 'subtab-conhecimento') {
+        loadKnowledge(knowledgePagination.page || 1);
       } else {
         loadModels();
       }
@@ -1966,7 +2343,11 @@
     openPromptModal,
     viewPrompt,
     quickCopyPrompt,
-    deletePrompt
+    deletePrompt,
+    openRagViewModal,
+    openRagNewModal,
+    deleteRagDoc,
+    quickCopyRagText
   };
 
   // Inicialização
