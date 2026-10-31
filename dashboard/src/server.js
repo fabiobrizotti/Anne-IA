@@ -2,6 +2,7 @@ const express = require('express');
 const { Pool } = require('pg');
 const path = require('path');
 const crypto = require('crypto');
+const auth = require('./auth');
 
 const app = express();
 const port = parseInt(process.env.PORT || '3000', 10);
@@ -37,31 +38,68 @@ app.use((_req, res, next) => {
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'no-referrer');
   res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  res.setHeader('Content-Security-Policy', "frame-ancestors 'none';");
   next();
 });
 
-// Autenticação Basic Auth opcional
+// Helper de resolução de sessão server-side (opaque session cookie)
+async function resolveSessionUser(req) {
+  if (!pool) return null;
+  const cookies = auth.parseCookies(req);
+  const token = cookies['__Host-sid'] || cookies['sid'];
+  if (!token) return null;
+
+  const tokenHash = auth.hashSessionToken(token);
+  try {
+    const res = await pool.query(
+      `SELECT s.id_hash, s.user_id, s.expira_em, u.customer_code, u.status, u.role, u.cliente_id,
+              COALESCE(i.nome, 'Operador') AS nome, c.email
+       FROM dashboard_sessoes s
+       JOIN dashboard_usuarios u ON u.id = s.user_id
+       LEFT JOIN dashboard_identidades i ON i.user_id = u.id
+       LEFT JOIN dashboard_contatos c ON c.user_id = u.id
+       WHERE s.id_hash = $1 AND s.expira_em > NOW() AND s.revogado_em IS NULL AND u.status = 'ativo'`,
+      [tokenHash]
+    );
+    if (res.rowCount === 0) return null;
+    const row = res.rows[0];
+
+    // Atualiza sliding window em background
+    pool.query(
+      `UPDATE dashboard_sessoes
+       SET ultimo_uso = NOW(), expira_em = NOW() + INTERVAL '30 minutes'
+       WHERE id_hash = $1`,
+      [tokenHash]
+    ).catch(() => {});
+
+    return {
+      id: row.user_id,
+      customer_code: row.customer_code,
+      nome: row.nome,
+      email: row.email,
+      role: row.role,
+      cliente_id: row.cliente_id
+    };
+  } catch (err) {
+    console.error('[auth] Erro ao validar sessão:', err.message);
+    return null;
+  }
+}
+
+// Fallback de Basic Auth para automações headless (n8n/scripts locais)
 const authEnabled = process.env.DASHBOARD_AUTH_ENABLED === 'true';
 const authUser = process.env.DASHBOARD_USERNAME || 'admin';
 const authPass = process.env.DASHBOARD_PASSWORD || '';
 
-if (authEnabled && authPass) {
-  app.use((req, res, next) => {
-    // Libera healthcheck sem autenticação
-    if (req.path === '/api/health') return next();
+function verifyBasicAuth(req) {
+  if (!authEnabled || !authPass) return false;
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Basic ')) return false;
 
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Basic ')) {
-      res.setHeader('WWW-Authenticate', 'Basic realm="Painel Anne-IA"');
-      return res.status(401).send('Acesso não autorizado.');
-    }
-
+  try {
     const credentials = Buffer.from(authHeader.split(' ')[1], 'base64').toString('ascii');
     const separatorIdx = credentials.indexOf(':');
-    if (separatorIdx === -1) {
-      res.setHeader('WWW-Authenticate', 'Basic realm="Painel Anne-IA"');
-      return res.status(401).send('Credenciais inválidas.');
-    }
+    if (separatorIdx === -1) return false;
 
     const user = credentials.substring(0, separatorIdx);
     const pass = credentials.substring(separatorIdx + 1);
@@ -73,15 +111,28 @@ if (authEnabled && authPass) {
 
     const userMatch = userBuf.length === authUserBuf.length && crypto.timingSafeEqual(userBuf, authUserBuf);
     const passMatch = passBuf.length === authPassBuf.length && crypto.timingSafeEqual(passBuf, authPassBuf);
-
-    if (userMatch && passMatch) {
-      return next();
-    }
-
-    res.setHeader('WWW-Authenticate', 'Basic realm="Painel Anne-IA"');
-    return res.status(401).send('Credenciais inválidas.');
-  });
+    return userMatch && passMatch;
+  } catch (_e) {
+    return false;
+  }
 }
+
+// Gatekeeper de navegação da interface Vanilla
+app.get(['/', '/index.html'], async (req, res, next) => {
+  const user = await resolveSessionUser(req);
+  if (!user && !verifyBasicAuth(req)) {
+    return res.redirect('/login.html');
+  }
+  next();
+});
+
+app.get('/login.html', async (req, res, next) => {
+  const user = await resolveSessionUser(req);
+  if (user || verifyBasicAuth(req)) {
+    return res.redirect('/');
+  }
+  next();
+});
 
 // Arquivos estáticos da interface Vanilla
 app.use(express.static(path.join(__dirname, '../public')));
@@ -140,6 +191,333 @@ function normalizePhoneNumber(raw) {
 // Healthcheck
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+// -----------------------------------------------------------------------------
+// ENDPOINTS DE AUTENTICAÇÃO E GOVERNANÇA LGPD (v1)
+// -----------------------------------------------------------------------------
+
+app.use('/api/v1/auth', (req, res, next) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+  next();
+});
+
+// GET /api/v1/auth/legal/:tipo - Termos de Uso e Política de Privacidade
+app.get('/api/v1/auth/legal/:tipo', (req, res) => {
+  const doc = auth.legalTexts[req.params.tipo];
+  if (!doc) {
+    return res.status(404).json({ success: false, error: 'Documento legal não encontrado.' });
+  }
+  res.json({ success: true, data: doc });
+});
+
+// POST /api/v1/auth/login
+app.post('/api/v1/auth/login', async (req, res) => {
+  if (!pool) return res.status(500).json({ success: false, error: 'Banco de dados não disponível' });
+  const ip = req.ip || req.headers['x-forwarded-for'] || req.socket.remoteAddress || '';
+  const userAgent = req.headers['user-agent'] || '';
+  const { identifier, password, remember_me } = req.body || {};
+
+  const cleanId = String(identifier || '').trim().toLowerCase();
+  const cleanPass = String(password || '');
+
+  if (!cleanId || !cleanPass) {
+    return res.status(400).json({ success: false, error: 'Identificador e senha são obrigatórios.' });
+  }
+
+  // Rate limiting contra brute force
+  const bfCheck = auth.checkBruteForce(ip, cleanId);
+  if (bfCheck.blocked) {
+    await auth.recordAudit(pool, {
+      identificador: cleanId,
+      evento: 'LOGIN_LOCKOUT',
+      sucesso: false,
+      ip,
+      userAgent,
+      detalhes: { remainingSeconds: bfCheck.remainingSeconds }
+    });
+    return res.status(429).json({
+      success: false,
+      error: `Muitas tentativas incorretas. Conta bloqueada temporariamente. Tente novamente em ${Math.ceil(bfCheck.remainingSeconds / 60)} minuto(s).`
+    });
+  }
+
+  try {
+    const userRes = await pool.query(
+      `SELECT u.id, u.customer_code, u.status, u.role, u.cliente_id,
+              COALESCE(i.nome, 'Operador') AS nome, c.email, cr.password_hash
+       FROM dashboard_usuarios u
+       LEFT JOIN dashboard_identidades i ON i.user_id = u.id
+       LEFT JOIN dashboard_contatos c ON c.user_id = u.id
+       LEFT JOIN dashboard_credenciais cr ON cr.user_id = u.id
+       WHERE (LOWER(c.email) = $1 OR UPPER(u.customer_code) = UPPER($1))
+       LIMIT 1`,
+      [cleanId]
+    );
+
+    const user = userRes.rows[0];
+    const passwordMatch = user ? await auth.verifyPassword(cleanPass, user.password_hash) : await auth.verifyPassword(cleanPass, null);
+
+    if (!user || !passwordMatch || user.status !== 'ativo') {
+      auth.recordBruteForceFailure(ip, cleanId);
+      await auth.recordAudit(pool, {
+        userId: user ? user.id : null,
+        identificador: cleanId,
+        evento: 'LOGIN_FAIL',
+        sucesso: false,
+        ip,
+        userAgent,
+        detalhes: { motivo: !user ? 'usuario_nao_encontrado' : (user.status !== 'ativo' ? 'usuario_inativo' : 'senha_incorreta') }
+      });
+      return res.status(401).json({ success: false, error: 'E-mail ou senha incorretos.' });
+    }
+
+    // Sucesso: reseta rate limit
+    auth.resetBruteForce(ip, cleanId);
+
+    // Duração da sessão: 30 dias se 'remember_me', senão 8 horas
+    const maxAgeSeconds = remember_me ? (30 * 24 * 60 * 60) : (8 * 60 * 60);
+    const sessionToken = auth.generateSessionToken();
+    const tokenHash = auth.hashSessionToken(sessionToken);
+
+    await pool.query(
+      `INSERT INTO dashboard_sessoes (id_hash, user_id, ip, user_agent, expira_em)
+       VALUES ($1, $2, $3, $4, NOW() + make_interval(secs => $5))`,
+      [tokenHash, user.id, ip, userAgent, maxAgeSeconds]
+    );
+
+    auth.setSessionCookie(req, res, sessionToken, maxAgeSeconds);
+
+    await auth.recordAudit(pool, {
+      userId: user.id,
+      identificador: cleanId,
+      evento: 'LOGIN_OK',
+      sucesso: true,
+      ip,
+      userAgent,
+      detalhes: { remember_me: !!remember_me }
+    });
+
+    res.json({
+      success: true,
+      data: {
+        id: user.id,
+        nome: user.nome,
+        email: user.email,
+        role: user.role,
+        customer_code: user.customer_code
+      }
+    });
+  } catch (err) {
+    console.error('[auth] Erro no login:', err.message);
+    res.status(500).json({ success: false, error: 'Erro interno ao processar autenticação.' });
+  }
+});
+
+// POST /api/v1/auth/register
+app.post('/api/v1/auth/register', async (req, res) => {
+  if (!pool) return res.status(500).json({ success: false, error: 'Banco de dados não disponível' });
+  const ip = req.ip || req.headers['x-forwarded-for'] || req.socket.remoteAddress || '';
+  const userAgent = req.headers['user-agent'] || '';
+  const { nome, cpf, data_nascimento, email, telefone, password, aceitou_termos, aceitou_privacidade } = req.body || {};
+
+  // Validação de consentimento LGPD obrigatório (unchecked by default)
+  if (aceitou_termos !== true || aceitou_privacidade !== true) {
+    return res.status(400).json({
+      success: false,
+      error: 'É obrigatório aceitar os Termos de Uso e a Política de Privacidade para prosseguir.'
+    });
+  }
+
+  // Validação de campos
+  const cleanNome = String(nome || '').trim();
+  const cleanEmail = String(email || '').trim().toLowerCase();
+  const cleanCpf = String(cpf || '').replace(/\D/g, '');
+  const cleanTelefone = String(telefone || '').replace(/\D/g, '');
+  const cleanPass = String(password || '');
+
+  if (!cleanNome || cleanNome.split(/\s+/).length < 2) {
+    return res.status(400).json({ success: false, error: 'Informe seu nome completo (nome e sobrenome).' });
+  }
+
+  if (!auth.validateCpf(cleanCpf)) {
+    return res.status(400).json({ success: false, error: 'CPF inválido.' });
+  }
+
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+    return res.status(400).json({ success: false, error: 'E-mail corporativo inválido.' });
+  }
+
+  if (cleanPass.length < 8 || !/[A-Z]/.test(cleanPass) || !/[a-z]/.test(cleanPass) || !/[0-9]/.test(cleanPass)) {
+    return res.status(400).json({
+      success: false,
+      error: 'A senha deve conter no mínimo 8 caracteres, com letra maiúscula, minúscula e número.'
+    });
+  }
+
+  // Validação de maioridade (>= 18 anos)
+  if (data_nascimento) {
+    const dob = new Date(data_nascimento);
+    const today = new Date();
+    let age = today.getFullYear() - dob.getFullYear();
+    const m = today.getMonth() - dob.getMonth();
+    if (m < 0 || (m === 0 && today.getDate() < dob.getDate())) age--;
+    if (isNaN(age) || age < 18) {
+      return res.status(400).json({ success: false, error: 'O cadastro é restrito a maiores de 18 anos.' });
+    }
+  }
+
+  const cpfHash = auth.hashCpf(cleanCpf);
+  const cpfCifrado = auth.encryptCpf(cleanCpf);
+  const passwordHash = await auth.hashPassword(cleanPass);
+  const customerCode = `CLI-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
+
+  const client = await pool.connect();
+  try {
+    const checkDup = await client.query(
+      `SELECT 'email' AS campo FROM dashboard_contatos WHERE LOWER(email) = $1
+       UNION ALL
+       SELECT 'cpf' AS campo FROM dashboard_identidades WHERE cpf_hash = $2`,
+      [cleanEmail, cpfHash]
+    );
+
+    if (checkDup.rowCount > 0) {
+      client.release();
+      return res.status(409).json({ success: false, error: 'Dados cadastrais já existentes na plataforma.' });
+    }
+
+    await client.query('BEGIN');
+
+    // 1. Usuário
+    const userRes = await client.query(
+      `INSERT INTO dashboard_usuarios (customer_code, status, role)
+       VALUES ($1, 'ativo', 'operador')
+       RETURNING id, customer_code, role`,
+      [customerCode]
+    );
+    const userId = userRes.rows[0].id;
+
+    // 2. Identidade (cifrada + blind index)
+    await client.query(
+      `INSERT INTO dashboard_identidades (user_id, nome, nascimento, cpf_cifrado, cpf_hash)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [userId, cleanNome, data_nascimento || null, cpfCifrado, cpfHash]
+    );
+
+    // 3. Contatos
+    await client.query(
+      `INSERT INTO dashboard_contatos (user_id, email, telefone)
+       VALUES ($1, $2, $3)`,
+      [userId, cleanEmail, cleanTelefone || null]
+    );
+
+    // 4. Credenciais
+    await client.query(
+      `INSERT INTO dashboard_credenciais (user_id, password_hash)
+       VALUES ($1, $2)`,
+      [userId, passwordHash]
+    );
+
+    // 5. Consentimentos LGPD
+    await client.query(
+      `INSERT INTO dashboard_consentimentos (user_id, documento, versao, ip, user_agent)
+       VALUES ($1, 'termos_uso', 'v1.0', $2, $3),
+              ($1, 'politica_privacidade', 'v1.0', $2, $3)`,
+      [userId, ip, userAgent]
+    );
+
+    // 6. Sessão automática
+    const maxAgeSeconds = 8 * 60 * 60;
+    const sessionToken = auth.generateSessionToken();
+    const tokenHash = auth.hashSessionToken(sessionToken);
+
+    await client.query(
+      `INSERT INTO dashboard_sessoes (id_hash, user_id, ip, user_agent, expira_em)
+       VALUES ($1, $2, $3, $4, NOW() + make_interval(secs => $5))`,
+      [tokenHash, userId, ip, userAgent, maxAgeSeconds]
+    );
+
+    await client.query('COMMIT');
+    auth.setSessionCookie(req, res, sessionToken, maxAgeSeconds);
+
+    await auth.recordAudit(pool, {
+      userId,
+      identificador: cleanEmail,
+      evento: 'REGISTER_OK',
+      sucesso: true,
+      ip,
+      userAgent,
+      detalhes: { customer_code: customerCode }
+    });
+
+    res.status(201).json({
+      success: true,
+      data: {
+        id: userId,
+        nome: cleanNome,
+        email: cleanEmail,
+        role: userRes.rows[0].role,
+        customer_code: customerCode
+      }
+    });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('[auth] Erro no cadastro:', err.message);
+    res.status(500).json({ success: false, error: 'Falha ao registrar novo usuário.' });
+  } finally {
+    client.release();
+  }
+});
+
+// POST /api/v1/auth/logout
+app.post('/api/v1/auth/logout', async (req, res) => {
+  const cookies = auth.parseCookies(req);
+  const token = cookies['__Host-sid'] || cookies['sid'];
+  if (token && pool) {
+    const tokenHash = auth.hashSessionToken(token);
+    await pool.query('UPDATE dashboard_sessoes SET revogado_em = NOW() WHERE id_hash = $1', [tokenHash]).catch(() => {});
+  }
+  auth.clearSessionCookie(req, res);
+  res.json({ success: true, message: 'Sessão encerrada com sucesso.' });
+});
+
+// GET /api/v1/auth/me
+app.get('/api/v1/auth/me', async (req, res) => {
+  const user = await resolveSessionUser(req);
+  if (user) {
+    return res.json({ success: true, data: user });
+  }
+  if (verifyBasicAuth(req)) {
+    return res.json({
+      success: true,
+      data: {
+        id: 'system-basic-auth',
+        nome: `Administrador (${authUser})`,
+        email: 'admin@anne-ia.local',
+        role: 'admin',
+        customer_code: 'SYS-ADMIN'
+      }
+    });
+  }
+  res.status(401).json({ success: false, error: 'Não autenticado' });
+});
+
+// Middleware de Proteção das Rotas /api/v1/*
+app.use('/api/v1', async (req, res, next) => {
+  if (req.path.startsWith('/auth/')) return next();
+
+  const user = await resolveSessionUser(req);
+  if (user) {
+    req.user = user;
+    return next();
+  }
+
+  if (verifyBasicAuth(req)) {
+    req.user = { id: 'basic', role: 'admin', nome: 'Admin' };
+    return next();
+  }
+
+  res.status(401).json({ success: false, error: 'Sessão expirada ou não autenticada.' });
 });
 
 // 1. Listar Instâncias e Clientes
@@ -1660,6 +2038,9 @@ app.post('/api/v1/conhecimento/bulk-delete', async (req, res) => {
 });
 
 // Inicia servidor HTTP
-app.listen(port, '0.0.0.0', () => {
+app.listen(port, '0.0.0.0', async () => {
   console.log(`[dashboard] Painel administrativo ativo na porta ${port}`);
+  if (pool) {
+    await auth.initAdminUser(pool);
+  }
 });

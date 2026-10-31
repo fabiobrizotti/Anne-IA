@@ -1517,4 +1517,360 @@ input:checked + .slider:before {
   background-color: var(--bg-card);
 }
 
+/* ==========================================================================
+   TELA DE AUTENTICAÇÃO E LOGIN SEGURO (OWASP ASVS / LGPD)
+   ========================================================================== */
+
+.login-body {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: var(--bg-main);
+  padding: 24px 16px;
+}
+
+.login-container {
+  width: 100%;
+  max-width: 480px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.login-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-bottom: 8px;
+}
+
+.login-card {
+  background-color: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 24px 28px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.04);
+}
+
+/* Abas Segmentadas de Autenticação */
+.auth-tabs {
+  display: flex;
+  background-color: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 3px;
+  margin-bottom: 20px;
+  gap: 4px;
+}
+
+.auth-tab-btn {
+  flex: 1;
+  background: none;
+  border: none;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-muted);
+  border-radius: calc(var(--radius) - 2px);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.auth-tab-btn:hover {
+  color: var(--text-main);
+}
+
+.auth-tab-btn.active {
+  background-color: var(--bg-card);
+  color: var(--text-main);
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+}
+
+/* Alertas de Autenticação */
+.auth-alert {
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  font-size: 12px;
+  line-height: 1.4;
+  margin-bottom: 16px;
+}
+
+.auth-alert-error {
+  background-color: var(--danger-bg);
+  border: 1px solid var(--danger);
+  color: var(--danger);
+}
+
+.auth-alert-success {
+  background-color: rgba(34, 197, 94, 0.1);
+  border: 1px solid rgba(34, 197, 94, 0.3);
+  color: #16a34a;
+}
+
+/* Formulários */
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 16px;
+}
+
+.form-group label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-main);
+}
+
+.label-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.link-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
+  text-decoration: underline;
+  padding: 0;
+}
+
+.link-btn:hover {
+  color: var(--text-main);
+}
+
+.form-control {
+  background-color: var(--bg-main);
+  border: 1px solid var(--border);
+  color: var(--text-main);
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  outline: none;
+  width: 100%;
+  transition: border-color 0.15s ease;
+}
+
+.form-control:focus {
+  border-color: var(--border-focus);
+}
+
+.form-row-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+@media (max-width: 480px) {
+  .form-row-grid {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+}
+
+/* Wrapper de Senha com Eye Toggle */
+.password-field-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.password-field-wrapper .form-control {
+  padding-right: 36px;
+}
+
+.btn-toggle-password {
+  position: absolute;
+  right: 8px;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius);
+}
+
+.btn-toggle-password:hover {
+  color: var(--text-main);
+}
+
+/* Medidor de Força de Senha */
+.password-meter-container {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.meter-bars {
+  display: flex;
+  gap: 4px;
+  width: 100%;
+}
+
+.meter-bar {
+  flex: 1;
+  height: 4px;
+  background-color: var(--bg-subtle);
+  border-radius: 2px;
+  transition: background-color 0.2s ease;
+}
+
+.meter-bar.bar-weak   { background-color: #ef4444; }
+.meter-bar.bar-fair   { background-color: #f59e0b; }
+.meter-bar.bar-good   { background-color: #3b82f6; }
+.meter-bar.bar-strong { background-color: #22c55e; }
+
+.meter-label-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+/* Checkboxes Customizados */
+.form-group-checkbox {
+  margin-bottom: 14px;
+}
+
+.custom-checkbox-label {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+  line-height: 1.4;
+}
+
+.custom-checkbox-label input[type="checkbox"] {
+  margin-top: 2px;
+  accent-color: var(--primary);
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+}
+
+/* Caixa de Consentimento LGPD */
+.lgpd-consent-box {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background-color: var(--bg-subtle);
+  padding: 12px 14px;
+  margin-bottom: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.lgpd-consent-box legend {
+  padding: 0 4px;
+  font-size: 11px;
+}
+
+.btn-legal-view {
+  background: none;
+  border: none;
+  color: var(--text-main);
+  text-decoration: underline;
+  cursor: pointer;
+  padding: 0;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.btn-legal-view:hover {
+  color: var(--primary);
+}
+
+.btn-block {
+  width: 100%;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  margin-top: 6px;
+}
+
+/* Feedback de Validação Inline */
+.field-feedback {
+  font-size: 11px;
+  margin-top: 3px;
+  display: block;
+}
+
+.feedback-valid {
+  color: #22c55e;
+}
+
+.feedback-invalid {
+  color: #ef4444;
+}
+
+/* Footer da Tela de Login */
+.login-footer {
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px 0;
+}
+
+/* Conteúdo de Texto Legal dentro do Modal */
+.legal-text-content {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-main);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 55vh;
+  overflow-y: auto;
+  padding: 8px;
+  background-color: var(--bg-subtle);
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+}
+
+/* Badge de Usuário Autenticado no Dashboard Principal */
+.user-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background-color: var(--bg-card);
+  border: 1px solid var(--border);
+  padding: 5px 10px;
+  border-radius: var(--radius);
+  font-size: 12px;
+}
+
+.user-badge .user-name {
+  font-weight: 600;
+  color: var(--text-main);
+  max-width: 140px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.user-badge .user-role {
+  background-color: var(--bg-subtle);
+  border: 1px solid var(--border);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+}
+
+
 

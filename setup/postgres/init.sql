@@ -754,5 +754,102 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+-- ============================================================================
+-- AUTENTICAÇÃO, CONTROLE DE ACESSO E GOVERNANÇA LGPD (DASHBOARD ANNE-IA)
+-- Normas: OWASP ASVS Lv 2, NIST SP 800-63B, LGPD (Lei 13.709/2018)
+-- ============================================================================
+
+-- 1. Usuários do Dashboard
+CREATE TABLE IF NOT EXISTS dashboard_usuarios (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  customer_code VARCHAR(32) UNIQUE NOT NULL,
+  status VARCHAR(20) NOT NULL DEFAULT 'ativo' CHECK (status IN ('pendente', 'ativo', 'bloqueado', 'excluido')),
+  role VARCHAR(20) NOT NULL DEFAULT 'operador' CHECK (role IN ('admin', 'operador', 'visualizador')),
+  cliente_id VARCHAR(100) REFERENCES clientes(id) ON DELETE SET NULL,
+  tentativas_falhas INT NOT NULL DEFAULT 0,
+  bloqueado_ate TIMESTAMPTZ,
+  criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  atualizado_em TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_dash_usuarios_status ON dashboard_usuarios(status);
+CREATE INDEX IF NOT EXISTS idx_dash_usuarios_cliente ON dashboard_usuarios(cliente_id);
+
+-- 2. Identidade Cifrada (Proteção de Titular / PII)
+CREATE TABLE IF NOT EXISTS dashboard_identidades (
+  user_id UUID PRIMARY KEY REFERENCES dashboard_usuarios(id) ON DELETE CASCADE,
+  nome VARCHAR(255) NOT NULL,
+  nascimento DATE,
+  cpf_cifrado BYTEA,
+  cpf_hash CHAR(64) UNIQUE,
+  key_id VARCHAR(32) NOT NULL DEFAULT 'v1',
+  criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  atualizado_em TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_dash_identidades_cpf_hash ON dashboard_identidades(cpf_hash);
+
+-- 3. Contatos do Usuário
+CREATE TABLE IF NOT EXISTS dashboard_contatos (
+  user_id UUID PRIMARY KEY REFERENCES dashboard_usuarios(id) ON DELETE CASCADE,
+  email VARCHAR(255) UNIQUE NOT NULL,
+  email_verificado_em TIMESTAMPTZ,
+  telefone VARCHAR(30),
+  telefone_verificado_em TIMESTAMPTZ,
+  criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  atualizado_em TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_dash_contatos_email ON dashboard_contatos(LOWER(email));
+
+-- 4. Credenciais e Hash de Senha (NIST SP 800-63B)
+CREATE TABLE IF NOT EXISTS dashboard_credenciais (
+  user_id UUID PRIMARY KEY REFERENCES dashboard_usuarios(id) ON DELETE CASCADE,
+  password_hash TEXT NOT NULL,
+  algoritmo VARCHAR(30) NOT NULL DEFAULT 'scrypt',
+  parametros JSONB NOT NULL DEFAULT '{"cost":16384,"blockSize":8,"parallelism":1}'::jsonb,
+  atualizado_em TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- 5. Sessões Server-Side Opaque (Tokens rotativos / Revogáveis)
+CREATE TABLE IF NOT EXISTS dashboard_sessoes (
+  id_hash CHAR(64) PRIMARY KEY,
+  user_id UUID NOT NULL REFERENCES dashboard_usuarios(id) ON DELETE CASCADE,
+  ip VARCHAR(45),
+  user_agent TEXT,
+  criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  ultimo_uso TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  expira_em TIMESTAMPTZ NOT NULL,
+  revogado_em TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_dash_sessoes_expira ON dashboard_sessoes(expira_em);
+CREATE INDEX IF NOT EXISTS idx_dash_sessoes_user ON dashboard_sessoes(user_id);
+
+-- 6. Consentimentos Explícitos LGPD (Art. 7º, I e Art. 8º Lei 13.709/2018)
+CREATE TABLE IF NOT EXISTS dashboard_consentimentos (
+  id BIGSERIAL PRIMARY KEY,
+  user_id UUID NOT NULL REFERENCES dashboard_usuarios(id) ON DELETE CASCADE,
+  documento VARCHAR(50) NOT NULL CHECK (documento IN ('termos_uso', 'politica_privacidade', 'marketing')),
+  versao VARCHAR(20) NOT NULL,
+  aceito_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  ip VARCHAR(45) NOT NULL,
+  user_agent TEXT,
+  revogado_em TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_dash_consentimentos_user ON dashboard_consentimentos(user_id, documento);
+
+-- 7. Auditoria de Autenticação (Marco Civil Art. 15 e OWASP Logging)
+CREATE TABLE IF NOT EXISTS dashboard_auditoria_auth (
+  id BIGSERIAL PRIMARY KEY,
+  quando TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  user_id UUID REFERENCES dashboard_usuarios(id) ON DELETE SET NULL,
+  identificador VARCHAR(255),
+  evento VARCHAR(50) NOT NULL,
+  sucesso BOOLEAN NOT NULL,
+  ip VARCHAR(45),
+  user_agent TEXT,
+  detalhes JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+CREATE INDEX IF NOT EXISTS idx_dash_auditoria_quando ON dashboard_auditoria_auth(quando DESC);
+CREATE INDEX IF NOT EXISTS idx_dash_auditoria_ip_evento ON dashboard_auditoria_auth(ip, evento, quando DESC);
+
+
 
 

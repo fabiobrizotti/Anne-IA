@@ -304,6 +304,11 @@
       headers: { ...defaultHeaders, ...(options.headers || {}) }
     });
 
+    if (res.status === 401 && !path.startsWith('/api/v1/auth/')) {
+      window.location.href = '/login.html';
+      throw new Error('Sessão expirada. Redirecionando para login...');
+    }
+
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       throw new Error(data.error || 'Erro na requisição');
@@ -2159,7 +2164,33 @@
     openBillingModal
   };
 
+  // Inicialização de Usuário e Autenticação
+  async function initAuthUser() {
+    try {
+      const res = await api('/api/v1/auth/me');
+      if (res.success && res.data) {
+        const nameEl = document.getElementById('current-user-name');
+        const roleEl = document.getElementById('current-user-role');
+        if (nameEl) nameEl.textContent = res.data.nome || res.data.email || 'Operador';
+        if (roleEl) roleEl.textContent = res.data.role || 'operador';
+      }
+    } catch (_e) {
+      // Redirecionamento de 401 gerenciado pelo helper api()
+    }
+  }
+
+  const btnLogout = document.getElementById('btn-logout');
+  if (btnLogout) {
+    btnLogout.addEventListener('click', async () => {
+      try {
+        await api('/api/v1/auth/logout', { method: 'POST' });
+      } catch (_e) {}
+      window.location.href = '/login.html';
+    });
+  }
+
   // Inicialização
   initTheme();
+  initAuthUser();
   loadInstances();
 })();

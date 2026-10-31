@@ -7,7 +7,7 @@ A stack é auto-inicializável a partir de um clone limpo. A pasta `setup/` conc
 | `setup/rabbitmq/rabbitmq.conf` | Limites de memória/disco, paginação, timeout de LLM e carga de definições. |
 | `setup/rabbitmq/definitions.json.template` | Topologia padrão industrial: exchanges diretas, pipeline em 4 etapas com Quorum Queues e DLX/DLQ (senha via `.env`). |
 | `setup/rabbitmq/entrypoint.sh` | Injeta a senha no template e gera o `definitions.json`. |
-| `setup/postgres/init.sql` | **Fonte única (SSOT 100% idempotente)**: schema do negócio, memória LangChain indexada (`memorypostgreschat` com `idx_memorypostgreschat_session` e `criado_em` para retenção LGPD), base RAG isolada multi-tenant (`base_conhecimento` com `instance_id`, índices HNSW vetoriais, B-tree composto de paginação e GIN trigram `pg_trgm`), `clientes` + `Instance` (Evolution API), **alinhamento 1:1** entre `public."Instance"` e `public.clientes` pelo mesmo ID (`clientes.id = Instance.id`), `prompt_config` (persona/role/playbook por cliente), `prompts_padrao` (prompts mestres globais para roteamento e economia de modelos), **ledger contábil e função de custeio** (`precos_modelos`, `uso_tokens`, `fn_registrar_uso_tokens` com idempotência estrita e precificação dinâmica) e **governança LGPD nativa** (`lgpd_auditoria` com hash SHA-256 via `pgcrypto`, `vw_clientes_mascarado`, `fn_lgpd_anonimizar_titular`, `fn_lgpd_anonimizar_cliente` e `fn_lgpd_expurgo_retencao`). |
+| `setup/postgres/init.sql` | **Fonte única (SSOT 100% idempotente)**: schema do negócio, memória LangChain indexada (`memorypostgreschat` com `idx_memorypostgreschat_session` e `criado_em` para retenção LGPD), base RAG isolada multi-tenant (`base_conhecimento` com `instance_id`, índices HNSW vetoriais, B-tree composto de paginação e GIN trigram `pg_trgm`), `clientes` + `Instance` (Evolution API), **alinhamento 1:1** entre `public."Instance"` e `public.clientes` pelo mesmo ID (`clientes.id = Instance.id`), `prompt_config` (persona/role/playbook por cliente), `prompts_padrao` (prompts mestres globais para roteamento e economia de modelos), **ledger contábil e função de custeio** (`precos_modelos`, `uso_tokens`, `fn_registrar_uso_tokens` com idempotência estrita e precificação dinâmica), **autenticação e sessões server-side** (`dashboard_usuarios`, `dashboard_identidades` cifrada via AES-256-GCM com blind index HMAC-SHA-256, `dashboard_contatos`, `dashboard_credenciais` com hash NIST `scrypt`, `dashboard_sessoes`, `dashboard_consentimentos` LGPD e `dashboard_auditoria_auth`) e **governança LGPD nativa** (`lgpd_auditoria` com hash SHA-256 via `pgcrypto`, `vw_clientes_mascarado`, `fn_lgpd_anonimizar_titular`, `fn_lgpd_anonimizar_cliente` e `fn_lgpd_expurgo_retencao`). |
 | `setup/pgadmin/servers.json` | Auto-provisionamento da conexão do PostgreSQL no pgAdmin 4. |
 | `setup/n8n/clean-workflows.js` | Limpa workflows antigos no SQLite antes de reimportar (idempotência). |
 | `setup/n8n/sanitize-workflow.js` | Remove rastros da instância de origem para evitar falhas no import. |
@@ -243,11 +243,19 @@ O n8n padrão sem parametrização grava o payload JSON de cada execução no SQ
 
 O Dashboard administrativo é uma aplicação web ultra-leve construída em **Vanilla HTML5, CSS puro e JavaScript nativo** (com backend enxuto em Node.js 20 Alpine). Ele consome menos de 30MB de memória RAM no servidor e inicia automaticamente junto ao Docker Compose.
 
-### 8.1. Acesso ao Painel
+### 8.1. Acesso ao Painel e Autenticação Segura (OWASP ASVS / LGPD)
 - **URL**: `http://127.0.0.1:3000` (restrito ao host local por segurança).
-- **Autenticação**:
-  - Usuário: `DASHBOARD_USERNAME` (padrão: `admin`).
+- **Tela de Login e Cadastro (`/login.html`)**:
+  - Gatekeeper automático: requisições não autenticadas são redirecionadas para a tela de login.
+  - Abas segmentadas para **Entrar** e **Criar Conta**.
+  - Hash de senhas via `scrypt` nativo do Node.js 20 (NIST SP 800-63B), imune a timing attacks (`crypto.timingSafeEqual`).
+  - Sessões server-side opacas em banco (`dashboard_sessoes`) com cookies rotativos `HttpOnly; SameSite=Lax; Path=/` (`__Host-sid` em HTTPS / `sid` em HTTP local).
+  - Rate limiting in-memory e bloqueio temporário (lockout) após 5 tentativas consecutivas com mensagens genéricas anti-enumeração.
+  - Governança LGPD: consentimento explícito e auditável (`dashboard_consentimentos`) com checkboxes desmarcados por padrão para Termos de Uso e Política de Privacidade e cifragem AES-256-GCM com blind index HMAC para CPFs.
+- **Credenciais Iniciais (Bootstrap)**:
+  - Usuário padrão: `DASHBOARD_USERNAME` (ex: `admin@anne-ia.local`).
   - Senha: `DASHBOARD_PASSWORD` (gerada automaticamente no `.env`).
+  - Provisionamento automático de admin inicial caso a tabela `dashboard_usuarios` esteja vazia.
 
 ### 8.2. Interface e Experiência Neutra
 - **Design Monocromático Neutro**: Visual preto e branco sóbrio (<30MB RAM, zero-build), livre de neons, gradientes coloridos ou elementos decorativos supérfluos.
@@ -289,6 +297,11 @@ O Dashboard administrativo é uma aplicação web ultra-leve construída em **Va
 | Método | Endpoint | Descrição |
 |---|---|---|
 | `GET` | `/api/health` | Healthcheck simples da aplicação |
+| `POST` | `/api/v1/auth/login` | Autenticação com rate limit anti-força bruta e emissão de cookie de sessão |
+| `POST` | `/api/v1/auth/register` | Cadastro de operador com validação de CPF, idade >= 18 e consentimento LGPD |
+| `POST` | `/api/v1/auth/logout` | Revogação de sessão server-side e limpeza de cookies |
+| `GET` | `/api/v1/auth/me` | Retorna dados e role do usuário ativo da sessão |
+| `GET` | `/api/v1/auth/legal/:tipo` | Retorna texto canônico dos Termos de Uso ou Política de Privacidade |
 | `GET` | `/api/v1/instances` | Lista clientes e status em tempo real da Evolution API |
 | `POST` | `/api/v1/instances` | Cria nova instância na Evolution e cadastra no PostgreSQL |
 | `PUT` | `/api/v1/instances/:id` | Atualiza dados do cliente e anexa histórico de telefones no PostgreSQL |
