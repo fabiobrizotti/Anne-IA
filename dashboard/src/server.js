@@ -32,13 +32,20 @@ if (DATABASE_URL) {
 
 // Middlewares de Parsing e Segurança Defensiva
 app.disable('x-powered-by');
+app.set('trust proxy', 'loopback');
 app.use(express.json({ limit: '256kb' }));
-app.use((_req, res, next) => {
+app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'no-referrer');
   res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
-  res.setHeader('Content-Security-Policy', "frame-ancestors 'none';");
+  res.setHeader(
+    'Content-Security-Policy',
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; frame-ancestors 'none';"
+  );
+  if (req.secure || req.headers['x-forwarded-proto'] === 'https') {
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  }
   next();
 });
 
@@ -214,7 +221,7 @@ app.get('/api/v1/auth/legal/:tipo', (req, res) => {
 // POST /api/v1/auth/login
 app.post('/api/v1/auth/login', async (req, res) => {
   if (!pool) return res.status(500).json({ success: false, error: 'Banco de dados não disponível' });
-  const ip = req.ip || req.headers['x-forwarded-for'] || req.socket.remoteAddress || '';
+  const ip = req.ip || req.socket.remoteAddress || '';
   const userAgent = req.headers['user-agent'] || '';
   const { identifier, password, remember_me } = req.body || {};
 
@@ -314,11 +321,34 @@ app.post('/api/v1/auth/login', async (req, res) => {
   }
 });
 
+const registerIpMap = new Map();
+function checkRegisterRateLimit(ip) {
+  const now = Date.now();
+  const clean = String(ip || 'local').trim();
+  const entry = registerIpMap.get(clean) || { count: 0, first: now };
+  if (now - entry.first > 15 * 60 * 1000) {
+    registerIpMap.set(clean, { count: 1, first: now });
+    return true;
+  }
+  if (entry.count >= 5) return false;
+  entry.count += 1;
+  registerIpMap.set(clean, entry);
+  return true;
+}
+
 // POST /api/v1/auth/register
 app.post('/api/v1/auth/register', async (req, res) => {
   if (!pool) return res.status(500).json({ success: false, error: 'Banco de dados não disponível' });
-  const ip = req.ip || req.headers['x-forwarded-for'] || req.socket.remoteAddress || '';
+  const ip = req.ip || req.socket.remoteAddress || '';
   const userAgent = req.headers['user-agent'] || '';
+
+  if (!checkRegisterRateLimit(ip)) {
+    return res.status(429).json({
+      success: false,
+      error: 'Muitas tentativas de cadastro a partir deste endereço. Tente novamente mais tarde.'
+    });
+  }
+
   const { nome, cpf, data_nascimento, email, telefone, password, aceitou_termos, aceitou_privacidade } = req.body || {};
 
   // Validação de consentimento LGPD obrigatório (unchecked by default)
@@ -383,7 +413,17 @@ app.post('/api/v1/auth/register', async (req, res) => {
 
     if (checkDup.rowCount > 0) {
       client.release();
-      return res.status(409).json({ success: false, error: 'Dados cadastrais já existentes na plataforma.' });
+      await auth.recordAudit(pool, {
+        identificador: cleanEmail,
+        evento: 'REGISTER_DUP_ATTEMPT',
+        sucesso: false,
+        ip,
+        userAgent
+      });
+      return res.status(400).json({
+        success: false,
+        error: 'Não foi possível concluir o cadastro com os dados informados. Verifique as informações ou acesse sua conta.'
+      });
     }
 
     await client.query('BEGIN');
@@ -509,6 +549,21 @@ app.use('/api/v1', async (req, res, next) => {
   const user = await resolveSessionUser(req);
   if (user) {
     req.user = user;
+
+    // Defesa anti-CSRF para requisições mutantes autenticadas via cookie de sessão
+    const isMutating = ['POST', 'PUT', 'DELETE', 'PATCH'].includes(req.method);
+    if (isMutating) {
+      const origin = req.headers.origin;
+      const host = req.headers.host;
+      const requestedWith = req.headers['x-requested-with'];
+      const hasCustomHeader = requestedWith === 'XMLHttpRequest';
+      const isSameOrigin = origin && host ? origin.endsWith(host) : true;
+
+      if (!hasCustomHeader && !isSameOrigin) {
+        return res.status(403).json({ success: false, error: 'Requisição rejeitada por política de segurança anti-CSRF.' });
+      }
+    }
+
     return next();
   }
 
@@ -519,6 +574,18 @@ app.use('/api/v1', async (req, res, next) => {
 
   res.status(401).json({ success: false, error: 'Sessão expirada ou não autenticada.' });
 });
+
+// Helpers de Autorização RBAC / Isolamento Multi-Tenant
+function isAdmin(req) {
+  return Boolean(req.user && req.user.role === 'admin');
+}
+
+function canAccessInstance(req, targetId) {
+  if (!req.user) return false;
+  if (req.user.role === 'admin') return true;
+  if (!req.user.cliente_id || !targetId) return false;
+  return String(req.user.cliente_id).trim().toLowerCase() === String(targetId).trim().toLowerCase();
+}
 
 // 1. Listar Instâncias e Clientes
 app.get('/api/v1/instances', async (req, res) => {
@@ -541,7 +608,7 @@ app.get('/api/v1/instances', async (req, res) => {
     });
 
     // Mescla dados do banco com status em tempo real da Evolution
-    const merged = dbClients.map((c) => {
+    let merged = dbClients.map((c) => {
       const evo = evoMap.get(c.id);
       let status = 'close';
       let profilePicUrl = null;
@@ -569,22 +636,27 @@ app.get('/api/v1/instances', async (req, res) => {
       };
     });
 
-    // Adiciona instâncias que possam existir na Evolution API mas não no banco
-    for (const [name, evo] of evoMap.entries()) {
-      merged.push({
-        id: name,
-        nome: name,
-        telefone: evo.ownerJid ? evo.ownerJid.split('@')[0] : '',
-        email: '',
-        ativo: true,
-        configuracoes: {},
-        historico_telefones: [],
-        status: evo.connectionStatus || evo.instance?.status || evo.status || 'close',
-        profilePicUrl: evo.profilePicUrl || evo.instance?.profilePicUrl || null,
-        criado_em: evo.createdAt || new Date().toISOString(),
-        atualizado_em: evo.updatedAt || new Date().toISOString(),
-        aviso: 'Instância encontrada apenas na Evolution API'
-      });
+    // Se houver instâncias na Evolution API mas não no banco (apenas visíveis ao admin)
+    if (isAdmin(req)) {
+      for (const [name, evo] of evoMap.entries()) {
+        merged.push({
+          id: name,
+          nome: name,
+          telefone: evo.ownerJid ? evo.ownerJid.split('@')[0] : '',
+          email: '',
+          ativo: true,
+          configuracoes: {},
+          historico_telefones: [],
+          status: evo.connectionStatus || evo.instance?.status || evo.status || 'close',
+          profilePicUrl: evo.profilePicUrl || evo.instance?.profilePicUrl || null,
+          criado_em: evo.createdAt || new Date().toISOString(),
+          atualizado_em: evo.updatedAt || new Date().toISOString(),
+          aviso: 'Instância encontrada apenas na Evolution API'
+        });
+      }
+    } else {
+      // Isolamento multi-tenant: operador enxerga estritamente seu próprio inquilino
+      merged = merged.filter(c => c.id && String(c.id).toLowerCase() === String(req.user.cliente_id).toLowerCase());
     }
 
     res.json({ success: true, data: merged });
@@ -596,6 +668,9 @@ app.get('/api/v1/instances', async (req, res) => {
 
 // 2. Criar Nova Instância e Cliente
 app.post('/api/v1/instances', async (req, res) => {
+  if (!isAdmin(req)) {
+    return res.status(403).json({ success: false, error: 'Acesso restrito a administradores.' });
+  }
   try {
     const { id, nome, telefone, email, settings = {} } = req.body;
 
@@ -674,8 +749,11 @@ app.post('/api/v1/instances', async (req, res) => {
 
 // 3. Atualizar Dados do Cliente / Instância (Ficha)
 app.put('/api/v1/instances/:id', async (req, res) => {
+  const { id } = req.params;
+  if (!canAccessInstance(req, id)) {
+    return res.status(403).json({ success: false, error: 'Acesso negado a esta instância.' });
+  }
   try {
-    const { id } = req.params;
     const { nome, email, telefone, ativo, motivoTroca } = req.body;
 
     if (!nome || typeof nome !== 'string' || !nome.trim()) {
@@ -730,11 +808,17 @@ app.put('/api/v1/instances/:id', async (req, res) => {
   }
 });
 
-// 4. Conectar WhatsApp (Pairing Code ou QR Code)
-app.get('/api/v1/instances/:id/connect', async (req, res) => {
+// 4. Conectar WhatsApp (Pairing Code ou QR Code) - Aceita POST (recomendado/seguro) e GET (legado)
+app.all('/api/v1/instances/:id/connect', async (req, res) => {
+  if (req.method !== 'GET' && req.method !== 'POST') {
+    return res.status(405).json({ success: false, error: 'Método não permitido' });
+  }
+  const { id } = req.params;
+  if (!canAccessInstance(req, id)) {
+    return res.status(403).json({ success: false, error: 'Acesso negado a esta instância.' });
+  }
   try {
-    const { id } = req.params;
-    const { number } = req.query;
+    const number = req.body?.number || req.query?.number;
 
     let cleanNumber = null;
     let endpoint = `/instance/connect/${encodeURIComponent(id)}`;
@@ -798,8 +882,11 @@ app.get('/api/v1/instances/:id/connect', async (req, res) => {
 
 // 4. Status de Conexão em Tempo Real
 app.get('/api/v1/instances/:id/status', async (req, res) => {
+  const { id } = req.params;
+  if (!canAccessInstance(req, id)) {
+    return res.status(403).json({ success: false, error: 'Acesso negado a esta instância.' });
+  }
   try {
-    const { id } = req.params;
     const evoRes = await evolutionFetch(`/instance/connectionState/${encodeURIComponent(id)}`);
 
     const state = evoRes.data?.instance?.state || evoRes.data?.state || 'close';
@@ -811,8 +898,11 @@ app.get('/api/v1/instances/:id/status', async (req, res) => {
 
 // 5. Consultar Configurações (Settings)
 app.get('/api/v1/instances/:id/settings', async (req, res) => {
+  const { id } = req.params;
+  if (!canAccessInstance(req, id)) {
+    return res.status(403).json({ success: false, error: 'Acesso negado a esta instância.' });
+  }
   try {
-    const { id } = req.params;
     const evoRes = await evolutionFetch(`/settings/find/${encodeURIComponent(id)}`);
 
     let settings = null;
@@ -843,8 +933,11 @@ app.get('/api/v1/instances/:id/settings', async (req, res) => {
 
 // 6. Atualizar Configurações (Settings)
 app.post('/api/v1/instances/:id/settings', async (req, res) => {
+  const { id } = req.params;
+  if (!canAccessInstance(req, id)) {
+    return res.status(403).json({ success: false, error: 'Acesso negado a esta instância.' });
+  }
   try {
-    const { id } = req.params;
     const {
       rejectCall = false,
       msgCall = '',
@@ -892,11 +985,14 @@ app.post('/api/v1/instances/:id/settings', async (req, res) => {
 
 // 6b. Consultar Prompt do Agente (persona/role/playbook)
 app.get('/api/v1/instances/:id/prompt', async (req, res) => {
+  const { id } = req.params;
+  if (!canAccessInstance(req, id)) {
+    return res.status(403).json({ success: false, error: 'Acesso negado ao prompt desta instância.' });
+  }
   try {
     if (!pool) {
       return res.status(503).json({ success: false, error: 'Banco de dados indisponível' });
     }
-    const { id } = req.params;
     const r = await pool.query('SELECT * FROM prompt_config WHERE id = $1', [id]);
     if (r.rows.length === 0) {
       return res.status(404).json({ success: false, error: 'Prompt não configurado para este cliente' });
@@ -910,11 +1006,11 @@ app.get('/api/v1/instances/:id/prompt', async (req, res) => {
 
 // 6c. Salvar Prompt do Agente (upsert idempotente)
 app.put('/api/v1/instances/:id/prompt', async (req, res) => {
+  const { id } = req.params;
+  if (!canAccessInstance(req, id)) {
+    return res.status(403).json({ success: false, error: 'Acesso negado para alterar prompt desta instância.' });
+  }
   try {
-    if (!pool) {
-      return res.status(503).json({ success: false, error: 'Banco de dados indisponível' });
-    }
-    const { id } = req.params;
     const {
       identity = '',
       role = '',
@@ -992,8 +1088,11 @@ app.put('/api/v1/instances/:id/prompt', async (req, res) => {
 
 // 7. Reiniciar Instância
 app.post('/api/v1/instances/:id/restart', async (req, res) => {
+  const { id } = req.params;
+  if (!canAccessInstance(req, id)) {
+    return res.status(403).json({ success: false, error: 'Acesso negado a esta instância.' });
+  }
   try {
-    const { id } = req.params;
     const evoRes = await evolutionFetch(`/instance/restart/${encodeURIComponent(id)}`, {
       method: 'POST'
     });
@@ -1006,6 +1105,9 @@ app.post('/api/v1/instances/:id/restart', async (req, res) => {
 
 // 8. Excluir Instância e Cliente
 app.delete('/api/v1/instances/:id', async (req, res) => {
+  if (!isAdmin(req)) {
+    return res.status(403).json({ success: false, error: 'Acesso restrito a administradores.' });
+  }
   try {
     const { id } = req.params;
 
@@ -1103,6 +1205,23 @@ app.get('/api/v1/financeiro', async (req, res) => {
       return res.status(400).json({ success: false, error: valErr.message });
     }
 
+    let targetClienteId = null;
+    if (isAdmin(req)) {
+      if (req.query.cliente_id && req.query.cliente_id !== 'all') {
+        targetClienteId = String(req.query.cliente_id).trim();
+      }
+    } else {
+      if (req.query.cliente_id && String(req.query.cliente_id).trim() !== String(req.user.cliente_id).trim()) {
+        return res.status(403).json({ success: false, error: 'Acesso negado ao relatório financeiro deste cliente.' });
+      }
+      targetClienteId = req.user.cliente_id;
+    }
+
+    const clientFilterWhere = targetClienteId ? ' AND cliente_id = $3' : '';
+    const clientFilterWhereU = targetClienteId ? ' AND u.cliente_id = $3' : '';
+    const queryParams = targetClienteId ? [range.inicio, range.fim, targetClienteId] : [range.inicio, range.fim];
+    const prevQueryParams = targetClienteId ? [range.prevInicio, range.prevFim, targetClienteId] : [range.prevInicio, range.prevFim];
+
     const [kpiRes, kpiPrevRes, serieRes, clienteRes, modeloRes] = await Promise.all([
       // KPIs período atual (100% parametrizado)
       pool.query(
@@ -1115,8 +1234,8 @@ app.get('/api/v1/financeiro', async (req, res) => {
            COALESCE(SUM(cached_tokens), 0) AS tokens_cached,
            COUNT(DISTINCT cliente_id) AS clientes_ativos
          FROM uso_tokens
-         WHERE criado_em >= $1 AND criado_em <= $2`,
-        [range.inicio, range.fim]
+         WHERE criado_em >= $1 AND criado_em <= $2${clientFilterWhere}`,
+        queryParams
       ),
       // KPIs período anterior (para cálculo de delta no cliente)
       pool.query(
@@ -1126,8 +1245,8 @@ app.get('/api/v1/financeiro', async (req, res) => {
            COALESCE(SUM(total_tokens), 0) AS tokens_total,
            COALESCE(SUM(cached_tokens), 0) AS tokens_cached
          FROM uso_tokens
-         WHERE criado_em >= $1 AND criado_em <= $2`,
-        [range.prevInicio, range.prevFim]
+         WHERE criado_em >= $1 AND criado_em <= $2${clientFilterWhere}`,
+        prevQueryParams
       ),
       // Série temporal diária agregada
       pool.query(
@@ -1137,10 +1256,10 @@ app.get('/api/v1/financeiro', async (req, res) => {
            COALESCE(SUM(total_tokens), 0) AS tokens,
            COUNT(*) AS requisicoes
          FROM uso_tokens
-         WHERE criado_em >= $1 AND criado_em <= $2
+         WHERE criado_em >= $1 AND criado_em <= $2${clientFilterWhere}
          GROUP BY 1
          ORDER BY 1 ASC`,
-        [range.inicio, range.fim]
+        queryParams
       ),
       // Agrupamento por cliente
       pool.query(
@@ -1153,10 +1272,10 @@ app.get('/api/v1/financeiro', async (req, res) => {
            COUNT(*) AS requisicoes
          FROM uso_tokens u
          LEFT JOIN clientes c ON c.id = u.cliente_id
-         WHERE u.criado_em >= $1 AND u.criado_em <= $2
+         WHERE u.criado_em >= $1 AND u.criado_em <= $2${clientFilterWhereU}
          GROUP BY u.cliente_id, c.nome
          ORDER BY custo_usd DESC, tokens DESC`,
-        [range.inicio, range.fim]
+        queryParams
       ),
       // Agrupamento por modelo
       pool.query(
@@ -1167,10 +1286,10 @@ app.get('/api/v1/financeiro', async (req, res) => {
            COALESCE(SUM(total_tokens), 0) AS tokens,
            COUNT(*) AS requisicoes
          FROM uso_tokens
-         WHERE criado_em >= $1 AND criado_em <= $2
+         WHERE criado_em >= $1 AND criado_em <= $2${clientFilterWhere}
          GROUP BY provedor, modelo
          ORDER BY custo_usd DESC, tokens DESC`,
-        [range.inicio, range.fim]
+        queryParams
       )
     ]);
 
@@ -1359,6 +1478,9 @@ app.get('/api/v1/modelos', async (_req, res) => {
 
 // POST /api/v1/modelos - Cadastrar novo modelo
 app.post('/api/v1/modelos', async (req, res) => {
+  if (!isAdmin(req)) {
+    return res.status(403).json({ success: false, error: 'Acesso restrito a administradores.' });
+  }
   if (!pool) return res.status(500).json({ success: false, error: 'Postgres não conectado' });
   const { provedor, modelo, tier, input_per_1m, cached_per_1m, output_per_1m, reasoning_per_1m, cache_creation_per_1m, ativo } = req.body;
 
@@ -1400,6 +1522,9 @@ app.post('/api/v1/modelos', async (req, res) => {
 
 // PUT /api/v1/modelos/:id - Atualizar modelo existente
 app.put('/api/v1/modelos/:id', async (req, res) => {
+  if (!isAdmin(req)) {
+    return res.status(403).json({ success: false, error: 'Acesso restrito a administradores.' });
+  }
   if (!pool) return res.status(500).json({ success: false, error: 'Postgres não conectado' });
   const id = parseInt(req.params.id, 10);
   if (!id || id <= 0) return res.status(400).json({ success: false, error: 'ID inválido' });
@@ -1449,6 +1574,9 @@ app.put('/api/v1/modelos/:id', async (req, res) => {
 
 // DELETE /api/v1/modelos/:id - Excluir modelo ou desativar com segurança
 app.delete('/api/v1/modelos/:id', async (req, res) => {
+  if (!isAdmin(req)) {
+    return res.status(403).json({ success: false, error: 'Acesso restrito a administradores.' });
+  }
   if (!pool) return res.status(500).json({ success: false, error: 'Postgres não conectado' });
   const id = parseInt(req.params.id, 10);
   if (!id || id <= 0) return res.status(400).json({ success: false, error: 'ID inválido' });
@@ -1487,6 +1615,9 @@ app.delete('/api/v1/modelos/:id', async (req, res) => {
 
 // POST /api/v1/modelos/:id/testar - Testar inferência/ping do modelo via 9Router
 app.post('/api/v1/modelos/:id/testar', async (req, res) => {
+  if (!isAdmin(req)) {
+    return res.status(403).json({ success: false, error: 'Acesso restrito a administradores.' });
+  }
   if (!pool) return res.status(500).json({ success: false, error: 'Postgres não conectado' });
   const id = parseInt(req.params.id, 10);
   if (!id || id <= 0) return res.status(400).json({ success: false, error: 'ID inválido' });
@@ -1638,6 +1769,9 @@ app.get('/api/v1/prompts-padrao/:id', async (req, res) => {
 
 // POST /api/v1/prompts-padrao - Cadastrar novo prompt padrão
 app.post('/api/v1/prompts-padrao', async (req, res) => {
+  if (!isAdmin(req)) {
+    return res.status(403).json({ success: false, error: 'Acesso restrito a administradores.' });
+  }
   if (!pool) return res.status(500).json({ success: false, error: 'Postgres não conectado' });
   const { chave, nome, descricao, conteudo, modelo_sugerido, variaveis, ativo } = req.body;
 
@@ -1709,6 +1843,9 @@ app.post('/api/v1/prompts-padrao', async (req, res) => {
 
 // PUT /api/v1/prompts-padrao/:id - Atualizar prompt padrão
 app.put('/api/v1/prompts-padrao/:id', async (req, res) => {
+  if (!isAdmin(req)) {
+    return res.status(403).json({ success: false, error: 'Acesso restrito a administradores.' });
+  }
   if (!pool) return res.status(500).json({ success: false, error: 'Postgres não conectado' });
   const id = parseInt(req.params.id, 10);
   if (!id || id <= 0) return res.status(400).json({ success: false, error: 'ID inválido' });
@@ -1786,6 +1923,9 @@ app.put('/api/v1/prompts-padrao/:id', async (req, res) => {
 
 // DELETE /api/v1/prompts-padrao/:id - Excluir ou desativar com proteção de integridade
 app.delete('/api/v1/prompts-padrao/:id', async (req, res) => {
+  if (!isAdmin(req)) {
+    return res.status(403).json({ success: false, error: 'Acesso restrito a administradores.' });
+  }
   if (!pool) return res.status(500).json({ success: false, error: 'Postgres não conectado' });
   const id = parseInt(req.params.id, 10);
   if (!id || id <= 0) return res.status(400).json({ success: false, error: 'ID inválido' });
@@ -1821,9 +1961,12 @@ app.delete('/api/v1/prompts-padrao/:id', async (req, res) => {
 // -----------------------------------------------------------------------------
 
 // GET /api/v1/conhecimento/stats - Métricas agregadas de conhecimento e vetores
-app.get('/api/v1/conhecimento/stats', async (_req, res) => {
+app.get('/api/v1/conhecimento/stats', async (req, res) => {
   if (!pool) return res.status(500).json({ success: false, error: 'Postgres não conectado' });
   try {
+    const isAdm = isAdmin(req);
+    const filter = isAdm ? '' : "WHERE (instance_id = $1 OR metadata->>'instance_id' = $1)";
+    const params = isAdm ? [] : [req.user.cliente_id];
     const statsQuery = `
       SELECT
         COUNT(*)::int AS total_fragmentos,
@@ -1832,8 +1975,9 @@ app.get('/api/v1/conhecimento/stats', async (_req, res) => {
         COUNT(CASE WHEN embedding IS NULL THEN 1 END)::int AS sem_vetor,
         COALESCE(ROUND(AVG(LENGTH(text))), 0)::int AS media_caracteres
       FROM base_conhecimento
+      ${filter}
     `;
-    const result = await pool.query(statsQuery);
+    const result = await pool.query(statsQuery, params);
     res.json({ success: true, data: result.rows[0] });
   } catch (err) {
     console.error('[api] Erro ao buscar métricas de conhecimento:', err.message);
@@ -1853,8 +1997,20 @@ app.get('/api/v1/conhecimento', async (req, res) => {
     const conditions = [];
     const values = [];
 
-    if (instance_id && instance_id !== 'all') {
-      values.push(instance_id.trim());
+    let targetInstance = null;
+    if (isAdmin(req)) {
+      if (instance_id && instance_id !== 'all') {
+        targetInstance = instance_id.trim();
+      }
+    } else {
+      if (instance_id && instance_id !== 'all' && instance_id.trim() !== req.user.cliente_id) {
+        return res.status(403).json({ success: false, error: 'Acesso negado aos documentos deste cliente.' });
+      }
+      targetInstance = req.user.cliente_id;
+    }
+
+    if (targetInstance) {
+      values.push(targetInstance);
       conditions.push(`(b.instance_id = $${values.length} OR b.metadata->>'instance_id' = $${values.length})`);
     }
 
@@ -1945,7 +2101,11 @@ app.get('/api/v1/conhecimento/:id', async (req, res) => {
     if (result.rowCount === 0) {
       return res.status(404).json({ success: false, error: 'Fragmento não encontrado' });
     }
-    res.json({ success: true, data: result.rows[0] });
+    const doc = result.rows[0];
+    if (!canAccessInstance(req, doc.instance_id)) {
+      return res.status(403).json({ success: false, error: 'Acesso negado a este fragmento.' });
+    }
+    res.json({ success: true, data: doc });
   } catch (err) {
     console.error('[api] Erro ao obter fragmento de conhecimento:', err.message);
     res.status(500).json({ success: false, error: 'Falha ao buscar fragmento de conhecimento' });
@@ -1959,6 +2119,9 @@ app.post('/api/v1/conhecimento', async (req, res) => {
 
   if (!instance_id || typeof instance_id !== 'string') {
     return res.status(400).json({ success: false, error: 'ID da instância (cliente) é obrigatório' });
+  }
+  if (!canAccessInstance(req, instance_id)) {
+    return res.status(403).json({ success: false, error: 'Acesso negado para cadastrar conhecimento em outro cliente.' });
   }
   if (!text || typeof text !== 'string' || text.trim().length === 0) {
     return res.status(400).json({ success: false, error: 'Conteúdo textual do documento é obrigatório' });
@@ -1999,6 +2162,12 @@ app.delete('/api/v1/conhecimento/:id', async (req, res) => {
   if (isNaN(id)) return res.status(400).json({ success: false, error: 'ID inválido' });
 
   try {
+    if (!isAdmin(req)) {
+      const checkDoc = await pool.query("SELECT COALESCE(instance_id, metadata->>'instance_id') AS inst_id FROM base_conhecimento WHERE id = $1", [id]);
+      if (checkDoc.rowCount > 0 && !canAccessInstance(req, checkDoc.rows[0].inst_id)) {
+        return res.status(403).json({ success: false, error: 'Acesso negado para excluir fragmento de outro cliente.' });
+      }
+    }
     const result = await pool.query('DELETE FROM base_conhecimento WHERE id = $1 RETURNING id', [id]);
     if (result.rowCount === 0) {
       return res.status(404).json({ success: false, error: 'Fragmento não encontrado' });
@@ -2025,6 +2194,15 @@ app.post('/api/v1/conhecimento/bulk-delete', async (req, res) => {
   }
 
   try {
+    if (!isAdmin(req)) {
+      const checkDocs = await pool.query(
+        "SELECT id FROM base_conhecimento WHERE id = ANY($1::int[]) AND COALESCE(instance_id, metadata->>'instance_id') != $2",
+        [cleanIds, req.user.cliente_id]
+      );
+      if (checkDocs.rowCount > 0) {
+        return res.status(403).json({ success: false, error: 'Acesso negado para excluir fragmentos de outros clientes.' });
+      }
+    }
     const result = await pool.query('DELETE FROM base_conhecimento WHERE id = ANY($1::int[]) RETURNING id', [cleanIds]);
     res.json({
       success: true,
@@ -2035,6 +2213,18 @@ app.post('/api/v1/conhecimento/bulk-delete', async (req, res) => {
     console.error('[api] Erro na exclusão em lote de conhecimento:', err.message);
     res.status(500).json({ success: false, error: 'Falha ao excluir fragmentos em lote' });
   }
+});
+
+// Middleware global de tratamento de erros (impede vazamento de stack traces e padroniza JSON)
+app.use((err, req, res, _next) => {
+  if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
+    return res.status(400).json({ success: false, error: 'Payload JSON malformado ou inválido.' });
+  }
+  if (err.type === 'entity.too.large') {
+    return res.status(413).json({ success: false, error: 'Payload excede o limite máximo permitido de 256KB.' });
+  }
+  console.error('[server] Erro não tratado:', err.message);
+  res.status(err.status || 500).json({ success: false, error: 'Erro interno no processamento da requisição.' });
 });
 
 // Inicia servidor HTTP

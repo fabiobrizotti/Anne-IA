@@ -298,7 +298,10 @@
   // ---------------------------------------------------------------------------
 
   async function api(path, options = {}) {
-    const defaultHeaders = { 'Content-Type': 'application/json' };
+    const defaultHeaders = {
+      'Content-Type': 'application/json',
+      'X-Requested-With': 'XMLHttpRequest'
+    };
     const res = await fetch(path, {
       ...options,
       headers: { ...defaultHeaders, ...(options.headers || {}) }
@@ -404,22 +407,22 @@
           <td class="text-muted text-xs">${formatDateTime(inst.atualizado_em || inst.criado_em)}</td>
           <td>
             <div class="cell-actions">
-              <button class="btn btn-sm btn-secondary" onclick="window.AnneUI.openFichaModal('${escapeHtml(inst.id)}')">
+              <button class="btn btn-sm btn-secondary" data-action="ficha" data-id="${escapeHtml(inst.id)}">
                 Ficha
               </button>
               ${inst.status !== 'open' ? `
-                <button class="btn btn-sm btn-primary" onclick="window.AnneUI.openConnectModal('${escapeHtml(inst.id)}')">
+                <button class="btn btn-sm btn-primary" data-action="connect" data-id="${escapeHtml(inst.id)}">
                   Conectar
                 </button>
               ` : `
-                <button class="btn btn-sm btn-secondary" onclick="window.AnneUI.restartInstance('${escapeHtml(inst.id)}')">
+                <button class="btn btn-sm btn-secondary" data-action="restart" data-id="${escapeHtml(inst.id)}">
                   Reiniciar
                 </button>
               `}
-              <button class="btn btn-sm btn-secondary" onclick="window.AnneUI.openSettingsModal('${escapeHtml(inst.id)}')">
+              <button class="btn btn-sm btn-secondary" data-action="settings" data-id="${escapeHtml(inst.id)}">
                 Opções
               </button>
-              <button class="btn btn-sm btn-danger" onclick="window.AnneUI.deleteInstance('${escapeHtml(inst.id)}')">
+              <button class="btn btn-sm btn-danger" data-action="delete" data-id="${escapeHtml(inst.id)}">
                 Excluir
               </button>
             </div>
@@ -745,29 +748,51 @@
     });
   });
 
-  // Carregar QR Code com prioridade em base64
+  // Carregar QR Code com prioridade em base64 (POST seguro)
   async function loadQrCode(instanceId) {
-    elements.qrcodeContainer.innerHTML = '<span>Carregando QR Code...</span>';
+    const loadingSpan = document.createElement('span');
+    loadingSpan.textContent = 'Carregando QR Code...';
+    elements.qrcodeContainer.replaceChildren(loadingSpan);
+
     try {
-      const res = await api(`/api/v1/instances/${encodeURIComponent(instanceId)}/connect`);
+      const res = await api(`/api/v1/instances/${encodeURIComponent(instanceId)}/connect`, { method: 'POST' });
       const base64 = res.data?.base64;
       const code = res.data?.code;
 
       if (base64) {
         const src = base64.startsWith('data:image') ? base64 : `data:image/png;base64,${base64}`;
-        elements.qrcodeContainer.innerHTML = `<img src="${src}" alt="QR Code WhatsApp">`;
+        const img = document.createElement('img');
+        img.src = src;
+        img.alt = 'QR Code WhatsApp';
+        elements.qrcodeContainer.replaceChildren(img);
       } else if (code) {
-        elements.qrcodeContainer.innerHTML = `
-          <div style="padding: 12px; text-align: center;">
-            <p class="text-xs text-muted mb-2">Código Baileys recebido:</p>
-            <code style="word-break: break-all; font-size: 11px;">${escapeHtml(code)}</code>
-          </div>
-        `;
+        const wrapper = document.createElement('div');
+        wrapper.style.padding = '12px';
+        wrapper.style.textAlign = 'center';
+
+        const p = document.createElement('p');
+        p.className = 'text-xs text-muted mb-2';
+        p.textContent = 'Código Baileys recebido:';
+
+        const codeEl = document.createElement('code');
+        codeEl.style.wordBreak = 'break-all';
+        codeEl.style.fontSize = '11px';
+        codeEl.textContent = code;
+
+        wrapper.appendChild(p);
+        wrapper.appendChild(codeEl);
+        elements.qrcodeContainer.replaceChildren(wrapper);
       } else {
-        elements.qrcodeContainer.innerHTML = '<span class="text-muted">Aguardando geração do QR Code...</span>';
+        const waitSpan = document.createElement('span');
+        waitSpan.className = 'text-muted';
+        waitSpan.textContent = 'Aguardando geração do QR Code...';
+        elements.qrcodeContainer.replaceChildren(waitSpan);
       }
     } catch (err) {
-      elements.qrcodeContainer.innerHTML = `<span class="text-danger">Erro: ${escapeHtml(err.message)}</span>`;
+      const errSpan = document.createElement('span');
+      errSpan.className = 'text-danger';
+      errSpan.textContent = `Erro: ${err.message}`;
+      elements.qrcodeContainer.replaceChildren(errSpan);
     }
   }
 
@@ -1402,7 +1427,7 @@
           <td>${cacheRate}%</td>
           <td class="font-bold">${formatCurrency(custoNum)}</td>
           <td class="text-right">
-            <button class="btn btn-xs btn-secondary" onclick="window.AnneUI.openBillingModal('${escapeHtml(String(c.cliente_id))}', '${escapeHtml(String(c.nome))}', ${custoNum})" title="Gerar cobrança e link de pagamento">
+            <button class="btn btn-xs btn-secondary" data-action="billing" data-id="${escapeHtml(String(c.cliente_id))}" data-nome="${escapeHtml(String(c.nome))}" data-custo="${custoNum}" title="Gerar cobrança e link de pagamento">
               Cobrança
             </button>
           </td>
@@ -1570,15 +1595,15 @@
           <td>${statusBadge}</td>
           <td class="text-right">
             <div class="action-buttons justify-end">
-              <button class="btn btn-xs btn-secondary" onclick="window.AnneUI.testModel('${escapeHtml(String(m.id))}')" title="Testar resposta e latência via 9Router">
+              <button class="btn btn-xs btn-secondary" data-action="test-model" data-id="${escapeHtml(String(m.id))}" title="Testar resposta e latência via 9Router">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
                 Testar
               </button>
-              <button class="btn btn-xs btn-secondary" onclick="window.AnneUI.openModelModal('${escapeHtml(String(m.id))}')" title="Editar modelo e precificação">
+              <button class="btn btn-xs btn-secondary" data-action="edit-model" data-id="${escapeHtml(String(m.id))}" title="Editar modelo e precificação">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
                 Editar
               </button>
-              <button class="btn btn-xs btn-secondary text-danger" onclick="window.AnneUI.deleteModel('${escapeHtml(String(m.id))}')" title="Excluir ou desativar modelo">
+              <button class="btn btn-xs btn-secondary text-danger" data-action="delete-model" data-id="${escapeHtml(String(m.id))}" title="Excluir ou desativar modelo">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
               </button>
             </div>
@@ -1887,14 +1912,14 @@
           <td>${vetorBadge}</td>
           <td class="text-right">
             <div style="display: inline-flex; gap: 4px;">
-              <button class="btn btn-xs btn-secondary" onclick="window.AnneUI.openRagViewModal(${doc.id})" title="Ver conteúdo completo e metadados">
+              <button class="btn btn-xs btn-secondary" data-action="rag-view" data-id="${doc.id}" title="Ver conteúdo completo e metadados">
                 Ver
               </button>
-              <button class="btn btn-xs btn-secondary" onclick="window.AnneUI.quickCopyRagText(${doc.id})" title="Copiar texto do fragmento">
+              <button class="btn btn-xs btn-secondary" data-action="rag-copy" data-id="${doc.id}" title="Copiar texto do fragmento">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
                 Copiar
               </button>
-              <button class="btn btn-xs btn-danger" onclick="window.AnneUI.deleteRagDoc(${doc.id})" title="Excluir fragmento">
+              <button class="btn btn-xs btn-danger" data-action="rag-delete" data-id="${doc.id}" title="Excluir fragmento">
                 Excluir
               </button>
             </div>
@@ -2145,6 +2170,53 @@
         }
       });
     }
+  }
+
+  // Delegação de eventos segura contra quebra de contexto sintático (anti-XSS)
+  if (elements.instancesTbody) {
+    elements.instancesTbody.addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-action]');
+      if (!btn) return;
+      const { action, id } = btn.dataset;
+      if (action === 'ficha') openFichaModal(id);
+      else if (action === 'connect') openConnectModal(id);
+      else if (action === 'restart') restartInstance(id);
+      else if (action === 'settings') openSettingsModal(id);
+      else if (action === 'delete') deleteInstance(id);
+    });
+  }
+
+  if (elements.financeClientsTbody) {
+    elements.financeClientsTbody.addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-action="billing"]');
+      if (!btn) return;
+      const { id, nome, custo } = btn.dataset;
+      openBillingModal(id, nome, parseFloat(custo || '0'));
+    });
+  }
+
+  if (elements.modelosTbody) {
+    elements.modelosTbody.addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-action]');
+      if (!btn) return;
+      const { action, id } = btn.dataset;
+      if (action === 'test-model') testModel(id);
+      else if (action === 'edit-model') openModelModal(id);
+      else if (action === 'delete-model') deleteModel(id);
+    });
+  }
+
+  if (elements.ragTbody) {
+    elements.ragTbody.addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-action]');
+      if (!btn) return;
+      const { action, id } = btn.dataset;
+      const docId = parseInt(id, 10);
+      if (isNaN(docId)) return;
+      if (action === 'rag-view') openRagViewModal(docId);
+      else if (action === 'rag-copy') quickCopyRagText(docId);
+      else if (action === 'rag-delete') deleteRagDoc(docId);
+    });
   }
 
   // Expõe métodos para chamadas inline nos botões da tabela

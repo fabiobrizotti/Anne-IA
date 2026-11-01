@@ -28,7 +28,8 @@ data/pgadmin/
 
 # Backups / exportações de workflows (não são o fonte dos workflows)
 files/
-workflows/
+/workflows/
+!.github/workflows/
 
 # Arquivos temporários de RAG, documentos e vetores
 temp_docs/
@@ -43,4 +44,15 @@ rag_test_*.json
 # Dependências locais
 node_modules/
 dashboard/node_modules/
+
+# Pentest Strix local (executáveis, targets, fixtures e relatórios)
+strix/
+.strixignore
+scripts/run-strix-pentest.sh
+docs/PENTEST_STRIX.md
+.github/workflows/strix-security.yml
+strix_runs/
+vulnerabilities/
+*.sarif
+
 

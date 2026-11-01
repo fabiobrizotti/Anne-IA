@@ -380,3 +380,37 @@ docker compose down -v # APAGA TUDO
 docker compose --profile setup up -d
 ```
 </details>
+
+---
+
+## 10. Pentest Autônomo e Segurança Ofensiva (Strix AI)
+
+A plataforma conta com uma suíte completa de testes ofensivos autônomos integrados ao **Strix** para validação prática de vulnerabilidades (OWASP Top 10:2025 e OWASP API Security Top 10:2023), testes de isolamento multi-tenant (BOLA/IDOR), conformidade LGPD e auditoria de código white-box.
+
+### 10.1. Execução Rápida via Script CLI
+```bash
+# Pentest de Aplicação Web (Dashboard Vanilla)
+./scripts/run-strix-pentest.sh web --mode standard --budget 15
+
+# Pentest de REST API guiado por OpenAPI com auto-seed de tenants (Alpha vs Beta)
+./scripts/run-strix-pentest.sh api --seed --budget 20
+
+# Auditoria White-box do código-fonte (SQLi, segredos, scripts shell)
+./scripts/run-strix-pentest.sh code --mode quick --budget 10
+
+# Bateria completa mapeada para OWASP Top 10:2025
+./scripts/run-strix-pentest.sh owasp --mode deep --budget 30
+
+# Exibir o último relatório consolidado gerado
+./scripts/run-strix-pentest.sh report
+```
+
+### 10.2. Acionamento via Claude Code Skills
+- `/api-security-testing`: Testa rotas REST contra o contrato `strix/openapi.yaml`.
+- `/web-app-penetration-testing`: Pentest na interface web e autenticação `http://localhost:3000`.
+- `/find-security-vulnerabilities-in-code`: Varredura white-box de código e queries SQL.
+- `/owasp-top-10-testing`: Conformidade estrita com OWASP Top 10:2025.
+- `/penetration-testing-with-strix`: Execução combinada multialvo.
+- `/fix-security-vulnerabilities-with-strix`: Patch e contra-prova de remediação.
+
+Para documentação técnica detalhada, consulte [docs/PENTEST_STRIX.md](docs/PENTEST_STRIX.md).

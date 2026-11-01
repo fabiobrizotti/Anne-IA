@@ -147,48 +147,68 @@ function clearSessionCookie(req, res) {
 // -----------------------------------------------------------------------------
 
 const bruteForceMap = new Map();
-const MAX_FAILURES = 5;
+const MAX_FAILURES_USER = 5;
+const MAX_FAILURES_IP = 15;
 const BLOCK_DURATION_MS = 15 * 60 * 1000; // 15 minutos
 const WINDOW_MS = 5 * 60 * 1000; // 5 minutos
 
-function getBruteForceKey(ip, identifier) {
-  const cleanId = String(identifier || '').trim().toLowerCase();
-  return `${ip || 'unknown'}:${cleanId}`;
-}
-
-function checkBruteForce(ip, identifier) {
-  const key = getBruteForceKey(ip, identifier);
-  const now = Date.now();
-  const entry = bruteForceMap.get(key);
+function checkEntryBlocked(entry, now) {
   if (!entry) return { blocked: false };
-
   if (entry.blockedUntil && now < entry.blockedUntil) {
     const remainingSeconds = Math.ceil((entry.blockedUntil - now) / 1000);
     return { blocked: true, remainingSeconds };
   }
-
-  // Janela expirada
   if (now - entry.firstAttempt > WINDOW_MS && (!entry.blockedUntil || now >= entry.blockedUntil)) {
-    bruteForceMap.delete(key);
-    return { blocked: false };
+    return { expired: true, blocked: false };
+  }
+  return { blocked: false };
+}
+
+function checkBruteForce(ip, identifier) {
+  const now = Date.now();
+  const cleanId = String(identifier || '').trim().toLowerCase();
+  const cleanIp = String(ip || '').trim();
+
+  // 1. Checa bloqueio por conta/identificador (defesa contra força bruta com rotação de IP)
+  if (cleanId) {
+    const userKey = `user:${cleanId}`;
+    const userEntry = bruteForceMap.get(userKey);
+    const userStatus = checkEntryBlocked(userEntry, now);
+    if (userStatus.expired) bruteForceMap.delete(userKey);
+    else if (userStatus.blocked) return userStatus;
+  }
+
+  // 2. Checa bloqueio por IP (defesa contra credential stuffing com múltiplas contas)
+  if (cleanIp) {
+    const ipKey = `ip:${cleanIp}`;
+    const ipEntry = bruteForceMap.get(ipKey);
+    const ipStatus = checkEntryBlocked(ipEntry, now);
+    if (ipStatus.expired) bruteForceMap.delete(ipKey);
+    else if (ipStatus.blocked) return ipStatus;
   }
 
   return { blocked: false };
 }
 
-function recordBruteForceFailure(ip, identifier) {
-  const key = getBruteForceKey(ip, identifier);
-  const now = Date.now();
+function recordFailureFor(key, maxFailures, now) {
   const entry = bruteForceMap.get(key) || { count: 0, firstAttempt: now, blockedUntil: null };
-
   entry.count += 1;
-  if (entry.count >= MAX_FAILURES) {
+  if (entry.count >= maxFailures) {
     entry.blockedUntil = now + BLOCK_DURATION_MS;
   }
   bruteForceMap.set(key, entry);
+}
 
-  // Evita leak de memória
-  if (bruteForceMap.size > 2000) {
+function recordBruteForceFailure(ip, identifier) {
+  const now = Date.now();
+  const cleanId = String(identifier || '').trim().toLowerCase();
+  const cleanIp = String(ip || '').trim();
+
+  if (cleanId) recordFailureFor(`user:${cleanId}`, MAX_FAILURES_USER, now);
+  if (cleanIp) recordFailureFor(`ip:${cleanIp}`, MAX_FAILURES_IP, now);
+
+  // Evita memory leak
+  if (bruteForceMap.size > 3000) {
     for (const [k, v] of bruteForceMap.entries()) {
       if (v.blockedUntil && now > v.blockedUntil) bruteForceMap.delete(k);
     }
@@ -196,8 +216,8 @@ function recordBruteForceFailure(ip, identifier) {
 }
 
 function resetBruteForce(ip, identifier) {
-  const key = getBruteForceKey(ip, identifier);
-  bruteForceMap.delete(key);
+  const cleanId = String(identifier || '').trim().toLowerCase();
+  if (cleanId) bruteForceMap.delete(`user:${cleanId}`);
 }
 
 // -----------------------------------------------------------------------------
