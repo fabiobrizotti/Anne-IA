@@ -414,3 +414,44 @@ A plataforma conta com uma suíte completa de testes ofensivos autônomos integr
 - `/fix-security-vulnerabilities-with-strix`: Patch e contra-prova de remediação.
 
 Para documentação técnica detalhada, consulte [docs/PENTEST_STRIX.md](docs/PENTEST_STRIX.md).
+
+---
+
+## 11. Teste de Carga e Benchmark de Capacidade (n8n & Servidor)
+
+Script de estresse nativo em Python (`scripts/load-test-runner.py`, zero dependências externas) para mensurar limites simultâneos do servidor host e do container n8n:
+
+### 11.1. Modos de Teste
+
+1. **Checagem de Conectividade (`--check`)**:
+   Valida se n8n e RabbitMQ Management API respondem antes da carga.
+   ```bash
+   python3 scripts/load-test-runner.py --check --password="$RABBITMQ_DEFAULT_PASS"
+   ```
+
+2. **Nível 1: Teto HTTP e Event Loop do n8n (`--mode=http`)**:
+   Testa a saturação do processo Node.js do n8n com conexões simultâneas crescentes (5 -> 25 -> 50 -> 100).
+   ```bash
+   python3 scripts/load-test-runner.py --mode=http --n8n-url=http://127.0.0.1:5678
+   ```
+
+3. **Nível 2: Ingestão de Mensageria e Backpressure AMQP (`--mode=amqp`)**:
+   Injeta rajadas de mensagens WhatsApp sintéticas na exchange `evolution` do RabbitMQ para avaliar consumo concorrente, prefetch e pressão de memória/banco.
+   ```bash
+   python3 scripts/load-test-runner.py --mode=amqp --password="$RABBITMQ_DEFAULT_PASS" --instance=fabio
+   ```
+
+### 11.2. Observabilidade Durante a Carga
+Em terminais paralelos, acompanhar:
+```bash
+# Host CPU, I/O e RAM
+vmstat 1
+iostat -xz 1
+
+# Containers Docker (atenção ao n8n: teto V8 de 2048MB)
+docker stats --format "table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}"
+
+# Filas RabbitMQ e alarmes de memória (watermark 60%)
+curl -s -u root:"$RABBITMQ_DEFAULT_PASS" http://127.0.0.1:15672/api/nodes | jq '.[0] | {mem_used, mem_limit, mem_alarm}'
+```
+
