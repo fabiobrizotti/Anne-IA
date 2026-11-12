@@ -241,11 +241,12 @@ app.post('/api/v1/auth/login', async (req, res) => {
       sucesso: false,
       ip,
       userAgent,
-      detalhes: { remainingSeconds: bfCheck.remainingSeconds }
+      detalhes: { remainingSeconds: bfCheck.remainingSeconds, reason: bfCheck.reason }
     });
+    res.setHeader('Retry-After', String(bfCheck.remainingSeconds));
     return res.status(429).json({
       success: false,
-      error: `Muitas tentativas incorretas. Conta bloqueada temporariamente. Tente novamente em ${Math.ceil(bfCheck.remainingSeconds / 60)} minuto(s).`
+      error: bfCheck.error
     });
   }
 
@@ -282,6 +283,21 @@ app.post('/api/v1/auth/login', async (req, res) => {
     // Sucesso: reseta rate limit
     auth.resetBruteForce(ip, cleanId);
 
+    // Rehash transparente se parâmetros scrypt estiverem defasados (Decisão 2)
+    if (auth.needsRehash(user.password_hash)) {
+      try {
+        const upgradedHash = await auth.hashPassword(cleanPass);
+        await pool.query(
+          `UPDATE dashboard_credenciais
+           SET password_hash = $1, atualizado_em = NOW()
+           WHERE user_id = $2`,
+          [upgradedHash, user.id]
+        );
+      } catch (rehashErr) {
+        console.error('[auth] Falha no rehash transparente:', rehashErr.message);
+      }
+    }
+
     // Duração da sessão: 30 dias se 'remember_me', senão 8 horas
     const maxAgeSeconds = remember_me ? (30 * 24 * 60 * 60) : (8 * 60 * 60);
     const sessionToken = auth.generateSessionToken();
@@ -316,6 +332,10 @@ app.post('/api/v1/auth/login', async (req, res) => {
       }
     });
   } catch (err) {
+    if (err.status === 503) {
+      res.setHeader('Retry-After', String(err.retryAfter || 1));
+      return res.status(503).json({ success: false, error: err.message });
+    }
     console.error('[auth] Erro no login:', err.message);
     res.status(500).json({ success: false, error: 'Erro interno ao processar autenticação.' });
   }
@@ -378,11 +398,9 @@ app.post('/api/v1/auth/register', async (req, res) => {
     return res.status(400).json({ success: false, error: 'E-mail corporativo inválido.' });
   }
 
-  if (cleanPass.length < 8 || !/[A-Z]/.test(cleanPass) || !/[a-z]/.test(cleanPass) || !/[0-9]/.test(cleanPass)) {
-    return res.status(400).json({
-      success: false,
-      error: 'A senha deve conter no mínimo 8 caracteres, com letra maiúscula, minúscula e número.'
-    });
+  const passCheck = auth.validatePassword(cleanPass);
+  if (!passCheck.valid) {
+    return res.status(400).json({ success: false, error: passCheck.error });
   }
 
   // Validação de maioridade (>= 18 anos)
@@ -399,7 +417,16 @@ app.post('/api/v1/auth/register', async (req, res) => {
 
   const cpfHash = auth.hashCpf(cleanCpf);
   const cpfCifrado = auth.encryptCpf(cleanCpf);
-  const passwordHash = await auth.hashPassword(cleanPass);
+  let passwordHash;
+  try {
+    passwordHash = await auth.hashPassword(cleanPass);
+  } catch (err) {
+    if (err.status === 503) {
+      res.setHeader('Retry-After', String(err.retryAfter || 1));
+      return res.status(503).json({ success: false, error: err.message });
+    }
+    throw err;
+  }
   const customerCode = `CLI-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
 
   const client = await pool.connect();
@@ -441,7 +468,7 @@ app.post('/api/v1/auth/register', async (req, res) => {
     await client.query(
       `INSERT INTO dashboard_identidades (user_id, nome, nascimento, cpf_cifrado, cpf_hash)
        VALUES ($1, $2, $3, $4, $5)`,
-      [userId, cleanNome, data_nascimento || null, cpfCifrado, cpfHash]
+      [userId, cleanNome, data_nascimento || null, Buffer.from(cpfCifrado, 'base64'), cpfHash]
     );
 
     // 3. Contatos

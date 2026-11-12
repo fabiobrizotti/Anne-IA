@@ -5,70 +5,223 @@ const util = require('util');
 
 const scryptAsync = util.promisify(crypto.scrypt);
 
-// Chave mestre de 32 bytes derivada de segredo de ambiente (para AES-256-GCM e HMAC)
-const MASTER_SECRET = process.env.AUTH_SECRET_KEY ||
-  process.env.DASHBOARD_PASSWORD ||
-  'anne-ia-production-auth-salt-key-2026';
-const CRYPTO_KEY = crypto.createHash('sha256').update(MASTER_SECRET).digest();
-const HMAC_KEY = crypto.createHash('sha256').update(Buffer.concat([CRYPTO_KEY, Buffer.from(':hmac-v1')])).digest();
+// Parâmetros canônicos scrypt (RFC 7914 / OWASP / NIST SP 800-63B)
+const SCRYPT_COST = Object.freeze({ N: 16384, r: 8, p: 1 });
+const MAX_SCRYPT_CONCURRENCY = 1;
+const MAX_SCRYPT_QUEUE = 20;
+
+let runningScryptCount = 0;
+const scryptQueue = [];
+
+function runWithScryptSemaphore(fn) {
+  return new Promise((resolve, reject) => {
+    if (runningScryptCount < MAX_SCRYPT_CONCURRENCY) {
+      runningScryptCount++;
+      executeScrypt(fn, resolve, reject);
+    } else {
+      if (scryptQueue.length >= MAX_SCRYPT_QUEUE) {
+        const err = new Error('Muitas operações criptográficas simultâneas. Tente novamente em instantes.');
+        err.status = 503;
+        err.retryAfter = 1;
+        return reject(err);
+      }
+      scryptQueue.push({ fn, resolve, reject });
+    }
+  });
+}
+
+async function executeScrypt(fn, resolve, reject) {
+  try {
+    const result = await fn();
+    resolve(result);
+  } catch (err) {
+    reject(err);
+  } finally {
+    runningScryptCount--;
+    if (scryptQueue.length > 0) {
+      const next = scryptQueue.shift();
+      runningScryptCount++;
+      executeScrypt(next.fn, next.resolve, next.reject);
+    }
+  }
+}
 
 // -----------------------------------------------------------------------------
 // 1. HASHING E VERIFICAÇÃO DE SENHAS (NIST SP 800-63B / scrypt)
 // -----------------------------------------------------------------------------
 
-async function hashPassword(password) {
+async function hashPassword(password, cost = SCRYPT_COST) {
+  const N = (cost && cost.N) || 16384;
+  const r = (cost && cost.r) || 8;
+  const p = (cost && cost.p) || 1;
   const salt = crypto.randomBytes(16);
-  const cost = 16384;
-  const blockSize = 8;
-  const parallel = 1;
-  const derived = await scryptAsync(password, salt, 64, { N: cost, r: blockSize, p: parallel });
-  return `scrypt$${cost}$${blockSize}$${parallel}$${salt.toString('hex')}$${derived.toString('hex')}`;
+  const derived = await runWithScryptSemaphore(() =>
+    scryptAsync(password, salt, 64, { N, r, p })
+  );
+  return `scrypt$${N}$${r}$${p}$${salt.toString('hex')}$${derived.toString('hex')}`;
 }
 
 async function verifyPassword(password, storedHash) {
   if (!storedHash || typeof storedHash !== 'string') {
     // Executa scrypt dummy para mitigar timing attack de enumeração
-    await hashPassword('dummy-password-timing-defense');
+    try {
+      await hashPassword('dummy-password-timing-defense');
+    } catch (_) {}
     return false;
   }
 
   const parts = storedHash.split('$');
   if (parts.length !== 6 || parts[0] !== 'scrypt') {
-    await hashPassword('dummy-password-timing-defense');
+    try {
+      await hashPassword('dummy-password-timing-defense');
+    } catch (_) {}
     return false;
   }
 
   const cost = parseInt(parts[1], 10);
   const blockSize = parseInt(parts[2], 10);
   const parallel = parseInt(parts[3], 10);
-  const salt = Buffer.from(parts[4], 'hex');
-  const expectedHash = Buffer.from(parts[5], 'hex');
+  let salt;
+  let expectedHash;
+  try {
+    salt = Buffer.from(parts[4], 'hex');
+    expectedHash = Buffer.from(parts[5], 'hex');
+  } catch (_) {
+    return false;
+  }
 
-  const derived = await scryptAsync(password, salt, expectedHash.length, {
-    N: cost,
-    r: blockSize,
-    p: parallel
-  });
+  if (!cost || !blockSize || !parallel || salt.length === 0 || expectedHash.length === 0) {
+    return false;
+  }
 
-  return crypto.timingSafeEqual(derived, expectedHash);
+  try {
+    const derived = await runWithScryptSemaphore(() =>
+      scryptAsync(password, salt, expectedHash.length, {
+        N: cost,
+        r: blockSize,
+        p: parallel
+      })
+    );
+    if (derived.length !== expectedHash.length) return false;
+    return crypto.timingSafeEqual(derived, expectedHash);
+  } catch (err) {
+    if (err.status === 503) throw err;
+    return false;
+  }
+}
+
+function needsRehash(storedHash) {
+  if (!storedHash || typeof storedHash !== 'string') return true;
+  const parts = storedHash.split('$');
+  if (parts.length !== 6 || parts[0] !== 'scrypt') return true;
+
+  const N = parseInt(parts[1], 10);
+  const r = parseInt(parts[2], 10);
+  const p = parseInt(parts[3], 10);
+
+  if (isNaN(N) || isNaN(r) || isNaN(p)) return true;
+  if (N < SCRYPT_COST.N || r < SCRYPT_COST.r || p < SCRYPT_COST.p) return true;
+  return false;
+}
+
+// Lista local em memória de senhas fracas comuns / comprometidas (zero dependência externa)
+const COMMON_WEAK_PASSWORDS = new Set([
+  '12345678', '123456789', '1234567890', '11111111', '00000000',
+  'password', 'password1', 'password123', 'passwords',
+  'qwertyuiop', 'qwerty12345', 'asdfghjkl', 'zxcvbnm123', 'admin123',
+  'administrator', 'welcome1', 'welcome123', 'iloveyou',
+  'senha123', 'senha1234', 'mudar123', 'trocar123',
+  'brasil123', 'anneia123', 'master123', 'root1234',
+  'letmein123', 'changeme', 'secret123', 'monkey123',
+  'dragon123', 'football', 'baseball', 'princess'
+]);
+
+function validatePassword(password) {
+  if (!password || typeof password !== 'string') {
+    return { valid: false, error: 'A senha é obrigatória.' };
+  }
+  if (password.length < 8 || password.length > 128) {
+    return { valid: false, error: 'A senha deve conter entre 8 e 128 caracteres.' };
+  }
+  if (password.trim().length === 0) {
+    return { valid: false, error: 'A senha não pode ser composta apenas por espaços em branco.' };
+  }
+  if (/[\x00-\x1F\x7F]/.test(password)) {
+    return { valid: false, error: 'A senha contém caracteres de controle não permitidos.' };
+  }
+  if (COMMON_WEAK_PASSWORDS.has(password.toLowerCase())) {
+    return { valid: false, error: 'Esta senha é muito comum ou previsível. Escolha uma senha mais forte.' };
+  }
+  return { valid: true };
 }
 
 // -----------------------------------------------------------------------------
 // 2. ISOLAMENTO E CIFRAGEM LGPD (AES-256-GCM + HMAC BLIND INDEX)
 // -----------------------------------------------------------------------------
 
-function hashCpf(cpfDigits) {
-  const clean = String(cpfDigits || '').replace(/\D/g, '');
-  return crypto.createHmac('sha256', HMAC_KEY).update(clean).digest('hex');
+function getCryptoKey() {
+  if (process.env.CPF_ENC_KEY) {
+    const raw = Buffer.from(process.env.CPF_ENC_KEY, 'base64');
+    if (raw.length === 32) return raw;
+  }
+  const master = process.env.AUTH_SECRET_KEY ||
+    process.env.DASHBOARD_PASSWORD ||
+    'anne-ia-production-auth-salt-key-2026';
+  return crypto.createHash('sha256').update(master).digest();
 }
 
-function encryptCpf(cpfDigits) {
+function getHmacKey() {
+  if (process.env.CPF_HMAC_KEY) {
+    const raw = Buffer.from(process.env.CPF_HMAC_KEY, 'base64');
+    if (raw.length === 32) return raw;
+  }
+  const cryptoKey = getCryptoKey();
+  return crypto.createHash('sha256').update(Buffer.concat([cryptoKey, Buffer.from(':hmac-v1')])).digest();
+}
+
+function hashCpf(cpfDigits, key = getHmacKey()) {
+  if (!Buffer.isBuffer(key) || key.length !== 32) {
+    throw new Error('Chave HMAC deve ter exatamente 32 bytes.');
+  }
+  const clean = String(cpfDigits || '').replace(/\D/g, '');
+  return crypto.createHmac('sha256', key).update(clean).digest('hex');
+}
+
+function encryptCpf(cpfDigits, key = getCryptoKey()) {
+  if (!Buffer.isBuffer(key) || key.length !== 32) {
+    throw new Error('Chave de criptografia inválida. Deve ter exatamente 32 bytes.');
+  }
   const clean = String(cpfDigits || '').replace(/\D/g, '');
   const iv = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv('aes-256-gcm', CRYPTO_KEY, iv);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
   const encrypted = Buffer.concat([cipher.update(clean, 'utf8'), cipher.final()]);
   const tag = cipher.getAuthTag();
-  return Buffer.concat([iv, tag, encrypted]);
+  return Buffer.concat([iv, tag, encrypted]).toString('base64');
+}
+
+function decryptCpf(encryptedData, key = getCryptoKey()) {
+  if (!Buffer.isBuffer(key) || key.length !== 32) {
+    throw new Error('Chave de criptografia inválida. Deve ter exatamente 32 bytes.');
+  }
+  let buf = encryptedData;
+  if (typeof buf === 'string') {
+    buf = Buffer.from(buf, 'base64');
+  }
+  if (!Buffer.isBuffer(buf) || buf.length < 28) {
+    throw new Error('Buffer criptografado inválido ou truncado (mínimo 28 bytes: 12 IV + 16 Tag).');
+  }
+  const iv = buf.subarray(0, 12);
+  const tag = buf.subarray(12, 28);
+  const ciphertext = buf.subarray(28);
+
+  try {
+    const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+    decipher.setAuthTag(tag);
+    const decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+    return decrypted.toString('utf8');
+  } catch (err) {
+    throw new Error('Falha de integridade ao decifrar CPF: ' + err.message);
+  }
 }
 
 function maskCpf(cpfDigits) {
@@ -123,7 +276,6 @@ function parseCookies(req) {
 
 function setSessionCookie(req, res, token, maxAgeSeconds) {
   const isHttps = req.secure || req.headers['x-forwarded-proto'] === 'https';
-  // Em HTTPS usa prefixo seguro __Host-
   const cookieName = isHttps ? '__Host-sid' : 'sid';
   let cookieVal = `${cookieName}=${encodeURIComponent(token)}; Path=/; Max-Age=${maxAgeSeconds}; HttpOnly; SameSite=Lax`;
   if (isHttps) {
@@ -143,60 +295,55 @@ function clearSessionCookie(req, res) {
 }
 
 // -----------------------------------------------------------------------------
-// 4. RATE LIMITING DE LOGIN & PROTEÇÃO BRUTE FORCE
+// 4. RATE LIMITING DE LOGIN & PROTEÇÃO BRUTE FORCE (NIST SP 800-63B / NAT-safe)
 // -----------------------------------------------------------------------------
 
-const bruteForceMap = new Map();
-const MAX_FAILURES_USER = 5;
-const MAX_FAILURES_IP = 15;
-const BLOCK_DURATION_MS = 15 * 60 * 1000; // 15 minutos
-const WINDOW_MS = 5 * 60 * 1000; // 5 minutos
+const accountLockoutMap = new Map();
+const ipRateLimitMap = new Map();
 
-function checkEntryBlocked(entry, now) {
-  if (!entry) return { blocked: false };
-  if (entry.blockedUntil && now < entry.blockedUntil) {
-    const remainingSeconds = Math.ceil((entry.blockedUntil - now) / 1000);
-    return { blocked: true, remainingSeconds };
-  }
-  if (now - entry.firstAttempt > WINDOW_MS && (!entry.blockedUntil || now >= entry.blockedUntil)) {
-    return { expired: true, blocked: false };
-  }
-  return { blocked: false };
-}
+const IP_RATE_LIMIT_MAX = 30; // máx 30 req/min por IP
+const IP_RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minuto
+const MAX_LOCKOUT_DELAY_SECONDS = 900; // 15 minutos
 
 function checkBruteForce(ip, identifier) {
   const now = Date.now();
   const cleanId = String(identifier || '').trim().toLowerCase();
   const cleanIp = String(ip || '').trim();
 
-  // 1. Checa bloqueio por conta/identificador (defesa contra força bruta com rotação de IP)
-  if (cleanId) {
-    const userKey = `user:${cleanId}`;
-    const userEntry = bruteForceMap.get(userKey);
-    const userStatus = checkEntryBlocked(userEntry, now);
-    if (userStatus.expired) bruteForceMap.delete(userKey);
-    else if (userStatus.blocked) return userStatus;
+  // 1. Rate limit volumétrico por IP (máx 30 req/min com HTTP 429)
+  if (cleanIp) {
+    const ipEntry = ipRateLimitMap.get(cleanIp);
+    if (ipEntry && ipEntry.timestamps) {
+      ipEntry.timestamps = ipEntry.timestamps.filter(ts => now - ts < IP_RATE_LIMIT_WINDOW_MS);
+      if (ipEntry.timestamps.length >= IP_RATE_LIMIT_MAX) {
+        const oldest = ipEntry.timestamps[0];
+        const remainingSeconds = Math.max(1, Math.ceil((IP_RATE_LIMIT_WINDOW_MS - (now - oldest)) / 1000));
+        return {
+          blocked: true,
+          reason: 'ip_rate_limit',
+          remainingSeconds,
+          error: `Limite de tentativas excedido para este IP (${IP_RATE_LIMIT_MAX}/min). Tente novamente em ${remainingSeconds} segundo(s).`
+        };
+      }
+    }
   }
 
-  // 2. Checa bloqueio por IP (defesa contra credential stuffing com múltiplas contas)
-  if (cleanIp) {
-    const ipKey = `ip:${cleanIp}`;
-    const ipEntry = bruteForceMap.get(ipKey);
-    const ipStatus = checkEntryBlocked(ipEntry, now);
-    if (ipStatus.expired) bruteForceMap.delete(ipKey);
-    else if (ipStatus.blocked) return ipStatus;
+  // 2. Lockout por conta com atraso progressivo (1s, 2s, 4s, 8s... até máx 15 min)
+  if (cleanId) {
+    const userKey = `user:${cleanId}`;
+    const userEntry = accountLockoutMap.get(userKey);
+    if (userEntry && userEntry.blockedUntil && now < userEntry.blockedUntil) {
+      const remainingSeconds = Math.max(1, Math.ceil((userEntry.blockedUntil - now) / 1000));
+      return {
+        blocked: true,
+        reason: 'account_lockout',
+        remainingSeconds,
+        error: `Muitas tentativas incorretas. Conta bloqueada temporariamente. Tente novamente em ${remainingSeconds} segundo(s).`
+      };
+    }
   }
 
   return { blocked: false };
-}
-
-function recordFailureFor(key, maxFailures, now) {
-  const entry = bruteForceMap.get(key) || { count: 0, firstAttempt: now, blockedUntil: null };
-  entry.count += 1;
-  if (entry.count >= maxFailures) {
-    entry.blockedUntil = now + BLOCK_DURATION_MS;
-  }
-  bruteForceMap.set(key, entry);
 }
 
 function recordBruteForceFailure(ip, identifier) {
@@ -204,20 +351,48 @@ function recordBruteForceFailure(ip, identifier) {
   const cleanId = String(identifier || '').trim().toLowerCase();
   const cleanIp = String(ip || '').trim();
 
-  if (cleanId) recordFailureFor(`user:${cleanId}`, MAX_FAILURES_USER, now);
-  if (cleanIp) recordFailureFor(`ip:${cleanIp}`, MAX_FAILURES_IP, now);
+  // Registra tentativa no rate limit de IP
+  if (cleanIp) {
+    const ipEntry = ipRateLimitMap.get(cleanIp) || { timestamps: [] };
+    ipEntry.timestamps = ipEntry.timestamps.filter(ts => now - ts < IP_RATE_LIMIT_WINDOW_MS);
+    ipEntry.timestamps.push(now);
+    ipRateLimitMap.set(cleanIp, ipEntry);
+  }
 
-  // Evita memory leak
-  if (bruteForceMap.size > 3000) {
-    for (const [k, v] of bruteForceMap.entries()) {
-      if (v.blockedUntil && now > v.blockedUntil) bruteForceMap.delete(k);
+  // Atraso progressivo por conta: 1s, 2s, 4s, 8s, 16s... até 900s (15 min)
+  if (cleanId) {
+    const userKey = `user:${cleanId}`;
+    const userEntry = accountLockoutMap.get(userKey) || { count: 0, blockedUntil: null, lastAttempt: now };
+    userEntry.count += 1;
+    userEntry.lastAttempt = now;
+    const delaySeconds = Math.min(Math.pow(2, userEntry.count - 1), MAX_LOCKOUT_DELAY_SECONDS);
+    userEntry.blockedUntil = now + (delaySeconds * 1000);
+    accountLockoutMap.set(userKey, userEntry);
+  }
+
+  // Limpeza preventiva de memória
+  if (accountLockoutMap.size > 5000) {
+    for (const [k, v] of accountLockoutMap.entries()) {
+      if (now - v.lastAttempt > 3600000) accountLockoutMap.delete(k);
+    }
+  }
+  if (ipRateLimitMap.size > 5000) {
+    for (const [k, v] of ipRateLimitMap.entries()) {
+      if (v.timestamps.length === 0 || now - v.timestamps[v.timestamps.length - 1] > IP_RATE_LIMIT_WINDOW_MS) {
+        ipRateLimitMap.delete(k);
+      }
     }
   }
 }
 
 function resetBruteForce(ip, identifier) {
   const cleanId = String(identifier || '').trim().toLowerCase();
-  if (cleanId) bruteForceMap.delete(`user:${cleanId}`);
+  if (cleanId) accountLockoutMap.delete(`user:${cleanId}`);
+}
+
+function clearAllBruteForce() {
+  accountLockoutMap.clear();
+  ipRateLimitMap.clear();
 }
 
 // -----------------------------------------------------------------------------
@@ -361,10 +536,19 @@ async function initAdminUser(pool) {
 }
 
 module.exports = {
+  SCRYPT_COST,
+  MAX_SCRYPT_CONCURRENCY,
+  MAX_SCRYPT_QUEUE,
   hashPassword,
   verifyPassword,
+  needsRehash,
+  validatePassword,
+  COMMON_WEAK_PASSWORDS,
+  getCryptoKey,
+  getHmacKey,
   hashCpf,
   encryptCpf,
+  decryptCpf,
   maskCpf,
   validateCpf,
   generateSessionToken,
@@ -375,6 +559,7 @@ module.exports = {
   checkBruteForce,
   recordBruteForceFailure,
   resetBruteForce,
+  clearAllBruteForce,
   recordAudit,
   legalTexts,
   initAdminUser

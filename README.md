@@ -332,6 +332,22 @@ O Dashboard administrativo é uma aplicação web ultra-leve construída em **Va
 | `POST` | `/api/v1/instances/:id/restart` | Reinicia a conexão da instância |
 | `DELETE` | `/api/v1/instances/:id` | Remove a instância na Evolution API e no banco de dados |
 
+### 8.5. Testes Unitários Nativos (NIST SP 800-63B / LGPD)
+O backend do dashboard inclui suíte completa de testes unitários nativos (`node:test` e `node:assert/strict`), sem dependências extras, executada em menos de 3 segundos:
+
+```bash
+cd dashboard
+npm test
+```
+
+A suíte valida integralmente:
+- **scrypt (RFC 7914)**: custo canônico ($N=16384, r=8, p=1$, dkLen=64), semáforo em memória (`MAX_SCRYPT_CONCURRENCY = 1`, fila máx 20 com HTTP 503 e `Retry-After: 1`), e rehash automático (`needsRehash`).
+- **AES-256-GCM (LGPD Art. 46)**: cifra de PII (CPF) com integridade autenticada e teste de adulteração de ciphertext e Auth Tag.
+- **Blind Index HMAC-SHA256**: índice determinístico para busca exata com segregação estrita de chaves (`CPF_ENC_KEY` e `CPF_HMAC_KEY`).
+- **NIST SP 800-63B**: tamanho de 8 a 128 caracteres, suporte a Unicode, rejeição de caracteres de controle e bloqueio de senhas comuns/fracas conhecidas.
+- **Lockout Desacoplado & NAT-Safe**: backoff progressivo por conta com IP sujeito apenas a rate limit volumétrico (30 req/min, HTTP 429).
+- **Gestão de Sessão**: cookies `HttpOnly; SameSite=Lax` com prefixo seguro `__Host-sid` em HTTPS.
+
 ---
 
 ## 9. Atualizar Schema sem Perda de Dados, Governança LGPD e Recriação Total
@@ -359,7 +375,17 @@ O banco `anneia` inclui procedimentos armazenados auditáveis com pseudonimizaç
   ```
 - **Consulta Mascarada (Privacy by Design)**: `SELECT * FROM vw_clientes_mascarado;`
 
-### 9.3. Recriar Banco e RabbitMQ do Zero (Destrutivo)
+### 9.3. Gestão e Rotação de Chaves Criptográficas LGPD (`CPF_ENC_KEY` e `CPF_HMAC_KEY`)
+O dashboard isola dados sensíveis de titulares (CPF) com dupla proteção criptográfica:
+- `CPF_ENC_KEY`: Chave simétrica AES-256-GCM de 32 bytes (Base64) para confidencialidade reversível com verificação de autenticidade.
+- `CPF_HMAC_KEY`: Chave HMAC-SHA256 de 32 bytes (Base64) para blind index determinístico em consultas indexadas.
+- **Armazenamento e Backup**: As chaves residem exclusivamente no `.env` (fora do controle de versão). O backup das chaves criptográficas deve ser gerenciado **separadamente** dos dumps do PostgreSQL, garantindo que o vazamento do banco não comprometa o acesso aos dados em repouso (LGPD Art. 46).
+- **Procedimento de Rotação**:
+  1. Gerar nova chave de 32 bytes: `openssl rand -base64 32`.
+  2. Rotação de `CPF_ENC_KEY`: requer script de migração para decifrar os registros legados com a chave anterior e recifrá-los com a nova chave.
+  3. Rotação de `CPF_HMAC_KEY`: altera as assinaturas determinísticas; requer recalcular `cpf_hash` de todos os registros na tabela `dashboard_usuarios` utilizando a nova chave HMAC.
+
+### 9.4. Recriar Banco e RabbitMQ do Zero (Destrutivo)
 Se desejar destruir todos os volumes e reinicializar o ambiente do zero:
 
 <details>

@@ -260,6 +260,9 @@ services:
       DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD}
       NINE_ROUTER_URL: http://9router:${NINE_ROUTER_CONTAINER_PORT}/v1
       NINE_ROUTER_API_KEY: ${NINE_ROUTER_API_KEY:-${NINE_ROUTER_PASSWORD}}
+      CPF_ENC_KEY: ${CPF_ENC_KEY:-}
+      CPF_HMAC_KEY: ${CPF_HMAC_KEY:-}
+      AUTH_SECRET_KEY: ${AUTH_SECRET_KEY:-}
     networks:
       - public_net
       - data_net

@@ -36,6 +36,7 @@ PASSWORD_FIELDS=(
   "AUTHENTICATION_API_KEY"
   "PGADMIN_DEFAULT_PASSWORD"
   "DASHBOARD_PASSWORD"
+  "AUTH_SECRET_KEY"
 )
 
 # Pares de variáveis espelhadas que devem possuir o mesmo valor.
