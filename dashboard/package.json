@@ -1,6 +1,6 @@
 {
   "name": "anne-ia-dashboard",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Painel administrativo simples e ultra-leve para gestao de instancias da Evolution API e clientes",
   "main": "src/server.js",
   "type": "commonjs",
