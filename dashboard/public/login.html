@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Anne-IA — Autenticação e Acesso Seguro</title>
+  <script>
+    (function() {
+      try {
+        var saved = localStorage.getItem('anne_theme');
+        var prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+        var theme = saved ? saved : (prefersDark ? 'dark' : 'light');
+        document.documentElement.setAttribute('data-theme', theme);
+      } catch (e) {}
+    })();
+  </script>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="login-body">
+  <div class="login-container">
+    <!-- Topbar / Branding & Tema -->
+    <header class="login-header">
+      <div class="brand">
+        <span class="logo-dot"></span>
+        <div>
+          <h1>Anne-IA</h1>
+          <p class="subtitle">Acesso Seguro à Plataforma</p>
+        </div>
+      </div>
+      <button id="btn-theme-toggle" class="btn btn-secondary btn-icon" title="Alternar tema claro/escuro" aria-label="Alternar tema">
+        <svg id="theme-icon-sun" class="hidden" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+        <svg id="theme-icon-moon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+      </button>
+    </header>
+
+    <!-- Card Principal de Autenticação -->
+    <main class="login-card">
+      <!-- Navegação de Abas Segmentadas -->
+      <nav class="auth-tabs" role="tablist" aria-label="Opções de acesso">
+        <button id="tab-btn-login" class="auth-tab-btn active" role="tab" aria-selected="true" aria-controls="pane-login">
+          Entrar
+        </button>
+        <button id="tab-btn-register" class="auth-tab-btn" role="tab" aria-selected="false" aria-controls="pane-register">
+          Criar Conta
+        </button>
+      </nav>
+
+      <!-- Mensagens de Alerta Global -->
+      <div id="auth-alert" class="auth-alert hidden" role="alert" aria-live="polite"></div>
+
+      <!-- PAINEL 1: FORMULÁRIO DE LOGIN -->
+      <section id="pane-login" class="auth-pane active" role="tabpanel" aria-labelledby="tab-btn-login">
+        <form id="form-login" novalidate autocomplete="on">
+          <div class="form-group">
+            <label for="login-identifier">E-mail corporativo ou código de acesso</label>
+            <input
+              type="text"
+              id="login-identifier"
+              name="identifier"
+              class="form-control"
+              placeholder="operador@empresa.com ou ADM-01"
+              required
+              autocomplete="username"
+              spellcheck="false"
+              autofocus
+            >
+          </div>
+
+          <div class="form-group">
+            <div class="label-row">
+              <label for="login-password">Senha</label>
+              <button type="button" id="btn-forgot-password" class="link-btn">Esqueceu a senha?</button>
+            </div>
+            <div class="password-field-wrapper">
+              <input
+                type="password"
+                id="login-password"
+                name="password"
+                class="form-control"
+                placeholder="••••••••••••"
+                required
+                autocomplete="current-password"
+              >
+              <button type="button" class="btn-toggle-password" data-target="login-password" aria-label="Mostrar ou ocultar senha" title="Alternar visibilidade">
+                <svg class="eye-open" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                <svg class="eye-closed hidden" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+              </button>
+            </div>
+          </div>
+
+          <div class="form-group-checkbox">
+            <label class="custom-checkbox-label">
+              <input type="checkbox" id="login-remember" name="remember_me">
+              <span>Lembrar de mim por 30 dias neste dispositivo</span>
+            </label>
+          </div>
+
+          <button type="submit" id="btn-login-submit" class="btn btn-primary btn-block">
+            <span class="btn-text">Acessar Plataforma</span>
+            <span class="btn-spinner hidden" aria-hidden="true"></span>
+          </button>
+        </form>
+      </section>
+
+      <!-- PAINEL 2: FORMULÁRIO DE CADASTRO -->
+      <section id="pane-register" class="auth-pane" role="tabpanel" aria-labelledby="tab-btn-register" hidden>
+        <form id="form-register" novalidate autocomplete="on">
+          <div class="form-group">
+            <label for="reg-nome">Nome completo</label>
+            <input
+              type="text"
+              id="reg-nome"
+              name="nome"
+              class="form-control"
+              placeholder="Ex: Maria Silva"
+              required
+              autocomplete="name"
+            >
+          </div>
+
+          <div class="form-row-grid">
+            <div class="form-group">
+              <label for="reg-cpf">CPF (protegido por cifragem LGPD)</label>
+              <input
+                type="text"
+                id="reg-cpf"
+                name="cpf"
+                class="form-control"
+                placeholder="000.000.000-00"
+                required
+                maxlength="14"
+                autocomplete="off"
+              >
+              <span id="cpf-validation-msg" class="field-feedback"></span>
+            </div>
+
+            <div class="form-group">
+              <label for="reg-nascimento">Data de nascimento</label>
+              <input
+                type="date"
+                id="reg-nascimento"
+                name="data_nascimento"
+                class="form-control"
+                required
+              >
+            </div>
+          </div>
+
+          <div class="form-row-grid">
+            <div class="form-group">
+              <label for="reg-email">E-mail corporativo</label>
+              <input
+                type="email"
+                id="reg-email"
+                name="email"
+                class="form-control"
+                placeholder="seu.nome@empresa.com"
+                required
+                autocomplete="email"
+              >
+            </div>
+
+            <div class="form-group">
+              <label for="reg-telefone">Celular / WhatsApp</label>
+              <input
+                type="tel"
+                id="reg-telefone"
+                name="telefone"
+                class="form-control"
+                placeholder="(11) 90000-0000"
+                maxlength="15"
+                autocomplete="tel"
+              >
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label for="reg-password">Senha de acesso</label>
+            <div class="password-field-wrapper">
+              <input
+                type="password"
+                id="reg-password"
+                name="password"
+                class="form-control"
+                placeholder="Mínimo 8 caracteres"
+                required
+                autocomplete="new-password"
+              >
+              <button type="button" class="btn-toggle-password" data-target="reg-password" aria-label="Mostrar ou ocultar senha">
+                <svg class="eye-open" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                <svg class="eye-closed hidden" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+              </button>
+            </div>
+
+            <!-- Medidor de Força de Senha -->
+            <div class="password-meter-container" aria-live="polite">
+              <div class="meter-bars">
+                <span class="meter-bar" id="meter-bar-1"></span>
+                <span class="meter-bar" id="meter-bar-2"></span>
+                <span class="meter-bar" id="meter-bar-3"></span>
+                <span class="meter-bar" id="meter-bar-4"></span>
+              </div>
+              <div class="meter-label-row">
+                <span class="text-xs text-muted">Força da senha:</span>
+                <span id="meter-text" class="text-xs font-semibold">Fraca</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label for="reg-password-confirm">Confirme sua senha</label>
+            <div class="password-field-wrapper">
+              <input
+                type="password"
+                id="reg-password-confirm"
+                name="password_confirm"
+                class="form-control"
+                placeholder="Repita a senha"
+                required
+                autocomplete="new-password"
+              >
+              <button type="button" class="btn-toggle-password" data-target="reg-password-confirm" aria-label="Mostrar ou ocultar confirmação de senha">
+                <svg class="eye-open" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                <svg class="eye-closed hidden" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+              </button>
+            </div>
+            <span id="pwd-match-feedback" class="field-feedback"></span>
+          </div>
+
+          <!-- Consentimentos LGPD Obrigatórios (Art. 7º e 8º Lei 13.709/2018) -->
+          <fieldset class="lgpd-consent-box">
+            <legend class="text-xs font-semibold text-muted">Termos Legais e Consentimento LGPD</legend>
+
+            <div class="form-group-checkbox">
+              <label class="custom-checkbox-label">
+                <input type="checkbox" id="reg-termos" name="aceitou_termos" required>
+                <span>Li e concordo com os <button type="button" class="btn-legal-view" data-legal="termos_uso">Termos de Uso</button> da plataforma Anne-IA.</span>
+              </label>
+            </div>
+
+            <div class="form-group-checkbox">
+              <label class="custom-checkbox-label">
+                <input type="checkbox" id="reg-privacidade" name="aceitou_privacidade" required>
+                <span>Li e aceito a <button type="button" class="btn-legal-view" data-legal="politica_privacidade">Política de Privacidade</button> e o tratamento dos meus dados.</span>
+              </label>
+            </div>
+          </fieldset>
+
+          <button type="submit" id="btn-register-submit" class="btn btn-primary btn-block">
+            <span class="btn-text">Criar Conta e Iniciar</span>
+            <span class="btn-spinner hidden" aria-hidden="true"></span>
+          </button>
+        </form>
+      </section>
+    </main>
+
+    <!-- Rodapé de Conformidade Legal -->
+    <footer class="login-footer">
+      <p class="text-xs text-muted">
+        Conformidade com a LGPD (Lei 13.709/2018) e Marco Civil da Internet (Lei 12.965/2014).
+      </p>
+      <p class="text-xs text-subtle">
+        Encarregado de Dados (DPO): <a href="mailto:privacidade@anne-ia.local" class="text-muted">privacidade@anne-ia.local</a>
+      </p>
+    </footer>
+  </div>
+
+  <!-- MODAL DE VISUALIZAÇÃO DE TERMOS E POLÍTICA LGPD -->
+  <div id="modal-legal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="modal-legal-title">
+    <div class="modal modal-md">
+      <header class="modal-header">
+        <div>
+          <h2 id="modal-legal-title">Documento Legal</h2>
+          <span id="modal-legal-version" class="text-xs text-muted">Versão v1.0</span>
+        </div>
+        <button id="btn-close-legal" class="btn-close" aria-label="Fechar modal">&times;</button>
+      </header>
+      <div class="modal-body">
+        <div id="modal-legal-content" class="legal-text-content">Carregando conteúdo...</div>
+      </div>
+      <footer class="modal-footer">
+        <button id="btn-modal-legal-ok" class="btn btn-primary">Entendido</button>
+      </footer>
+    </div>
+  </div>
+
+  <!-- MODAL DE RECUPERAÇÃO DE SENHA (ORIENTAÇÃO) -->
+  <div id="modal-forgot" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="modal-forgot-title">
+    <div class="modal modal-md">
+      <header class="modal-header">
+        <div>
+          <h2 id="modal-forgot-title">Recuperação de Acesso</h2>
+          <span class="text-xs text-muted">Procedimento de Segurança Industrial</span>
+        </div>
+        <button id="btn-close-forgot" class="btn-close" aria-label="Fechar modal">&times;</button>
+      </header>
+      <div class="modal-body">
+        <p class="text-sm">
+          Por razões de segurança e proteção de dados (LGPD), a redefinição de credenciais de operador do painel administrativo é centralizada.
+        </p>
+        <p class="text-sm" style="margin-top: 10px;">
+          Para solicitar uma nova senha temporária ou liberação de IP, contate o Administrador da sua organização ou o Encarregado de Segurança pelo canal oficial:
+        </p>
+        <div class="callout-box" style="margin-top: 12px; padding: 12px; background: var(--bg-subtle); border-radius: var(--radius); border: 1px solid var(--border);">
+          <strong class="text-sm">Central de Suporte Interno:</strong><br>
+          <span class="text-xs text-muted">E-mail: admin@anne-ia.local</span><br>
+          <span class="text-xs text-muted">SLA de atendimento: Até 1 hora em horário comercial</span>
+        </div>
+      </div>
+      <footer class="modal-footer">
+        <button id="btn-modal-forgot-ok" class="btn btn-primary">Fechar</button>
+      </footer>
+    </div>
+  </div>
+
+  <script src="login.js"></script>
+</body>
+</html>

@@ -1,0 +1,13 @@
+{
+  "Servers": {
+    "1": {
+      "Name": "PostgreSQL Anne-IA (Evolution)",
+      "Group": "Anne-IA",
+      "Host": "db-evolution",
+      "Port": 5432,
+      "MaintenanceDB": "evolution",
+      "Username": "evolution",
+      "SSLMode": "prefer"
+    }
+  }
+}

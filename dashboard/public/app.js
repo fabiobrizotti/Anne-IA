@@ -1,0 +1,2268 @@
+// Anne-IA Dashboard — Lógica de Interface Vanilla
+(() => {
+  'use strict';
+
+  // Estado da aplicação
+  let instances = [];
+  let currentConnectInstanceId = null;
+  let currentSettingsInstanceId = null;
+  let currentFichaInstanceId = null;
+  let pollStatusTimer = null;
+  let currentFinancePeriod = 'mes_atual';
+  let financeData = null;
+  let financeDailyTableView = false;
+  let activePageTab = 'tab-instancias';
+
+  // Elementos do DOM
+  const elements = {
+    btnThemeToggle: document.getElementById('btn-theme-toggle'),
+    themeIconSun: document.getElementById('theme-icon-sun'),
+    themeIconMoon: document.getElementById('theme-icon-moon'),
+    instancesTbody: document.getElementById('instances-tbody'),
+    searchInput: document.getElementById('search-input'),
+    btnRefresh: document.getElementById('btn-refresh'),
+    btnNewInstance: document.getElementById('btn-new-instance'),
+    metricTotal: document.getElementById('metric-total'),
+    metricOpen: document.getElementById('metric-open'),
+    metricClose: document.getElementById('metric-close'),
+    toast: document.getElementById('toast'),
+    lastSyncTime: document.getElementById('last-sync-time'),
+
+    // Modal Nova Instância
+    modalNew: document.getElementById('modal-new'),
+    formNewInstance: document.getElementById('form-new-instance'),
+    btnSubmitNew: document.getElementById('btn-submit-new'),
+    newNome: document.getElementById('new-nome'),
+    newId: document.getElementById('new-id'),
+    newTelefone: document.getElementById('new-telefone'),
+    newEmail: document.getElementById('new-email'),
+
+    // Modal Ficha do Cliente / Instância
+    modalFicha: document.getElementById('modal-ficha'),
+    formFicha: document.getElementById('form-ficha'),
+    fichaTitle: document.getElementById('ficha-title'),
+    fichaStatusBadge: document.getElementById('ficha-status-badge'),
+    fichaId: document.getElementById('ficha-id'),
+    btnCopyFichaId: document.getElementById('btn-copy-ficha-id'),
+    fichaCriadoEm: document.getElementById('ficha-criado-em'),
+    fichaAtualizadoEm: document.getElementById('ficha-atualizado-em'),
+    fichaNome: document.getElementById('ficha-nome'),
+    fichaEmail: document.getElementById('ficha-email'),
+    fichaAtivo: document.getElementById('ficha-ativo'),
+    fichaTelefone: document.getElementById('ficha-telefone'),
+    fichaMotivo: document.getElementById('ficha-motivo'),
+    btnFichaConnect: document.getElementById('btn-ficha-connect'),
+    fichaHistoryList: document.getElementById('ficha-history-list'),
+    btnSaveFicha: document.getElementById('btn-save-ficha'),
+    promptIdentity: document.getElementById('prompt-identity'),
+    promptRole: document.getElementById('prompt-role'),
+    promptPersonality: document.getElementById('prompt-personality'),
+    promptPlaybook: document.getElementById('prompt-playbook'),
+    promptTools: document.getElementById('prompt-tools'),
+    promptLocale: document.getElementById('prompt-locale'),
+    promptEscalationChannel: document.getElementById('prompt-escalation-channel'),
+    promptEscalationTarget: document.getElementById('prompt-escalation-target'),
+    promptEscalationPolicy: document.getElementById('prompt-escalation-policy'),
+    promptSystem: document.getElementById('prompt-system'),
+    promptFatiamento: document.getElementById('prompt-fatiamento'),
+
+    // Modal Conexão
+    modalConnect: document.getElementById('modal-connect'),
+    connectSubtitle: document.getElementById('connect-instance-subtitle'),
+    tabPairing: document.getElementById('tab-pairing'),
+    tabQrcode: document.getElementById('tab-qrcode'),
+    tabButtons: document.querySelectorAll('#modal-connect .tab-btn'),
+    pairingNumber: document.getElementById('pairing-number'),
+    btnRequestPairing: document.getElementById('btn-request-pairing'),
+    btnReconnectRestart: document.getElementById('btn-reconnect-restart'),
+    pairingResultBox: document.getElementById('pairing-result-box'),
+    pairingCodeDisplay: document.getElementById('pairing-code-display'),
+    btnCopyPairing: document.getElementById('btn-copy-pairing'),
+    qrcodeContainer: document.getElementById('qrcode-container'),
+    btnRefreshQrcode: document.getElementById('btn-refresh-qrcode'),
+    connectionStatusPill: document.getElementById('connection-status-pill'),
+    connectionStatusText: document.getElementById('connection-status-text'),
+
+    // Modal Configurações
+    modalSettings: document.getElementById('modal-settings'),
+    settingsSubtitle: document.getElementById('settings-instance-subtitle'),
+    formSettings: document.getElementById('form-settings'),
+    btnSaveSettings: document.getElementById('btn-save-settings'),
+    settingRejectCall: document.getElementById('setting-rejectCall'),
+    settingMsgCall: document.getElementById('setting-msgCall'),
+    boxMsgCall: document.getElementById('box-msgCall'),
+    settingGroupsIgnore: document.getElementById('setting-groupsIgnore'),
+    settingAlwaysOnline: document.getElementById('setting-alwaysOnline'),
+    settingReadMessages: document.getElementById('setting-readMessages'),
+    settingReadStatus: document.getElementById('setting-readStatus'),
+    settingSyncFullHistory: document.getElementById('setting-syncFullHistory'),
+
+    // Elementos da Aba Financeiro
+    pageTabs: document.querySelectorAll('.page-tab'),
+    pageContents: document.querySelectorAll('.page-content'),
+    pillBtns: document.querySelectorAll('.pill-btn'),
+    kpiCusto: document.getElementById('kpi-custo'),
+    kpiCustoDelta: document.getElementById('kpi-custo-delta'),
+    kpiRequisicoes: document.getElementById('kpi-requisicoes'),
+    kpiReqsDelta: document.getElementById('kpi-reqs-delta'),
+    kpiTokens: document.getElementById('kpi-tokens'),
+    kpiTokensDelta: document.getElementById('kpi-tokens-delta'),
+    kpiTokensSplit: document.getElementById('kpi-tokens-split'),
+    kpiCacheRate: document.getElementById('kpi-cache-rate'),
+    kpiCustoMedio: document.getElementById('kpi-custo-medio'),
+    kpiReqsPorDolar: document.getElementById('kpi-reqs-por-dolar'),
+    kpiMsgsPorDolar: document.getElementById('kpi-msgs-por-dolar'),
+    kpiTokensPorDolar: document.getElementById('kpi-tokens-por-dolar'),
+    kpiMediaTokensMsg: document.getElementById('kpi-media-tokens-msg'),
+    kpiMediaCustoMsg: document.getElementById('kpi-media-custo-msg'),
+    dailyChartContainer: document.getElementById('finance-daily-chart-container'),
+    dailyTableContainer: document.getElementById('finance-daily-table-container'),
+    dailyTbody: document.getElementById('finance-daily-tbody'),
+    btnToggleDailyView: document.getElementById('btn-toggle-daily-view'),
+    clientChartContainer: document.getElementById('finance-client-chart-container'),
+    modelChartContainer: document.getElementById('finance-model-chart-container'),
+    financeClientsTbody: document.getElementById('finance-clients-tbody'),
+    financeSearchInput: document.getElementById('finance-search-input'),
+    financeCustomDates: document.getElementById('finance-custom-dates'),
+    financeDateStart: document.getElementById('finance-date-start'),
+    financeDateEnd: document.getElementById('finance-date-end'),
+    btnApplyFinanceDates: document.getElementById('btn-apply-finance-dates'),
+    modalBillingClient: document.getElementById('modal-billing-client'),
+    billingModalClientName: document.getElementById('billing-modal-client-name'),
+    billingModalCost: document.getElementById('billing-modal-cost'),
+    billingPaymentLink: document.getElementById('billing-payment-link'),
+    btnCopyBillingLink: document.getElementById('btn-copy-billing-link'),
+
+    // Elementos da Aba Modelos de IA
+    metricModelosTotal: document.getElementById('metric-modelos-total'),
+    metricModelosAtivos: document.getElementById('metric-modelos-ativos'),
+    metricModelosAvgIn: document.getElementById('metric-modelos-avg-in'),
+    metricModelosAvgOut: document.getElementById('metric-modelos-avg-out'),
+    modelosSearchInput: document.getElementById('modelos-search-input'),
+    modelosTbody: document.getElementById('modelos-tbody'),
+    btnNewModel: document.getElementById('btn-new-model'),
+    gatewayStatusDot: document.getElementById('gateway-status-dot'),
+    gatewayStatusBadge: document.getElementById('gateway-status-badge'),
+    gatewayModelsCount: document.getElementById('gateway-models-count'),
+    gatewayEndpointDisplay: document.getElementById('gateway-endpoint-display'),
+    btnSync9Router: document.getElementById('btn-sync-9router'),
+    datalist9RouterModels: document.getElementById('datalist-9router-models'),
+
+    // Modal Modelo
+    modalModelo: document.getElementById('modal-modelo'),
+    modalModeloTitle: document.getElementById('modal-modelo-title'),
+    formModelo: document.getElementById('form-modelo'),
+    modeloId: document.getElementById('modelo-id'),
+    modeloProvedor: document.getElementById('modelo-provedor'),
+    modeloNome: document.getElementById('modelo-nome'),
+    modeloTier: document.getElementById('modelo-tier'),
+    modeloInput: document.getElementById('modelo-input'),
+    modeloOutput: document.getElementById('modelo-output'),
+    modeloCached: document.getElementById('modelo-cached'),
+    modeloReasoning: document.getElementById('modelo-reasoning'),
+    modeloAtivo: document.getElementById('modelo-ativo'),
+
+    // Modal Teste de Modelo
+    modalTestModel: document.getElementById('modal-test-model'),
+    modalTestTitle: document.getElementById('modal-test-title'),
+    modalTestSubtitle: document.getElementById('modal-test-subtitle'),
+    testLoading: document.getElementById('test-loading'),
+    testResultBox: document.getElementById('test-result-box'),
+    testStatusCode: document.getElementById('test-status-code'),
+    testLatency: document.getElementById('test-latency'),
+    testModelEffective: document.getElementById('test-model-effective'),
+    testEndpointUrl: document.getElementById('test-endpoint-url'),
+    testReplyLabel: document.getElementById('test-reply-label'),
+    testReplyContent: document.getElementById('test-reply-content'),
+
+    // Sub-abas IA
+    iaSubTabs: document.querySelectorAll('.sub-tab'),
+    iaSubcontents: document.querySelectorAll('.ia-subcontent'),
+
+    // Elementos da Aba Conhecimento (RAG / pgvector)
+    metricRagTotal: document.getElementById('metric-rag-total'),
+    metricRagTenants: document.getElementById('metric-rag-tenants'),
+    metricRagAvgChars: document.getElementById('metric-rag-avg-chars'),
+    metricRagVetorStatus: document.getElementById('metric-rag-vetor-status'),
+    metricRagVetorSub: document.getElementById('metric-rag-vetor-sub'),
+    ragTenantFilter: document.getElementById('rag-tenant-filter'),
+    ragSearchInput: document.getElementById('rag-search-input'),
+    btnNewRagDoc: document.getElementById('btn-new-rag-doc'),
+    ragTbody: document.getElementById('rag-tbody'),
+    ragPaginationInfo: document.getElementById('rag-pagination-info'),
+    btnRagPrevPage: document.getElementById('btn-rag-prev-page'),
+    btnRagNextPage: document.getElementById('btn-rag-next-page'),
+    ragPaginationCurrent: document.getElementById('rag-pagination-current'),
+
+    // Modal Detalhe RAG
+    modalRagView: document.getElementById('modal-rag-view'),
+    ragViewTitle: document.getElementById('rag-view-title'),
+    ragViewVetorBadge: document.getElementById('rag-view-vetor-badge'),
+    ragViewClient: document.getElementById('rag-view-client'),
+    ragViewId: document.getElementById('rag-view-id'),
+    ragViewChars: document.getElementById('rag-view-chars'),
+    ragViewDims: document.getElementById('rag-view-dims'),
+    ragViewText: document.getElementById('rag-view-text'),
+    btnCopyRagText: document.getElementById('btn-copy-rag-text'),
+    ragViewMetadata: document.getElementById('rag-view-metadata'),
+    btnCopyRagMetadata: document.getElementById('btn-copy-rag-metadata'),
+
+    // Modal Novo RAG
+    modalRagNew: document.getElementById('modal-rag-new'),
+    formRagNew: document.getElementById('form-rag-new'),
+    ragNewTenant: document.getElementById('rag-new-tenant'),
+    ragNewText: document.getElementById('rag-new-text'),
+    ragNewCharCount: document.getElementById('rag-new-char-count'),
+    ragNewTokenEst: document.getElementById('rag-new-token-est'),
+    ragNewMetadata: document.getElementById('rag-new-metadata'),
+    btnSaveRagDoc: document.getElementById('btn-save-rag-doc'),
+
+    // Atalho na Ficha
+    btnFichaViewRag: document.getElementById('btn-ficha-view-rag')
+  };
+
+  let modelsList = [];
+  let nineRouterModels = [];
+  let knowledgeDocs = [];
+  let knowledgePagination = { page: 1, limit: 25, total: 0, totalPages: 1 };
+  let ragSearchDebounceTimer = null;
+  let activeIaSubTab = 'subtab-modelos';
+
+  // ---------------------------------------------------------------------------
+  // UTILITÁRIOS
+  // ---------------------------------------------------------------------------
+
+  function showToast(message, type = 'success') {
+    elements.toast.textContent = message;
+    elements.toast.className = `toast toast-${type}`;
+    elements.toast.classList.remove('hidden');
+
+    setTimeout(() => {
+      elements.toast.classList.add('hidden');
+    }, 4000);
+  }
+
+  function openModal(modalEl) {
+    if (!modalEl) return;
+    modalEl.classList.remove('hidden');
+  }
+
+  function closeModal(modalEl) {
+    if (!modalEl) return;
+    modalEl.classList.add('hidden');
+    if (modalEl === elements.modalConnect) {
+      stopStatusPolling();
+    }
+  }
+
+  function escapeHtml(text) {
+    if (!text) return '';
+    return String(text)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
+
+  function formatDateTime(isoString) {
+    if (!isoString) return '-';
+    try {
+      const d = new Date(isoString);
+      if (isNaN(d.getTime())) return isoString;
+      return d.toLocaleDateString('pt-BR', {
+        day: '2-digit',
+        month: '2-digit',
+        year: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+    } catch {
+      return isoString;
+    }
+  }
+
+  function slugify(text) {
+    return text
+      .toString()
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[̀-ͯ]/g, '')
+      .replace(/[^a-z0-9_-]/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-+|-+$/g, '');
+  }
+
+  // ---------------------------------------------------------------------------
+  // API CLIENT
+  // ---------------------------------------------------------------------------
+
+  async function api(path, options = {}) {
+    const defaultHeaders = {
+      'Content-Type': 'application/json',
+      'X-Requested-With': 'XMLHttpRequest'
+    };
+    const res = await fetch(path, {
+      ...options,
+      headers: { ...defaultHeaders, ...(options.headers || {}) }
+    });
+
+    if (res.status === 401 && !path.startsWith('/api/v1/auth/')) {
+      window.location.href = '/login.html';
+      throw new Error('Sessão expirada. Redirecionando para login...');
+    }
+
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.error || 'Erro na requisição');
+    }
+    return data;
+  }
+
+  // ---------------------------------------------------------------------------
+  // RENDERIZAÇÃO E DADOS
+  // ---------------------------------------------------------------------------
+
+  async function loadInstances() {
+    elements.btnRefresh.disabled = true;
+    try {
+      const res = await api('/api/v1/instances');
+      instances = res.data || [];
+      renderMetrics();
+      renderInstances();
+
+      if (elements.lastSyncTime) {
+        elements.lastSyncTime.textContent = `Atualizado em: ${new Date().toLocaleTimeString('pt-BR')}`;
+      }
+    } catch (err) {
+      showToast(`Falha ao carregar instâncias: ${err.message}`, 'error');
+      elements.instancesTbody.innerHTML = `
+        <tr>
+          <td colspan="6" class="text-center py-8 text-danger">
+            Não foi possível carregar as instâncias. Verifique a conexão com o servidor.
+          </td>
+        </tr>
+      `;
+    } finally {
+      elements.btnRefresh.disabled = false;
+    }
+  }
+
+  function renderMetrics() {
+    const total = instances.length;
+    const open = instances.filter(i => i.status === 'open').length;
+    const close = total - open;
+
+    elements.metricTotal.textContent = total;
+    elements.metricOpen.textContent = open;
+    elements.metricClose.textContent = close;
+  }
+
+  function renderInstances() {
+    const term = (elements.searchInput.value || '').trim().toLowerCase();
+    const filtered = instances.filter(i => {
+      const name = (i.nome || '').toLowerCase();
+      const id = (i.id || '').toLowerCase();
+      const phone = (i.telefone || '').toLowerCase();
+      return name.includes(term) || id.includes(term) || phone.includes(term);
+    });
+
+    if (filtered.length === 0) {
+      elements.instancesTbody.innerHTML = `
+        <tr>
+          <td colspan="6" class="text-center py-8 text-muted">
+            ${term ? 'Nenhuma instância encontrada para o filtro informado.' : 'Nenhuma instância cadastrada ainda. Clique em "Nova Instância" para começar.'}
+          </td>
+        </tr>
+      `;
+      return;
+    }
+
+    elements.instancesTbody.innerHTML = filtered.map(inst => {
+      const statusClass = inst.status === 'open' ? 'badge-open' : (inst.status === 'connecting' ? 'badge-connecting' : 'badge-close');
+      const statusLabel = inst.status === 'open' ? 'Conectado' : (inst.status === 'connecting' ? 'Conectando' : 'Desconectado');
+      const avatarContent = inst.profilePicUrl
+        ? `<img src="${escapeHtml(inst.profilePicUrl)}" alt="${escapeHtml(inst.nome)}">`
+        : (inst.nome ? inst.nome.charAt(0).toUpperCase() : '?');
+
+      return `
+        <tr>
+          <td>
+            <div class="instance-name-wrapper">
+              <div class="avatar">${avatarContent}</div>
+              <div>
+                <strong>${escapeHtml(inst.nome)}</strong>
+                ${inst.email ? `<div class="text-muted text-xs">${escapeHtml(inst.email)}</div>` : ''}
+              </div>
+            </div>
+          </td>
+          <td><code>${escapeHtml(inst.id)}</code></td>
+          <td>${inst.telefone ? escapeHtml(inst.telefone) : '<span class="text-muted">-</span>'}</td>
+          <td>
+            <span class="badge ${statusClass}">
+              <span class="badge-dot"></span>
+              ${statusLabel}
+            </span>
+          </td>
+          <td class="text-muted text-xs">${formatDateTime(inst.atualizado_em || inst.criado_em)}</td>
+          <td>
+            <div class="cell-actions">
+              <button class="btn btn-sm btn-secondary" data-action="ficha" data-id="${escapeHtml(inst.id)}">
+                Ficha
+              </button>
+              ${inst.status !== 'open' ? `
+                <button class="btn btn-sm btn-primary" data-action="connect" data-id="${escapeHtml(inst.id)}">
+                  Conectar
+                </button>
+              ` : `
+                <button class="btn btn-sm btn-secondary" data-action="restart" data-id="${escapeHtml(inst.id)}">
+                  Reiniciar
+                </button>
+              `}
+              <button class="btn btn-sm btn-secondary" data-action="settings" data-id="${escapeHtml(inst.id)}">
+                Opções
+              </button>
+              <button class="btn btn-sm btn-danger" data-action="delete" data-id="${escapeHtml(inst.id)}">
+                Excluir
+              </button>
+            </div>
+          </td>
+        </tr>
+      `;
+    }).join('');
+  }
+
+  // ---------------------------------------------------------------------------
+  // NOVO CLIENTE / INSTÂNCIA
+  // ---------------------------------------------------------------------------
+
+  elements.btnNewInstance.addEventListener('click', () => {
+    elements.formNewInstance.reset();
+    openModal(elements.modalNew);
+    elements.newNome.focus();
+  });
+
+  // Sugere ID automaticamente a partir do nome
+  elements.newNome.addEventListener('input', () => {
+    if (!elements.newId.dataset.edited) {
+      elements.newId.value = slugify(elements.newNome.value);
+    }
+  });
+
+  elements.newId.addEventListener('input', () => {
+    elements.newId.dataset.edited = 'true';
+  });
+
+  elements.formNewInstance.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    elements.btnSubmitNew.disabled = true;
+    elements.btnSubmitNew.textContent = 'Salvando...';
+
+    const payload = {
+      nome: elements.newNome.value.trim(),
+      id: elements.newId.value.trim(),
+      telefone: elements.newTelefone.value.trim(),
+      email: elements.newEmail.value.trim()
+    };
+
+    try {
+      await api('/api/v1/instances', {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      });
+
+      showToast(`Instância "${payload.nome}" criada com sucesso!`);
+      closeModal(elements.modalNew);
+      await loadInstances();
+
+      // Abre automaticamente a tela de conexão
+      openConnectModal(payload.id);
+    } catch (err) {
+      showToast(`Erro ao criar: ${err.message}`, 'error');
+    } finally {
+      elements.btnSubmitNew.disabled = false;
+      elements.btnSubmitNew.textContent = 'Criar e Salvar';
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // FICHA DO CLIENTE / INSTÂNCIA
+  // ---------------------------------------------------------------------------
+
+  function openFichaModal(instanceId) {
+    const inst = instances.find(i => i.id === instanceId);
+    if (!inst) {
+      showToast('Instância não encontrada.', 'error');
+      return;
+    }
+
+    currentFichaInstanceId = inst.id;
+    elements.fichaTitle.textContent = `Ficha: ${inst.nome || inst.id}`;
+    elements.fichaId.textContent = inst.id;
+    elements.fichaNome.value = inst.nome || '';
+    elements.fichaEmail.value = inst.email || '';
+    elements.fichaAtivo.checked = inst.ativo !== false;
+    elements.fichaTelefone.value = inst.telefone || '';
+    elements.fichaMotivo.value = '';
+
+    elements.fichaCriadoEm.textContent = formatDateTime(inst.criado_em);
+    elements.fichaAtualizadoEm.textContent = formatDateTime(inst.atualizado_em);
+
+    const statusClass = inst.status === 'open' ? 'badge-open' : (inst.status === 'connecting' ? 'badge-connecting' : 'badge-close');
+    const statusLabel = inst.status === 'open' ? 'Conectado' : (inst.status === 'connecting' ? 'Conectando' : 'Desconectado');
+    elements.fichaStatusBadge.className = `badge ${statusClass}`;
+    elements.fichaStatusBadge.innerHTML = `<span class="badge-dot"></span>${statusLabel}`;
+
+    renderFichaHistory(inst.historico_telefones || []);
+    resetPromptFields();
+    loadPromptConfig(inst.id);
+    openModal(elements.modalFicha);
+  }
+
+  function resetPromptFields() {
+    elements.promptIdentity.value = '';
+    elements.promptRole.value = '';
+    elements.promptPersonality.value = '';
+    elements.promptPlaybook.value = '';
+    elements.promptTools.value = '';
+    elements.promptLocale.value = 'pt-BR';
+    elements.promptEscalationChannel.value = '';
+    elements.promptEscalationTarget.value = '';
+    elements.promptEscalationPolicy.value = '';
+    elements.promptSystem.value = '';
+    elements.promptFatiamento.value = '';
+  }
+
+  async function loadPromptConfig(instanceId) {
+    try {
+      const data = await api(`/api/v1/instances/${encodeURIComponent(instanceId)}/prompt`);
+      const p = data.prompt || {};
+      elements.promptIdentity.value = p.identity || '';
+      elements.promptRole.value = p.role || '';
+      elements.promptPersonality.value = p.personality || '';
+      elements.promptPlaybook.value = p.playbook || '';
+      elements.promptTools.value = p.tools || '';
+      elements.promptLocale.value = p.locale || 'pt-BR';
+      elements.promptEscalationChannel.value = p.escalation_channel || '';
+      elements.promptEscalationTarget.value = p.escalation_target || '';
+      elements.promptEscalationPolicy.value = p.escalation_policy || '';
+      elements.promptSystem.value = p.system_prompt || '';
+      elements.promptFatiamento.value = p.fatiamento_override || '';
+    } catch (err) {
+      // Sem linha de prompt ainda — mantém defaults do formulário.
+      console.warn('[prompt] Configuração de prompt indisponível:', err.message);
+    }
+  }
+
+  function renderFichaHistory(history) {
+    if (!history || history.length === 0) {
+      elements.fichaHistoryList.innerHTML = '<p class="text-muted text-xs">Nenhum histórico de número registrado ainda.</p>';
+      return;
+    }
+
+    const sorted = [...history].reverse();
+    elements.fichaHistoryList.innerHTML = sorted.map(item => `
+      <div class="history-item">
+        <div>
+          <span class="history-phone">${escapeHtml(item.telefone || '-')}</span>
+          <span class="text-muted text-xs"> — ${escapeHtml(item.motivo || 'Cadastro')}</span>
+        </div>
+        <span class="history-date">${formatDateTime(item.data)}</span>
+      </div>
+    `).join('');
+  }
+
+  elements.btnCopyFichaId.addEventListener('click', () => {
+    if (elements.fichaId.textContent) {
+      navigator.clipboard.writeText(elements.fichaId.textContent).then(() => {
+        showToast('ID da instância copiado!');
+      });
+    }
+  });
+
+  elements.btnFichaConnect.addEventListener('click', () => {
+    if (!currentFichaInstanceId) return;
+    const phone = elements.fichaTelefone.value.trim();
+    closeModal(elements.modalFicha);
+    openConnectModal(currentFichaInstanceId, phone);
+  });
+
+  elements.formFicha.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (!currentFichaInstanceId) return;
+
+    elements.btnSaveFicha.disabled = true;
+    elements.btnSaveFicha.textContent = 'Salvando...';
+
+    const payload = {
+      nome: elements.fichaNome.value.trim(),
+      email: elements.fichaEmail.value.trim(),
+      ativo: elements.fichaAtivo.checked,
+      telefone: elements.fichaTelefone.value.trim(),
+      motivoTroca: elements.fichaMotivo.value.trim()
+    };
+
+    try {
+      await api(`/api/v1/instances/${encodeURIComponent(currentFichaInstanceId)}`, {
+        method: 'PUT',
+        body: JSON.stringify(payload)
+      });
+
+      await api(`/api/v1/instances/${encodeURIComponent(currentFichaInstanceId)}/prompt`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          identity: elements.promptIdentity.value,
+          role: elements.promptRole.value,
+          personality: elements.promptPersonality.value,
+          playbook: elements.promptPlaybook.value,
+          tools: elements.promptTools.value,
+          locale: elements.promptLocale.value,
+          escalation_channel: elements.promptEscalationChannel.value,
+          escalation_target: elements.promptEscalationTarget.value,
+          escalation_policy: elements.promptEscalationPolicy.value,
+          system_prompt: elements.promptSystem.value,
+          fatiamento_override: elements.promptFatiamento.value
+        })
+      });
+
+      showToast('Ficha do cliente salva com sucesso!');
+      closeModal(elements.modalFicha);
+      await loadInstances();
+    } catch (err) {
+      showToast(`Erro ao salvar ficha: ${err.message}`, 'error');
+    } finally {
+      elements.btnSaveFicha.disabled = false;
+      elements.btnSaveFicha.textContent = 'Salvar Ficha';
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // CONEXÃO WHATSAPP (PAIRING CODE & QR CODE)
+  // ---------------------------------------------------------------------------
+
+  function openConnectModal(instanceId, phoneOverride) {
+    const inst = instances.find(i => i.id === instanceId);
+    currentConnectInstanceId = instanceId;
+
+    elements.connectSubtitle.textContent = inst ? `${inst.nome} (${inst.id})` : instanceId;
+    const phoneToUse = phoneOverride !== undefined ? phoneOverride : (inst && inst.telefone ? inst.telefone : '');
+    elements.pairingNumber.value = phoneToUse ? phoneToUse.replace(/\D/g, '') : '';
+    elements.pairingResultBox.classList.add('hidden');
+    elements.pairingCodeDisplay.textContent = '--------';
+
+    // Status inicial
+    updateConnectionStatus(inst ? inst.status : 'close');
+
+    // Abre primeira aba por padrão
+    switchTab('tab-pairing');
+
+    openModal(elements.modalConnect);
+    startStatusPolling(instanceId);
+  }
+
+  function switchTab(tabId) {
+    elements.tabButtons.forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.tab === tabId);
+    });
+
+    elements.tabPairing.classList.toggle('active', tabId === 'tab-pairing');
+    elements.tabQrcode.classList.toggle('active', tabId === 'tab-qrcode');
+
+    if (tabId === 'tab-qrcode' && currentConnectInstanceId) {
+      loadQrCode(currentConnectInstanceId);
+    }
+  }
+
+  elements.tabButtons.forEach(btn => {
+    btn.addEventListener('click', () => switchTab(btn.dataset.tab));
+  });
+
+  // Solicitar Pairing Code
+  elements.btnRequestPairing.addEventListener('click', async () => {
+    const rawNumber = elements.pairingNumber.value.trim();
+    let cleanNumber = rawNumber.replace(/\D/g, '');
+
+    if (!cleanNumber || cleanNumber.length < 10) {
+      showToast('Digite um número de telefone válido com DDI e DDD.', 'error');
+      elements.pairingNumber.focus();
+      return;
+    }
+
+    // Auto-adiciona DDI 55 se o usuário digitar apenas DDD + número (10 ou 11 dígitos)
+    if (cleanNumber.length === 10 || cleanNumber.length === 11) {
+      cleanNumber = `55${cleanNumber}`;
+      elements.pairingNumber.value = cleanNumber;
+    }
+
+    elements.btnRequestPairing.disabled = true;
+    elements.btnRequestPairing.textContent = 'Aguardando WhatsApp...';
+    elements.pairingResultBox.classList.add('hidden');
+
+    try {
+      const res = await api(`/api/v1/instances/${encodeURIComponent(currentConnectInstanceId)}/connect?number=${cleanNumber}`);
+      if (res.data?.pairingCode) {
+        elements.pairingCodeDisplay.textContent = res.data.pairingCode;
+        elements.pairingResultBox.classList.remove('hidden');
+        showToast('Código de pareamento gerado!');
+      } else {
+        throw new Error(res.error || 'Código não retornado a tempo pelo WhatsApp. Clique em "Reiniciar" e tente novamente.');
+      }
+    } catch (err) {
+      showToast(`Falha ao gerar código: ${err.message}`, 'error');
+    } finally {
+      elements.btnRequestPairing.disabled = false;
+      elements.btnRequestPairing.textContent = 'Gerar Código';
+    }
+  });
+
+  // Reiniciar Socket da Instância no modal de Conexão
+  if (elements.btnReconnectRestart) {
+    elements.btnReconnectRestart.addEventListener('click', async () => {
+      if (!currentConnectInstanceId) return;
+
+      elements.btnReconnectRestart.disabled = true;
+      elements.btnReconnectRestart.textContent = 'Reiniciando...';
+      elements.pairingResultBox.classList.add('hidden');
+      elements.pairingCodeDisplay.textContent = '--------';
+
+      try {
+        await api(`/api/v1/instances/${encodeURIComponent(currentConnectInstanceId)}/restart`, { method: 'POST' });
+        showToast('Instância reiniciada na Evolution API! Tente gerar o código agora.');
+      } catch (err) {
+        showToast(`Erro ao reiniciar: ${err.message}`, 'error');
+      } finally {
+        elements.btnReconnectRestart.disabled = false;
+        elements.btnReconnectRestart.textContent = 'Reiniciar';
+      }
+    });
+  }
+
+  // Copiar Pairing Code
+  elements.btnCopyPairing.addEventListener('click', () => {
+    const code = elements.pairingCodeDisplay.textContent;
+    if (!code || code === '--------') return;
+
+    navigator.clipboard.writeText(code).then(() => {
+      elements.btnCopyPairing.textContent = 'Copiado!';
+      setTimeout(() => { elements.btnCopyPairing.textContent = 'Copiar'; }, 2000);
+    });
+  });
+
+  // Carregar QR Code com prioridade em base64 (POST seguro)
+  async function loadQrCode(instanceId) {
+    const loadingSpan = document.createElement('span');
+    loadingSpan.textContent = 'Carregando QR Code...';
+    elements.qrcodeContainer.replaceChildren(loadingSpan);
+
+    try {
+      const res = await api(`/api/v1/instances/${encodeURIComponent(instanceId)}/connect`, { method: 'POST' });
+      const base64 = res.data?.base64;
+      const code = res.data?.code;
+
+      if (base64) {
+        const src = base64.startsWith('data:image') ? base64 : `data:image/png;base64,${base64}`;
+        const img = document.createElement('img');
+        img.src = src;
+        img.alt = 'QR Code WhatsApp';
+        elements.qrcodeContainer.replaceChildren(img);
+      } else if (code) {
+        const wrapper = document.createElement('div');
+        wrapper.style.padding = '12px';
+        wrapper.style.textAlign = 'center';
+
+        const p = document.createElement('p');
+        p.className = 'text-xs text-muted mb-2';
+        p.textContent = 'Código Baileys recebido:';
+
+        const codeEl = document.createElement('code');
+        codeEl.style.wordBreak = 'break-all';
+        codeEl.style.fontSize = '11px';
+        codeEl.textContent = code;
+
+        wrapper.appendChild(p);
+        wrapper.appendChild(codeEl);
+        elements.qrcodeContainer.replaceChildren(wrapper);
+      } else {
+        const waitSpan = document.createElement('span');
+        waitSpan.className = 'text-muted';
+        waitSpan.textContent = 'Aguardando geração do QR Code...';
+        elements.qrcodeContainer.replaceChildren(waitSpan);
+      }
+    } catch (err) {
+      const errSpan = document.createElement('span');
+      errSpan.className = 'text-danger';
+      errSpan.textContent = `Erro: ${err.message}`;
+      elements.qrcodeContainer.replaceChildren(errSpan);
+    }
+  }
+
+  elements.btnRefreshQrcode.addEventListener('click', () => {
+    if (currentConnectInstanceId) loadQrCode(currentConnectInstanceId);
+  });
+
+  // Polling de status durante a conexão
+  function startStatusPolling(instanceId) {
+    stopStatusPolling();
+    pollStatusTimer = setInterval(async () => {
+      try {
+        const res = await api(`/api/v1/instances/${encodeURIComponent(instanceId)}/status`);
+        updateConnectionStatus(res.state);
+
+        if (res.state === 'open') {
+          showToast('WhatsApp conectado com sucesso!');
+          stopStatusPolling();
+          await loadInstances();
+          setTimeout(() => closeModal(elements.modalConnect), 1800);
+        }
+      } catch {
+        // Ignora erros transitórios no polling
+      }
+    }, 3000);
+  }
+
+  function stopStatusPolling() {
+    if (pollStatusTimer) {
+      clearInterval(pollStatusTimer);
+      pollStatusTimer = null;
+    }
+  }
+
+  function updateConnectionStatus(state) {
+    if (state === 'open') {
+      elements.connectionStatusPill.className = 'status-pill status-pill-success';
+      elements.connectionStatusText.textContent = 'Instância conectada e pronta para uso!';
+    } else if (state === 'connecting') {
+      elements.connectionStatusPill.className = 'status-pill status-pill-waiting';
+      elements.connectionStatusText.textContent = 'Conectando ao WhatsApp...';
+    } else {
+      elements.connectionStatusPill.className = 'status-pill status-pill-waiting';
+      elements.connectionStatusText.textContent = 'Aguardando validação no aplicativo do celular...';
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // CONFIGURAÇÕES DA INSTÂNCIA (SETTINGS)
+  // ---------------------------------------------------------------------------
+
+  async function openSettingsModal(instanceId) {
+    const inst = instances.find(i => i.id === instanceId);
+    currentSettingsInstanceId = instanceId;
+
+    elements.settingsSubtitle.textContent = inst ? `${inst.nome} (${inst.id})` : instanceId;
+    elements.formSettings.reset();
+    openModal(elements.modalSettings);
+
+    try {
+      const res = await api(`/api/v1/instances/${encodeURIComponent(instanceId)}/settings`);
+      const s = res.settings || {};
+
+      elements.settingRejectCall.checked = Boolean(s.rejectCall);
+      elements.settingMsgCall.value = s.msgCall || '';
+      elements.settingGroupsIgnore.checked = Boolean(s.groupsIgnore);
+      elements.settingAlwaysOnline.checked = Boolean(s.alwaysOnline);
+      elements.settingReadMessages.checked = Boolean(s.readMessages);
+      elements.settingReadStatus.checked = Boolean(s.readStatus);
+      elements.settingSyncFullHistory.checked = Boolean(s.syncFullHistory);
+
+      toggleMsgCallVisibility();
+    } catch (err) {
+      showToast(`Falha ao ler opções: ${err.message}`, 'error');
+    }
+  }
+
+  function toggleMsgCallVisibility() {
+    if (elements.settingRejectCall.checked) {
+      elements.boxMsgCall.classList.remove('hidden');
+    } else {
+      elements.boxMsgCall.classList.add('hidden');
+    }
+  }
+
+  elements.settingRejectCall.addEventListener('change', toggleMsgCallVisibility);
+
+  elements.formSettings.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (!currentSettingsInstanceId) return;
+
+    elements.btnSaveSettings.disabled = true;
+    elements.btnSaveSettings.textContent = 'Salvando...';
+
+    const payload = {
+      rejectCall: elements.settingRejectCall.checked,
+      msgCall: elements.settingMsgCall.value.trim(),
+      groupsIgnore: elements.settingGroupsIgnore.checked,
+      alwaysOnline: elements.settingAlwaysOnline.checked,
+      readMessages: elements.settingReadMessages.checked,
+      readStatus: elements.settingReadStatus.checked,
+      syncFullHistory: elements.settingSyncFullHistory.checked
+    };
+
+    try {
+      await api(`/api/v1/instances/${encodeURIComponent(currentSettingsInstanceId)}/settings`, {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      });
+
+      showToast('Configurações salvas com sucesso!');
+      closeModal(elements.modalSettings);
+      await loadInstances();
+    } catch (err) {
+      showToast(`Erro ao salvar opções: ${err.message}`, 'error');
+    } finally {
+      elements.btnSaveSettings.disabled = false;
+      elements.btnSaveSettings.textContent = 'Salvar Alterações';
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // AÇÕES RÁPIDAS (RESTART & DELETE)
+  // ---------------------------------------------------------------------------
+
+  async function restartInstance(instanceId) {
+    try {
+      showToast(`Reiniciando conexão da instância ${instanceId}...`);
+      await api(`/api/v1/instances/${encodeURIComponent(instanceId)}/restart`, { method: 'POST' });
+      showToast(`Instância ${instanceId} reiniciada com sucesso.`);
+      await loadInstances();
+    } catch (err) {
+      showToast(`Falha ao reiniciar: ${err.message}`, 'error');
+    }
+  }
+
+  async function deleteInstance(instanceId) {
+    const inst = instances.find(i => i.id === instanceId);
+    const name = inst ? inst.nome : instanceId;
+
+    const confirmed = window.confirm(
+      `Deseja realmente excluir a instância "${name}"?\nEsta ação desconectará o WhatsApp e removerá o cadastro no banco.`
+    );
+    if (!confirmed) return;
+
+    try {
+      await api(`/api/v1/instances/${encodeURIComponent(instanceId)}`, { method: 'DELETE' });
+      showToast(`Instância "${name}" excluída.`);
+      await loadInstances();
+    } catch (err) {
+      showToast(`Erro ao excluir: ${err.message}`, 'error');
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // EVENT LISTENERS GERAIS
+  // ---------------------------------------------------------------------------
+
+  // Fechar modais pelos botões data-close
+  document.querySelectorAll('[data-close]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const targetId = btn.getAttribute('data-close');
+      const targetEl = document.getElementById(targetId);
+      if (targetEl) closeModal(targetEl);
+    });
+  });
+
+  // Fechar modais ao clicar no backdrop escuro
+  document.querySelectorAll('.modal-backdrop').forEach(backdrop => {
+    backdrop.addEventListener('click', (e) => {
+      if (e.target === backdrop) closeModal(backdrop);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // NAVEGAÇÃO DE PÁGINAS / ABAS PRINCIPAIS
+  // ---------------------------------------------------------------------------
+
+  function switchPageTab(targetTabId) {
+    activePageTab = targetTabId;
+    elements.pageTabs.forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.pageTab === targetTabId);
+    });
+
+    elements.pageContents.forEach(content => {
+      content.classList.toggle('active', content.id === targetTabId);
+    });
+
+    if (targetTabId === 'tab-financeiro') {
+      loadFinanceData();
+    } else if (targetTabId === 'tab-ia' || targetTabId === 'tab-modelos') {
+      if (activeIaSubTab === 'subtab-conhecimento') {
+        loadKnowledge();
+      } else {
+        loadModels();
+      }
+    }
+  }
+
+  function switchIaSubTab(subTabId) {
+    activeIaSubTab = subTabId;
+    elements.iaSubTabs.forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.iaSubtab === subTabId);
+    });
+
+    elements.iaSubcontents.forEach(content => {
+      content.classList.toggle('active', content.id === subTabId);
+    });
+
+    if (subTabId === 'subtab-conhecimento') {
+      loadKnowledge();
+    } else {
+      loadModels();
+    }
+  }
+
+  elements.pageTabs.forEach(btn => {
+    btn.addEventListener('click', () => switchPageTab(btn.dataset.pageTab));
+  });
+
+  elements.iaSubTabs.forEach(btn => {
+    btn.addEventListener('click', () => switchIaSubTab(btn.dataset.iaSubtab));
+  });
+
+  // Filtro de período (mes_atual / 7 / 30 / custom)
+  elements.pillBtns.forEach(btn => {
+    btn.addEventListener('click', () => {
+      const period = btn.dataset.period;
+      if (period === currentFinancePeriod) return;
+      currentFinancePeriod = period;
+      elements.pillBtns.forEach(b => b.classList.toggle('active', b === btn));
+
+      if (period === 'custom') {
+        if (elements.financeCustomDates) elements.financeCustomDates.classList.remove('hidden');
+        const now = new Date();
+        const startStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+        const endStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+        if (elements.financeDateStart && !elements.financeDateStart.value) elements.financeDateStart.value = startStr;
+        if (elements.financeDateEnd && !elements.financeDateEnd.value) elements.financeDateEnd.value = endStr;
+      } else {
+        if (elements.financeCustomDates) elements.financeCustomDates.classList.add('hidden');
+        loadFinanceData();
+      }
+    });
+  });
+
+  if (elements.btnApplyFinanceDates) {
+    elements.btnApplyFinanceDates.addEventListener('click', () => {
+      const start = elements.financeDateStart?.value;
+      const end = elements.financeDateEnd?.value;
+      if (!start || !end) {
+        showToast('Selecione as datas de início e fim.', 'error');
+        return;
+      }
+      if (start > end) {
+        showToast('A data inicial não pode ser posterior à data final.', 'error');
+        return;
+      }
+      loadFinanceData();
+    });
+  }
+
+  // Alternador de visão diária: Gráfico vs Tabela
+  if (elements.btnToggleDailyView) {
+    elements.btnToggleDailyView.addEventListener('click', () => {
+      financeDailyTableView = !financeDailyTableView;
+      elements.dailyChartContainer.classList.toggle('hidden', financeDailyTableView);
+      elements.dailyTableContainer.classList.toggle('hidden', !financeDailyTableView);
+      elements.btnToggleDailyView.textContent = financeDailyTableView ? 'Ver em Gráfico' : 'Ver em Tabela';
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // DASHBOARD FINANCEIRO: CARREGAMENTO E RENDERIZAÇÃO CLIENT-SIDE
+  // ---------------------------------------------------------------------------
+
+  function formatCurrency(val) {
+    const num = Number(val || 0);
+    if (num > 0 && num < 0.01) {
+      return `$${num.toFixed(4)}`;
+    }
+    return `$${num.toFixed(2)}`;
+  }
+
+  // Offloading de processamento: construção contínua da série diária no cliente
+  function buildClientContinuousSeries(rawSeries, inicioStr, fimStr) {
+    const map = new Map();
+    (rawSeries || []).forEach(r => {
+      map.set(r.dia, {
+        dia: r.dia,
+        custo_usd: Number(r.custo_usd || 0),
+        tokens: Number(r.tokens || 0),
+        requisicoes: Number(r.requisicoes || 0)
+      });
+    });
+
+    if (!inicioStr || !fimStr) return Array.from(map.values());
+
+    const start = new Date(`${inicioStr}T00:00:00`);
+    const end = new Date(`${fimStr}T00:00:00`);
+    if (isNaN(start.getTime()) || isNaN(end.getTime()) || start > end) {
+      return Array.from(map.values());
+    }
+
+    const result = [];
+    const curr = new Date(start);
+    let safety = 0;
+    while (curr <= end && safety < 366) {
+      const y = curr.getFullYear();
+      const m = String(curr.getMonth() + 1).padStart(2, '0');
+      const d = String(curr.getDate()).padStart(2, '0');
+      const chave = `${y}-${m}-${d}`;
+      if (map.has(chave)) {
+        result.push(map.get(chave));
+      } else {
+        result.push({ dia: chave, custo_usd: 0, tokens: 0, requisicoes: 0 });
+      }
+      curr.setDate(curr.getDate() + 1);
+      safety++;
+    }
+    return result;
+  }
+
+  async function loadFinanceData() {
+    try {
+      let queryParam = '';
+      if (currentFinancePeriod === 'custom') {
+        const start = elements.financeDateStart?.value;
+        const end = elements.financeDateEnd?.value;
+        queryParam = `inicio=${encodeURIComponent(start)}&fim=${encodeURIComponent(end)}`;
+      } else if (currentFinancePeriod === 'mes_atual') {
+        queryParam = 'periodo=mes_atual';
+      } else {
+        queryParam = `dias=${currentFinancePeriod}`;
+      }
+
+      const res = await api(`/api/v1/financeiro?${queryParam}`);
+      financeData = res.data || {};
+      renderFinanceDashboard();
+    } catch (err) {
+      console.error('[finance] Erro ao carregar dados:', err);
+      showToast(`Falha ao carregar dados financeiros: ${err.message}`, 'error');
+    }
+  }
+
+  function renderFinanceDashboard() {
+    if (!financeData) return;
+    const { kpis = {}, kpis_anteriores = {}, serie_diaria = [], por_cliente = [], por_modelo = [], inicio, fim } = financeData;
+
+    const seriesContinous = buildClientContinuousSeries(serie_diaria, inicio, fim);
+
+    renderKPIs(kpis, kpis_anteriores);
+    renderDailyAreaChart(seriesContinous);
+    renderDailyTable(seriesContinous);
+    renderClientRanking(por_cliente);
+    renderModelRanking(por_modelo);
+    renderFinanceClientsTable(por_cliente);
+  }
+
+  function formatDelta(current, prev) {
+    if (!prev || prev === 0) {
+      return { text: current > 0 ? '+100%' : '0%', class: 'neutral' };
+    }
+    const diff = current - prev;
+    const pct = ((diff / prev) * 100).toFixed(1);
+    if (diff > 0) {
+      return { text: `+${pct}%`, class: 'up' };
+    } else if (diff < 0) {
+      return { text: `${pct}%`, class: 'down' };
+    }
+    return { text: '0%', class: 'neutral' };
+  }
+
+  function renderKPIs(kpis, kpisPrev) {
+    const custo = Number(kpis.custo_usd || 0);
+    const prevCusto = Number(kpisPrev.custo_usd || 0);
+    const reqs = Number(kpis.requisicoes || 0);
+    const prevReqs = Number(kpisPrev.requisicoes || 0);
+    const tokens = Number(kpis.tokens_total || 0);
+    const prevTokens = Number(kpisPrev.tokens_total || 0);
+    const tokensCached = Number(kpis.tokens_cached || 0);
+
+    const deltaCusto = formatDelta(custo, prevCusto);
+    const deltaReqs = formatDelta(reqs, prevReqs);
+    const deltaTokens = formatDelta(tokens, prevTokens);
+
+    elements.kpiCusto.textContent = formatCurrency(custo);
+    elements.kpiCustoDelta.textContent = deltaCusto.text;
+    elements.kpiCustoDelta.className = `delta-badge ${deltaCusto.class}`;
+
+    elements.kpiRequisicoes.textContent = reqs.toLocaleString('pt-BR');
+    elements.kpiReqsDelta.textContent = deltaReqs.text;
+    elements.kpiReqsDelta.className = `delta-badge ${deltaReqs.class}`;
+
+    elements.kpiTokens.textContent = tokens.toLocaleString('pt-BR');
+    elements.kpiTokensDelta.textContent = deltaTokens.text;
+    elements.kpiTokensDelta.className = `delta-badge ${deltaTokens.class}`;
+
+    const promptT = Number(kpis.tokens_prompt || 0);
+    const compT = Number(kpis.tokens_completion || 0);
+    elements.kpiTokensSplit.textContent = `${promptT.toLocaleString('pt-BR')} prompt / ${compT.toLocaleString('pt-BR')} completion`;
+
+    const cacheRate = tokens > 0 ? ((tokensCached / tokens) * 100).toFixed(1) : '0.0';
+    elements.kpiCacheRate.textContent = `${cacheRate}%`;
+    elements.kpiCustoMedio.textContent = reqs > 0
+      ? `Custo médio: $${(custo / reqs < 0.01 ? (custo / reqs).toFixed(4) : (custo / reqs).toFixed(2))} / req`
+      : 'Custo médio: $0.00 / req';
+
+    // Cálculos 100% no cliente (browser) para zero impacto no servidor pai
+    const avgTokensPerReq = reqs > 0 ? Math.round(tokens / reqs) : 0;
+
+    let reqsPorDolarText = '--';
+    let msgsPorDolarText = '--';
+    let tokensPorDolarText = '--';
+
+    if (custo > 0) {
+      const rpd = Math.round(reqs / custo);
+      const tpd = Math.round(tokens / custo);
+      reqsPorDolarText = rpd.toLocaleString('pt-BR');
+      msgsPorDolarText = Math.round(rpd * 0.8).toLocaleString('pt-BR');
+      tokensPorDolarText = tpd >= 1000000
+        ? `${(tpd / 1000000).toFixed(2)}M`
+        : tpd.toLocaleString('pt-BR');
+    } else if (reqs > 0) {
+      reqsPorDolarText = 'Ilimitado';
+      msgsPorDolarText = 'Ilimitado';
+      tokensPorDolarText = 'Ilimitado';
+    }
+
+    if (elements.kpiReqsPorDolar) elements.kpiReqsPorDolar.textContent = reqsPorDolarText;
+    if (elements.kpiMsgsPorDolar) elements.kpiMsgsPorDolar.textContent = msgsPorDolarText;
+    if (elements.kpiTokensPorDolar) elements.kpiTokensPorDolar.textContent = tokensPorDolarText;
+    if (elements.kpiMediaTokensMsg) elements.kpiMediaTokensMsg.textContent = `${avgTokensPerReq.toLocaleString('pt-BR')} tok`;
+  }
+
+  // Gráfico Diário de Área em SVG Puro
+  function renderDailyAreaChart(series) {
+    const container = elements.dailyChartContainer;
+    if (!container) return;
+
+    if (!series || series.length === 0 || series.every(s => s.custo_usd === 0)) {
+      container.innerHTML = `
+        <div class="empty-state">
+          <svg class="empty-state-icon" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/></svg>
+          <p class="text-xs">Nenhum custo registrado nos últimos ${currentFinancePeriod} dias.</p>
+        </div>
+      `;
+      return;
+    }
+
+    const width = container.clientWidth || 800;
+    const height = 240;
+    const padding = { top: 20, right: 20, bottom: 30, left: 60 };
+    const innerW = width - padding.left - padding.right;
+    const innerH = height - padding.top - padding.bottom;
+
+    const maxVal = Math.max(...series.map(s => s.custo_usd), 0.001);
+    const points = series.map((s, idx) => {
+      const x = padding.left + (idx / (series.length - 1 || 1)) * innerW;
+      const y = padding.top + innerH - (s.custo_usd / maxVal) * innerH;
+      return { x, y, ...s };
+    });
+
+    const pathLine = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' ');
+    const pathArea = `${pathLine} L ${padding.left + innerW} ${padding.top + innerH} L ${padding.left} ${padding.top + innerH} Z`;
+
+    // Linhas de grade e ticks do eixo Y (4 linhas)
+    const yTicks = [0, 0.33, 0.66, 1].map(frac => {
+      const y = padding.top + innerH - frac * innerH;
+      const val = (frac * maxVal).toFixed(4);
+      return `
+        <line class="chart-gridline" x1="${padding.left}" y1="${y}" x2="${padding.left + innerW}" y2="${y}" />
+        <text class="chart-axis-text" x="${padding.left - 8}" y="${y + 3}" text-anchor="end">$${val}</text>
+      `;
+    }).join('');
+
+    // Rótulos do eixo X (amostras com espaçamento)
+    const step = Math.ceil(series.length / 7);
+    const xLabels = points.filter((_, idx) => idx % step === 0 || idx === points.length - 1).map(p => {
+      const parts = p.dia.split('-');
+      const label = `${parts[2]}/${parts[1]}`;
+      return `
+        <text class="chart-axis-text" x="${p.x}" y="${height - 10}" text-anchor="middle">${label}</text>
+      `;
+    }).join('');
+
+    container.innerHTML = `
+      <svg class="svg-chart" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">
+        ${yTicks}
+        <path class="chart-area" d="${pathArea}" />
+        <path class="chart-line" d="${pathLine}" />
+        ${points.map(p => `
+          <circle class="chart-point" cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" data-dia="${p.dia}" data-custo="${p.custo_usd}">
+            <title>${p.dia}: $${p.custo_usd.toFixed(6)} (${p.tokens.toLocaleString('pt-BR')} tokens, ${p.requisicoes} reqs)</title>
+          </circle>
+        `).join('')}
+        ${xLabels}
+      </svg>
+    `;
+  }
+
+  function renderDailyTable(series) {
+    if (!elements.dailyTbody) return;
+    if (!series || series.length === 0) {
+      elements.dailyTbody.innerHTML = '<tr><td colspan="4" class="text-center py-8 text-muted">Sem dados.</td></tr>';
+      return;
+    }
+
+    elements.dailyTbody.innerHTML = [...series].reverse().map(s => `
+      <tr>
+        <td><code>${s.dia}</code></td>
+        <td>$${s.custo_usd.toFixed(6)}</td>
+        <td>${s.tokens.toLocaleString('pt-BR')}</td>
+        <td class="text-right">${s.requisicoes.toLocaleString('pt-BR')}</td>
+      </tr>
+    `).join('');
+  }
+
+  // Gráfico de Barras Horizontais: Custo por Cliente
+  function renderClientRanking(clients) {
+    const container = elements.clientChartContainer;
+    if (!container) return;
+
+    const top = (clients || []).slice(0, 5);
+    if (top.length === 0 || top.every(c => c.custo_usd === 0)) {
+      container.innerHTML = `
+        <div class="empty-state">
+          <p class="text-xs">Nenhum custo por cliente registrado no período.</p>
+        </div>
+      `;
+      return;
+    }
+
+    const maxVal = Math.max(...top.map(c => c.custo_usd), 0.0001);
+    const barHeight = 20;
+    const gap = 14;
+    const height = top.length * (barHeight + gap) + 10;
+
+    container.innerHTML = `
+      <svg class="svg-chart" viewBox="0 0 400 ${height}" style="height: ${height}px;">
+        ${top.map((c, i) => {
+          const y = i * (barHeight + gap) + 5;
+          const w = Math.max(4, Math.min(260, (c.custo_usd / maxVal) * 260));
+          const nomeTrunc = (c.nome || c.cliente_id).slice(0, 16);
+          return `
+            <text class="chart-bar-label" x="0" y="${y + 14}">${escapeHtml(nomeTrunc)}</text>
+            <rect class="chart-bar-bg" x="110" y="${y}" width="260" height="${barHeight}" />
+            <rect class="chart-bar-rect" x="110" y="${y}" width="${w}" height="${barHeight}">
+              <title>${escapeHtml(c.nome)}: $${c.custo_usd.toFixed(6)}</title>
+            </rect>
+            <text class="chart-bar-val" x="380" y="${y + 14}" text-anchor="end">$${c.custo_usd.toFixed(4)}</text>
+          `;
+        }).join('')}
+      </svg>
+    `;
+  }
+
+  // Gráfico de Barras Horizontais: Tokens por Modelo
+  function renderModelRanking(models) {
+    const container = elements.modelChartContainer;
+    if (!container) return;
+
+    const top = (models || []).slice(0, 5);
+    if (top.length === 0 || top.every(m => m.tokens === 0)) {
+      container.innerHTML = `
+        <div class="empty-state">
+          <p class="text-xs">Nenhum consumo por modelo registrado no período.</p>
+        </div>
+      `;
+      return;
+    }
+
+    const maxVal = Math.max(...top.map(m => m.tokens), 1);
+    const barHeight = 20;
+    const gap = 14;
+    const height = top.length * (barHeight + gap) + 10;
+
+    container.innerHTML = `
+      <svg class="svg-chart" viewBox="0 0 400 ${height}" style="height: ${height}px;">
+        ${top.map((m, i) => {
+          const y = i * (barHeight + gap) + 5;
+          const w = Math.max(4, Math.min(250, (m.tokens / maxVal) * 250));
+          const label = m.modelo.slice(0, 15);
+          return `
+            <text class="chart-bar-label" x="0" y="${y + 14}">${escapeHtml(label)}</text>
+            <rect class="chart-bar-bg" x="110" y="${y}" width="250" height="${barHeight}" />
+            <rect class="chart-bar-rect" x="110" y="${y}" width="${w}" height="${barHeight}">
+              <title>${escapeHtml(m.provedor)} / ${escapeHtml(m.modelo)}: ${m.tokens.toLocaleString('pt-BR')} tokens</title>
+            </rect>
+            <text class="chart-bar-val" x="390" y="${y + 14}" text-anchor="end">${m.tokens.toLocaleString('pt-BR')}</text>
+          `;
+        }).join('')}
+      </svg>
+    `;
+  }
+
+  // Tabela Detalhada por Cliente (Data Table)
+  function renderFinanceClientsTable(clients) {
+    if (!elements.financeClientsTbody) return;
+
+    const term = (elements.financeSearchInput?.value || '').trim().toLowerCase();
+    const filtered = (clients || []).filter(c => {
+      const nome = (c.nome || '').toLowerCase();
+      const id = (c.cliente_id || '').toLowerCase();
+      return nome.includes(term) || id.includes(term);
+    });
+
+    if (filtered.length === 0) {
+      elements.financeClientsTbody.innerHTML = `
+        <tr>
+          <td colspan="6" class="text-center py-8 text-muted">
+            ${term ? 'Nenhum cliente encontrado para o filtro.' : 'Nenhum registro de uso de tokens encontrado.'}
+          </td>
+        </tr>
+      `;
+      return;
+    }
+
+    elements.financeClientsTbody.innerHTML = filtered.map(c => {
+      const custoNum = Number(c.custo_usd || 0);
+      const tokensNum = Number(c.tokens || 0);
+      const cacheRate = tokensNum > 0 ? ((Number(c.tokens_cached || 0) / tokensNum) * 100).toFixed(1) : '0.0';
+
+      return `
+        <tr>
+          <td>
+            <strong>${escapeHtml(c.nome)}</strong>
+            <div class="text-muted text-xs"><code>${escapeHtml(c.cliente_id)}</code></div>
+          </td>
+          <td>${Number(c.requisicoes || 0).toLocaleString('pt-BR')}</td>
+          <td>${tokensNum.toLocaleString('pt-BR')}</td>
+          <td>${cacheRate}%</td>
+          <td class="font-bold">${formatCurrency(custoNum)}</td>
+          <td class="text-right">
+            <button class="btn btn-xs btn-secondary" data-action="billing" data-id="${escapeHtml(String(c.cliente_id))}" data-nome="${escapeHtml(String(c.nome))}" data-custo="${custoNum}" title="Gerar cobrança e link de pagamento">
+              Cobrança
+            </button>
+          </td>
+        </tr>
+      `;
+    }).join('');
+  }
+
+  function openBillingModal(clienteId, clienteNome, custo) {
+    if (elements.billingModalClientName) elements.billingModalClientName.textContent = clienteNome || clienteId;
+    if (elements.billingModalCost) elements.billingModalCost.textContent = formatCurrency(custo);
+    if (elements.billingPaymentLink) {
+      const slug = (clienteId || 'cli').replace(/[^a-zA-Z0-9_-]/g, '');
+      const mesAno = new Date().toISOString().slice(0, 7).replace('-', '');
+      elements.billingPaymentLink.value = `https://pay.anneia.app/inv_${slug}_${mesAno}`;
+    }
+    openModal(elements.modalBillingClient);
+  }
+
+  if (elements.btnCopyBillingLink) {
+    elements.btnCopyBillingLink.addEventListener('click', async () => {
+      const link = elements.billingPaymentLink?.value;
+      if (!link) return;
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(link);
+        } else {
+          const ta = document.createElement('textarea');
+          ta.value = link;
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+        }
+        showToast('Link de pagamento copiado com sucesso!');
+      } catch (e) {
+        showToast('Erro ao copiar link de pagamento', 'error');
+      }
+    });
+  }
+
+  if (elements.financeSearchInput) {
+    elements.financeSearchInput.addEventListener('input', () => {
+      if (financeData?.por_cliente) {
+        renderFinanceClientsTable(financeData.por_cliente);
+      }
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // GESTÃO E TESTE DE MODELOS DE IA
+  // ---------------------------------------------------------------------------
+
+  async function checkNineRouterStatus() {
+    try {
+      const res = await api('/api/v1/9router/status');
+      if (elements.gatewayEndpointDisplay) {
+        elements.gatewayEndpointDisplay.textContent = res.gateway_url || 'http://9router:20000/v1';
+      }
+
+      if (res.healthy) {
+        if (elements.gatewayStatusDot) elements.gatewayStatusDot.className = 'badge-dot bg-success';
+        if (elements.gatewayStatusBadge) {
+          elements.gatewayStatusBadge.textContent = 'Conectado / Online';
+          elements.gatewayStatusBadge.className = 'badge badge-open';
+        }
+      } else {
+        if (elements.gatewayStatusDot) elements.gatewayStatusDot.className = 'badge-dot bg-danger';
+        if (elements.gatewayStatusBadge) {
+          elements.gatewayStatusBadge.textContent = 'Indisponível';
+          elements.gatewayStatusBadge.className = 'badge badge-close';
+        }
+      }
+
+      nineRouterModels = Array.isArray(res.models) ? res.models : [];
+      if (elements.gatewayModelsCount) {
+        elements.gatewayModelsCount.textContent = `${nineRouterModels.length} modelos descobertos`;
+      }
+
+      // Preenche datalist para autocompletion no cadastro
+      if (elements.datalist9RouterModels) {
+        elements.datalist9RouterModels.innerHTML = nineRouterModels.map(m => {
+          const label = m.owned_by ? `${m.id} (${m.owned_by})` : m.id;
+          return `<option value="${escapeHtml(m.id)}">${escapeHtml(label)}</option>`;
+        }).join('');
+      }
+    } catch (err) {
+      console.warn('[9router] Erro ao checar status:', err.message);
+      if (elements.gatewayStatusBadge) {
+        elements.gatewayStatusBadge.textContent = 'Erro ao verificar';
+        elements.gatewayStatusBadge.className = 'badge badge-close';
+      }
+    }
+  }
+
+  async function loadModels() {
+    try {
+      const [res] = await Promise.all([
+        api('/api/v1/modelos'),
+        checkNineRouterStatus()
+      ]);
+      modelsList = Array.isArray(res.data) ? res.data : [];
+      renderModels();
+    } catch (err) {
+      console.error('[models] Erro ao carregar modelos:', err);
+      showToast(`Falha ao carregar catálogo de modelos: ${err.message}`, 'error');
+    }
+  }
+
+  function renderModels() {
+    if (!elements.modelosTbody) return;
+
+    const term = (elements.modelosSearchInput?.value || '').toLowerCase().trim();
+    const filtered = modelsList.filter(m => {
+      const p = (m.provedor || '').toLowerCase();
+      const n = (m.modelo || '').toLowerCase();
+      return p.includes(term) || n.includes(term);
+    });
+
+    // Métricas
+    const total = modelsList.length;
+    const ativos = modelsList.filter(m => m.ativo).length;
+    const avgIn = total > 0 ? (modelsList.reduce((acc, m) => acc + Number(m.input_per_1m || 0), 0) / total) : 0;
+    const avgOut = total > 0 ? (modelsList.reduce((acc, m) => acc + Number(m.output_per_1m || 0), 0) / total) : 0;
+
+    if (elements.metricModelosTotal) elements.metricModelosTotal.textContent = total;
+    if (elements.metricModelosAtivos) elements.metricModelosAtivos.textContent = ativos;
+    if (elements.metricModelosAvgIn) elements.metricModelosAvgIn.textContent = `$${avgIn.toFixed(4)}`;
+    if (elements.metricModelosAvgOut) elements.metricModelosAvgOut.textContent = `$${avgOut.toFixed(4)}`;
+
+    if (filtered.length === 0) {
+      elements.modelosTbody.innerHTML = `
+        <tr>
+          <td colspan="7" class="text-center py-8 text-muted">
+            ${term ? 'Nenhum modelo encontrado para o termo pesquisado.' : 'Nenhum modelo cadastrado.'}
+          </td>
+        </tr>
+      `;
+      return;
+    }
+
+    elements.modelosTbody.innerHTML = filtered.map(m => {
+      const statusBadge = m.ativo
+        ? '<span class="badge badge-model-active">Ativo</span>'
+        : '<span class="badge badge-model-inactive">Inativo</span>';
+
+      const provEsc = escapeHtml(m.provedor || '');
+      const modEsc = escapeHtml(m.modelo || '');
+
+      let tierBadge = '<span class="badge badge-tier-1">Nível 1</span>';
+      if (m.tier === 'tier_2') {
+        tierBadge = '<span class="badge badge-tier-2">Nível 2</span>';
+      } else if (m.tier === 'tier_3') {
+        tierBadge = '<span class="badge badge-tier-3">Nível 3</span>';
+      }
+
+      return `
+        <tr>
+          <td><span class="badge badge-outline">${provEsc}</span></td>
+          <td><strong>${modEsc}</strong></td>
+          <td>${tierBadge}</td>
+          <td>$${Number(m.input_per_1m || 0).toFixed(4)}</td>
+          <td>$${Number(m.output_per_1m || 0).toFixed(4)}</td>
+          <td>$${Number(m.cached_per_1m || 0).toFixed(4)}</td>
+          <td>${statusBadge}</td>
+          <td class="text-right">
+            <div class="action-buttons justify-end">
+              <button class="btn btn-xs btn-secondary" data-action="test-model" data-id="${escapeHtml(String(m.id))}" title="Testar resposta e latência via 9Router">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                Testar
+              </button>
+              <button class="btn btn-xs btn-secondary" data-action="edit-model" data-id="${escapeHtml(String(m.id))}" title="Editar modelo e precificação">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                Editar
+              </button>
+              <button class="btn btn-xs btn-secondary text-danger" data-action="delete-model" data-id="${escapeHtml(String(m.id))}" title="Excluir ou desativar modelo">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+              </button>
+            </div>
+          </td>
+        </tr>
+      `;
+    }).join('');
+  }
+
+  function openModelModal(modelId = null) {
+    elements.formModelo.reset();
+    if (modelId !== null && modelId !== undefined && modelId !== '') {
+      const model = modelsList.find(m => String(m.id) === String(modelId));
+      if (!model) return;
+      elements.modalModeloTitle.textContent = 'Editar Modelo de IA';
+      elements.modeloId.value = model.id;
+      elements.modeloProvedor.value = model.provedor || '';
+      elements.modeloNome.value = model.modelo || '';
+      if (elements.modeloTier) elements.modeloTier.value = model.tier || 'tier_1';
+      elements.modeloInput.value = model.input_per_1m ?? 0;
+      elements.modeloOutput.value = model.output_per_1m ?? 0;
+      elements.modeloCached.value = model.cached_per_1m ?? 0;
+      elements.modeloReasoning.value = model.reasoning_per_1m ?? 0;
+      elements.modeloAtivo.checked = model.ativo !== false;
+    } else {
+      elements.modalModeloTitle.textContent = 'Cadastrar Modelo de IA';
+      elements.modeloId.value = '';
+      elements.modeloProvedor.value = '';
+      elements.modeloNome.value = '';
+      if (elements.modeloTier) elements.modeloTier.value = 'tier_1';
+      elements.modeloInput.value = '0.00';
+      elements.modeloOutput.value = '0.00';
+      elements.modeloCached.value = '0.00';
+      elements.modeloReasoning.value = '0.00';
+      elements.modeloAtivo.checked = true;
+    }
+    openModal(elements.modalModelo);
+  }
+
+  async function saveModel(e) {
+    e.preventDefault();
+    const id = elements.modeloId.value ? parseInt(elements.modeloId.value, 10) : null;
+    const provedor = elements.modeloProvedor.value.trim().toLowerCase();
+    const modelo = elements.modeloNome.value.trim();
+    const tier = elements.modeloTier ? elements.modeloTier.value : 'tier_1';
+
+    if (!provedor || !modelo) {
+      showToast('Preencha o provedor e o nome do modelo.', 'error');
+      return;
+    }
+
+    const payload = {
+      provedor,
+      modelo,
+      tier,
+      input_per_1m: parseFloat(elements.modeloInput.value) || 0,
+      output_per_1m: parseFloat(elements.modeloOutput.value) || 0,
+      cached_per_1m: parseFloat(elements.modeloCached.value) || 0,
+      reasoning_per_1m: parseFloat(elements.modeloReasoning.value) || 0,
+      ativo: elements.modeloAtivo.checked
+    };
+
+    try {
+      if (id) {
+        await api(`/api/v1/modelos/${id}`, {
+          method: 'PUT',
+          body: JSON.stringify(payload)
+        });
+        showToast('Modelo atualizado com sucesso.');
+      } else {
+        await api('/api/v1/modelos', {
+          method: 'POST',
+          body: JSON.stringify(payload)
+        });
+        showToast('Modelo cadastrado com sucesso.');
+      }
+      closeModal(elements.modalModelo);
+      await loadModels();
+    } catch (err) {
+      showToast(`Falha ao salvar modelo: ${err.message}`, 'error');
+    }
+  }
+
+  async function deleteModel(id) {
+    const mod = modelsList.find(m => String(m.id) === String(id));
+    if (!mod) return;
+
+    const confirmed = window.confirm(`Deseja remover ou desativar o modelo "${mod.provedor}/${mod.modelo}"?`);
+    if (!confirmed) return;
+
+    try {
+      const res = await api(`/api/v1/modelos/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      showToast(res.message || 'Operação realizada.');
+      await loadModels();
+    } catch (err) {
+      showToast(`Erro ao excluir: ${err.message}`, 'error');
+    }
+  }
+
+  async function testModel(id) {
+    const mod = modelsList.find(m => String(m.id) === String(id));
+    if (!mod) return;
+
+    elements.modalTestTitle.textContent = `Teste: ${mod.provedor}/${mod.modelo}`;
+    elements.modalTestSubtitle.textContent = 'Enviando ping de teste para o gateway 9Router...';
+    elements.testLoading.classList.remove('hidden');
+    elements.testResultBox.classList.add('hidden');
+    if (elements.testEndpointUrl) {
+      elements.testEndpointUrl.textContent = 'Consultando gateway...';
+    }
+    openModal(elements.modalTestModel);
+
+    try {
+      const res = await api(`/api/v1/modelos/${encodeURIComponent(id)}/testar`, { method: 'POST' });
+      elements.testLoading.classList.add('hidden');
+      elements.testResultBox.classList.remove('hidden');
+
+      if (elements.testEndpointUrl) {
+        elements.testEndpointUrl.textContent = res.endpoint_url || 'http://9router:20000/v1/chat/completions';
+      }
+
+      const latency = res.latency_ms || 0;
+      elements.testStatusCode.textContent = `${res.status_http || 200} OK`;
+      elements.testStatusCode.className = 'text-base font-semibold text-success';
+
+      let latClass = 'latency-fast';
+      if (latency > 2500) latClass = 'latency-slow';
+      else if (latency > 800) latClass = 'latency-medium';
+
+      elements.testLatency.textContent = `${latency} ms`;
+      elements.testLatency.className = `text-base font-semibold ${latClass}`;
+
+      elements.testModelEffective.textContent = res.modelo_retornado || mod.modelo;
+      if (elements.testReplyLabel) elements.testReplyLabel.textContent = 'Resposta da IA:';
+      elements.testReplyContent.textContent = res.resposta || '(sem conteúdo de texto)';
+    } catch (err) {
+      elements.testLoading.classList.add('hidden');
+      elements.testResultBox.classList.remove('hidden');
+
+      if (elements.testEndpointUrl) {
+        elements.testEndpointUrl.textContent = 'http://9router:20000/v1/chat/completions';
+      }
+
+      elements.testStatusCode.textContent = 'ERRO HTTP / 9ROUTER';
+      elements.testStatusCode.className = 'text-base font-semibold text-danger';
+
+      elements.testLatency.textContent = '--';
+      elements.testLatency.className = 'text-base font-semibold text-muted';
+
+      elements.testModelEffective.textContent = mod.modelo;
+      if (elements.testReplyLabel) elements.testReplyLabel.textContent = 'Diagnóstico / Erro retornado:';
+      elements.testReplyContent.textContent = `${err.message}\n\nDica: certifique-se de que o ID do modelo existe no 9Router e possui credencial/provedor configurado no gateway.`;
+    }
+  }
+
+  // Event Listeners dos Modelos
+  if (elements.btnNewModel) {
+    elements.btnNewModel.addEventListener('click', () => openModelModal(null));
+  }
+  if (elements.btnSync9Router) {
+    elements.btnSync9Router.addEventListener('click', async () => {
+      elements.btnSync9Router.disabled = true;
+      showToast('Sincronizando com gateway 9Router...');
+      await checkNineRouterStatus();
+      elements.btnSync9Router.disabled = false;
+      showToast('Modelos do 9Router sincronizados!');
+    });
+  }
+  if (elements.formModelo) {
+    elements.formModelo.addEventListener('submit', saveModel);
+  }
+  if (elements.modelosSearchInput) {
+    elements.modelosSearchInput.addEventListener('input', renderModels);
+  }
+
+  // Redimensionamento responsivo do gráfico diário
+  window.addEventListener('resize', () => {
+    if (activePageTab === 'tab-financeiro' && financeData?.serie_diaria) {
+      const { serie_diaria = [], inicio, fim } = financeData;
+      const continuous = buildClientContinuousSeries(serie_diaria, inicio, fim);
+      renderDailyAreaChart(continuous);
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // BASE DE CONHECIMENTO & RAG (pgvector)
+  // ---------------------------------------------------------------------------
+
+  function populateRagTenantOptions() {
+    if (!elements.ragTenantFilter && !elements.ragNewTenant) return;
+    const currentFilterVal = elements.ragTenantFilter?.value || 'all';
+
+    // Opções para o filtro de busca
+    if (elements.ragTenantFilter) {
+      elements.ragTenantFilter.innerHTML = '<option value="all">Todas as Empresas</option>';
+      instances.forEach(inst => {
+        const opt = document.createElement('option');
+        opt.value = inst.id;
+        opt.textContent = `${inst.nome || inst.id} (${inst.id})`;
+        elements.ragTenantFilter.appendChild(opt);
+      });
+      elements.ragTenantFilter.value = currentFilterVal;
+    }
+
+    // Opções para o modal de cadastro novo
+    if (elements.ragNewTenant) {
+      elements.ragNewTenant.innerHTML = '<option value="">Selecione o cliente...</option>';
+      instances.forEach(inst => {
+        const opt = document.createElement('option');
+        opt.value = inst.id;
+        opt.textContent = `${inst.nome || inst.id} (${inst.id})`;
+        elements.ragNewTenant.appendChild(opt);
+      });
+    }
+  }
+
+  async function loadKnowledgeStats() {
+    try {
+      const res = await api('/api/v1/conhecimento/stats');
+      if (!res?.data) return;
+      const s = res.data;
+
+      if (elements.metricRagTotal) elements.metricRagTotal.textContent = s.total_fragmentos || 0;
+      if (elements.metricRagTenants) elements.metricRagTenants.textContent = s.total_tenants || 0;
+      if (elements.metricRagAvgChars) elements.metricRagAvgChars.textContent = `${s.media_caracteres || 0} chars`;
+
+      if (elements.metricRagVetorStatus && elements.metricRagVetorSub) {
+        const total = (s.com_vetor || 0) + (s.sem_vetor || 0);
+        const pct = total > 0 ? Math.round((s.com_vetor / total) * 100) : 100;
+        elements.metricRagVetorStatus.textContent = `${pct}%`;
+        elements.metricRagVetorStatus.className = pct === 100 ? 'metric-value text-success' : 'metric-value text-warning';
+        elements.metricRagVetorSub.textContent = `${s.com_vetor || 0} indexados / ${s.sem_vetor || 0} pendentes`;
+      }
+    } catch (err) {
+      console.warn('[rag] Falha ao carregar métricas:', err.message);
+    }
+  }
+
+  async function loadKnowledge(page = 1) {
+    if (!elements.ragTbody) return;
+    populateRagTenantOptions();
+
+    elements.ragTbody.innerHTML = '<tr><td colspan="6" class="text-center py-8 text-muted">Carregando fragmentos da base...</td></tr>';
+
+    const tenant = elements.ragTenantFilter?.value || 'all';
+    const busca = (elements.ragSearchInput?.value || '').trim();
+    const limit = knowledgePagination.limit || 25;
+
+    let url = `/api/v1/conhecimento?page=${page}&limit=${limit}`;
+    if (tenant && tenant !== 'all') url += `&instance_id=${encodeURIComponent(tenant)}`;
+    if (busca) url += `&busca=${encodeURIComponent(busca)}`;
+
+    try {
+      const res = await api(url);
+      knowledgeDocs = res.data || [];
+      knowledgePagination = res.pagination || { page: 1, limit: 25, total: 0, totalPages: 1 };
+      renderKnowledge();
+      loadKnowledgeStats();
+    } catch (err) {
+      console.error('[rag] Erro ao listar conhecimento:', err);
+      elements.ragTbody.innerHTML = `<tr><td colspan="6" class="text-center py-8 text-danger">Falha ao carregar conhecimento: ${escapeHtml(err.message)}</td></tr>`;
+      showToast('Erro ao consultar base de conhecimento', 'error');
+    }
+  }
+
+  function renderKnowledge() {
+    if (!elements.ragTbody) return;
+
+    if (knowledgeDocs.length === 0) {
+      elements.ragTbody.innerHTML = '<tr><td colspan="6" class="text-center py-8 text-muted">Nenhum fragmento encontrado nesta consulta.</td></tr>';
+      updatePaginationControls();
+      return;
+    }
+
+    elements.ragTbody.innerHTML = knowledgeDocs.map(doc => {
+      const previewText = doc.text.length > 130 ? `${doc.text.substring(0, 130)}...` : doc.text;
+      const vetorBadge = doc.tem_vetor
+        ? `<span class="badge badge-model-active" title="Vetor de ${doc.dimensao_vetor || 3072} dimensões indexado">3072 dim</span>`
+        : `<span class="badge badge-model-inactive" title="Aguardando geração de embedding">Pendente</span>`;
+
+      // Formata tags de metadados
+      let metaSummary = '--';
+      if (doc.metadata && typeof doc.metadata === 'object' && Object.keys(doc.metadata).length > 0) {
+        metaSummary = Object.entries(doc.metadata)
+          .slice(0, 2)
+          .map(([k, v]) => `<span class="badge" style="font-size: 10px; background: rgba(255,255,255,0.06);">${escapeHtml(k)}: ${escapeHtml(String(v))}</span>`)
+          .join(' ');
+      }
+
+      return `
+        <tr>
+          <td>
+            <span class="font-mono text-xs text-muted font-semibold">#${doc.id}</span>
+          </td>
+          <td>
+            <div style="font-weight: 500;">${escapeHtml(doc.cliente_nome || doc.instance_id || 'Sem cliente')}</div>
+            <code class="font-mono text-xs text-muted">${escapeHtml(doc.instance_id || (doc.metadata && doc.metadata.instance_id) || '-')}</code>
+          </td>
+          <td>
+            <div style="max-width: 420px; line-height: 1.4; font-size: 0.8125rem;">${escapeHtml(previewText)}</div>
+            <div class="text-xs text-muted mt-1 font-mono">${doc.tamanho_caracteres || doc.text.length} chars</div>
+          </td>
+          <td>
+            <div>${metaSummary}</div>
+          </td>
+          <td>${vetorBadge}</td>
+          <td class="text-right">
+            <div style="display: inline-flex; gap: 4px;">
+              <button class="btn btn-xs btn-secondary" data-action="rag-view" data-id="${doc.id}" title="Ver conteúdo completo e metadados">
+                Ver
+              </button>
+              <button class="btn btn-xs btn-secondary" data-action="rag-copy" data-id="${doc.id}" title="Copiar texto do fragmento">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                Copiar
+              </button>
+              <button class="btn btn-xs btn-danger" data-action="rag-delete" data-id="${doc.id}" title="Excluir fragmento">
+                Excluir
+              </button>
+            </div>
+          </td>
+        </tr>
+      `;
+    }).join('');
+
+    updatePaginationControls();
+  }
+
+  function updatePaginationControls() {
+    const { page, total, totalPages } = knowledgePagination;
+    if (elements.ragPaginationInfo) {
+      elements.ragPaginationInfo.textContent = `Mostrando ${knowledgeDocs.length} de ${total} fragmento(s)`;
+    }
+    if (elements.ragPaginationCurrent) {
+      elements.ragPaginationCurrent.textContent = `Pág ${page} de ${Math.max(1, totalPages)}`;
+    }
+    if (elements.btnRagPrevPage) {
+      elements.btnRagPrevPage.disabled = page <= 1;
+    }
+    if (elements.btnRagNextPage) {
+      elements.btnRagNextPage.disabled = page >= totalPages;
+    }
+  }
+
+  async function openRagViewModal(id) {
+    let doc = knowledgeDocs.find(d => d.id === id);
+    if (!doc) {
+      try {
+        const res = await api(`/api/v1/conhecimento/${id}`);
+        doc = res.data;
+      } catch (err) {
+        showToast('Falha ao abrir detalhes do fragmento', 'error');
+        return;
+      }
+    }
+    if (!doc) return;
+
+    if (elements.ragViewTitle) elements.ragViewTitle.textContent = `Fragmento de Conhecimento #${doc.id}`;
+    if (elements.ragViewId) elements.ragViewId.textContent = String(doc.id);
+    if (elements.ragViewClient) elements.ragViewClient.textContent = `Cliente: ${doc.cliente_nome || doc.instance_id} (${doc.instance_id})`;
+    if (elements.ragViewChars) elements.ragViewChars.textContent = `${doc.tamanho_caracteres || doc.text.length} chars`;
+    if (elements.ragViewDims) elements.ragViewDims.textContent = doc.tem_vetor ? `${doc.dimensao_vetor || 3072} dims (indexado)` : 'Pendente de embedding';
+
+    if (elements.ragViewVetorBadge) {
+      elements.ragViewVetorBadge.textContent = doc.tem_vetor ? 'Vetor HNSW Ativo' : 'Vetor Pendente';
+      elements.ragViewVetorBadge.className = doc.tem_vetor ? 'badge badge-model-active' : 'badge badge-model-inactive';
+    }
+
+    if (elements.ragViewText) elements.ragViewText.textContent = doc.text;
+    if (elements.ragViewMetadata) {
+      elements.ragViewMetadata.textContent = JSON.stringify(doc.metadata || {}, null, 2);
+    }
+
+    // Configura botões de cópia do modal de visualização
+    if (elements.btnCopyRagText) {
+      elements.btnCopyRagText.onclick = () => {
+        navigator.clipboard.writeText(doc.text)
+          .then(() => showToast('Texto completo copiado!'))
+          .catch(() => showToast('Erro ao copiar', 'error'));
+      };
+    }
+    if (elements.btnCopyRagMetadata) {
+      elements.btnCopyRagMetadata.onclick = () => {
+        navigator.clipboard.writeText(JSON.stringify(doc.metadata || {}, null, 2))
+          .then(() => showToast('JSON de metadados copiado!'))
+          .catch(() => showToast('Erro ao copiar', 'error'));
+      };
+    }
+
+    openModal(elements.modalRagView);
+  }
+
+  function openRagNewModal(defaultTenantId = null) {
+    populateRagTenantOptions();
+    if (elements.formRagNew) elements.formRagNew.reset();
+    if (elements.ragNewTenant && defaultTenantId) {
+      elements.ragNewTenant.value = defaultTenantId;
+    }
+    if (elements.ragNewMetadata) {
+      elements.ragNewMetadata.value = '{"origem": "manual"}';
+    }
+    updateRagNewCounters();
+    openModal(elements.modalRagNew);
+  }
+
+  function updateRagNewCounters() {
+    if (!elements.ragNewText) return;
+    const count = elements.ragNewText.value.length;
+    const estTokens = Math.ceil(count / 4);
+    if (elements.ragNewCharCount) elements.ragNewCharCount.textContent = `${count} caracteres`;
+    if (elements.ragNewTokenEst) elements.ragNewTokenEst.textContent = `~${estTokens} tokens estimados`;
+  }
+
+  async function saveRagDoc(e) {
+    e.preventDefault();
+    const instance_id = elements.ragNewTenant?.value?.trim();
+    const text = elements.ragNewText?.value?.trim();
+    const rawMetadata = elements.ragNewMetadata?.value?.trim() || '{}';
+
+    if (!instance_id) return showToast('Selecione uma empresa / tenant', 'error');
+    if (!text) return showToast('Digite o texto do fragmento', 'error');
+
+    let metadata = {};
+    try {
+      metadata = JSON.parse(rawMetadata);
+    } catch (err) {
+      return showToast('Metadados devem ser um JSON válido', 'error');
+    }
+
+    try {
+      await api('/api/v1/conhecimento', {
+        method: 'POST',
+        body: JSON.stringify({ instance_id, text, metadata })
+      });
+      showToast('Fragmento cadastrado com sucesso!');
+      closeModal(elements.modalRagNew);
+      loadKnowledge(1);
+    } catch (err) {
+      showToast(err.message || 'Falha ao cadastrar fragmento', 'error');
+    }
+  }
+
+  async function deleteRagDoc(id) {
+    if (!confirm(`Deseja realmente remover o fragmento #${id} da base de conhecimento?`)) return;
+
+    try {
+      await api(`/api/v1/conhecimento/${id}`, { method: 'DELETE' });
+      showToast('Fragmento removido com sucesso!');
+      loadKnowledge(knowledgePagination.page || 1);
+    } catch (err) {
+      showToast(err.message || 'Falha ao remover fragmento', 'error');
+    }
+  }
+
+  function quickCopyRagText(id) {
+    const doc = knowledgeDocs.find(d => d.id === id);
+    if (!doc) return;
+    navigator.clipboard.writeText(doc.text)
+      .then(() => showToast('Texto copiado com sucesso!'))
+      .catch(() => showToast('Erro ao copiar', 'error'));
+  }
+
+  // Event Listeners da Base de Conhecimento
+  if (elements.btnNewRagDoc) {
+    elements.btnNewRagDoc.addEventListener('click', () => openRagNewModal());
+  }
+  if (elements.formRagNew) {
+    elements.formRagNew.addEventListener('submit', saveRagDoc);
+  }
+  if (elements.ragNewText) {
+    elements.ragNewText.addEventListener('input', updateRagNewCounters);
+  }
+  if (elements.ragTenantFilter) {
+    elements.ragTenantFilter.addEventListener('change', () => loadKnowledge(1));
+  }
+  if (elements.ragSearchInput) {
+    elements.ragSearchInput.addEventListener('input', () => {
+      clearTimeout(ragSearchDebounceTimer);
+      ragSearchDebounceTimer = setTimeout(() => {
+        loadKnowledge(1);
+      }, 300);
+    });
+  }
+  if (elements.btnRagPrevPage) {
+    elements.btnRagPrevPage.addEventListener('click', () => {
+      if (knowledgePagination.page > 1) {
+        loadKnowledge(knowledgePagination.page - 1);
+      }
+    });
+  }
+  if (elements.btnRagNextPage) {
+    elements.btnRagNextPage.addEventListener('click', () => {
+      if (knowledgePagination.page < knowledgePagination.totalPages) {
+        loadKnowledge(knowledgePagination.page + 1);
+      }
+    });
+  }
+
+  // Atalho dentro da Ficha do Cliente para abrir RAG filtrado
+  if (elements.btnFichaViewRag) {
+    elements.btnFichaViewRag.addEventListener('click', () => {
+      if (!currentFichaInstanceId) return;
+      closeModal(elements.modalFicha);
+      switchPageTab('tab-ia');
+      switchIaSubTab('subtab-conhecimento');
+      if (elements.ragTenantFilter) {
+        elements.ragTenantFilter.value = currentFichaInstanceId;
+      }
+      loadKnowledge(1);
+    });
+  }
+
+  // Fechar no Esc
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      document.querySelectorAll('.modal-backdrop:not(.hidden)').forEach(closeModal);
+    }
+  });
+
+  elements.searchInput.addEventListener('input', renderInstances);
+  elements.btnRefresh.addEventListener('click', () => {
+    loadInstances();
+    if (activePageTab === 'tab-financeiro') {
+      loadFinanceData();
+    } else if (activePageTab === 'tab-ia' || activePageTab === 'tab-modelos') {
+      if (activeIaSubTab === 'subtab-conhecimento') {
+        loadKnowledge(knowledgePagination.page || 1);
+      } else {
+        loadModels();
+      }
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // GESTÃO DE TEMA (CLARO / ESCURO)
+  // ---------------------------------------------------------------------------
+
+  function syncThemeIcons(theme) {
+    if (!elements.themeIconSun || !elements.themeIconMoon) return;
+    const isDark = theme === 'dark';
+    elements.themeIconSun.classList.toggle('hidden', !isDark);
+    elements.themeIconMoon.classList.toggle('hidden', isDark);
+  }
+
+  function initTheme() {
+    const currentTheme = document.documentElement.getAttribute('data-theme') || 'light';
+    syncThemeIcons(currentTheme);
+
+    if (elements.btnThemeToggle) {
+      elements.btnThemeToggle.addEventListener('click', () => {
+        const activeTheme = document.documentElement.getAttribute('data-theme') || 'light';
+        const nextTheme = activeTheme === 'dark' ? 'light' : 'dark';
+        document.documentElement.setAttribute('data-theme', nextTheme);
+        localStorage.setItem('anne_theme', nextTheme);
+        syncThemeIcons(nextTheme);
+      });
+    }
+
+    if (window.matchMedia) {
+      window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
+        if (!localStorage.getItem('anne_theme')) {
+          const sysTheme = e.matches ? 'dark' : 'light';
+          document.documentElement.setAttribute('data-theme', sysTheme);
+          syncThemeIcons(sysTheme);
+        }
+      });
+    }
+  }
+
+  // Delegação de eventos segura contra quebra de contexto sintático (anti-XSS)
+  if (elements.instancesTbody) {
+    elements.instancesTbody.addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-action]');
+      if (!btn) return;
+      const { action, id } = btn.dataset;
+      if (action === 'ficha') openFichaModal(id);
+      else if (action === 'connect') openConnectModal(id);
+      else if (action === 'restart') restartInstance(id);
+      else if (action === 'settings') openSettingsModal(id);
+      else if (action === 'delete') deleteInstance(id);
+    });
+  }
+
+  if (elements.financeClientsTbody) {
+    elements.financeClientsTbody.addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-action="billing"]');
+      if (!btn) return;
+      const { id, nome, custo } = btn.dataset;
+      openBillingModal(id, nome, parseFloat(custo || '0'));
+    });
+  }
+
+  if (elements.modelosTbody) {
+    elements.modelosTbody.addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-action]');
+      if (!btn) return;
+      const { action, id } = btn.dataset;
+      if (action === 'test-model') testModel(id);
+      else if (action === 'edit-model') openModelModal(id);
+      else if (action === 'delete-model') deleteModel(id);
+    });
+  }
+
+  if (elements.ragTbody) {
+    elements.ragTbody.addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-action]');
+      if (!btn) return;
+      const { action, id } = btn.dataset;
+      const docId = parseInt(id, 10);
+      if (isNaN(docId)) return;
+      if (action === 'rag-view') openRagViewModal(docId);
+      else if (action === 'rag-copy') quickCopyRagText(docId);
+      else if (action === 'rag-delete') deleteRagDoc(docId);
+    });
+  }
+
+  // Expõe métodos para chamadas inline nos botões da tabela
+  window.AnneUI = {
+    openFichaModal,
+    openConnectModal,
+    openSettingsModal,
+    restartInstance,
+    deleteInstance,
+    openModelModal,
+    deleteModel,
+    testModel,
+    openRagViewModal,
+    openRagNewModal,
+    deleteRagDoc,
+    quickCopyRagText,
+    openBillingModal
+  };
+
+  // Inicialização de Usuário e Autenticação
+  async function initAuthUser() {
+    try {
+      const res = await api('/api/v1/auth/me');
+      if (res.success && res.data) {
+        const nameEl = document.getElementById('current-user-name');
+        const roleEl = document.getElementById('current-user-role');
+        if (nameEl) nameEl.textContent = res.data.nome || res.data.email || 'Operador';
+        if (roleEl) roleEl.textContent = res.data.role || 'operador';
+      }
+    } catch (_e) {
+      // Redirecionamento de 401 gerenciado pelo helper api()
+    }
+  }
+
+  const btnLogout = document.getElementById('btn-logout');
+  if (btnLogout) {
+    btnLogout.addEventListener('click', async () => {
+      try {
+        await api('/api/v1/auth/logout', { method: 'POST' });
+      } catch (_e) {}
+      window.location.href = '/login.html';
+    });
+  }
+
+  // Inicialização
+  initTheme();
+  initAuthUser();
+  loadInstances();
+})();

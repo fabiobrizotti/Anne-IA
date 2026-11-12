@@ -1,0 +1,1110 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Anne-IA — Gestão de Instâncias</title>
+  <script>
+    (function() {
+      try {
+        var saved = localStorage.getItem('anne_theme');
+        var prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+        var theme = saved ? saved : (prefersDark ? 'dark' : 'light');
+        document.documentElement.setAttribute('data-theme', theme);
+      } catch (e) {}
+    })();
+  </script>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="layout">
+    <!-- Barra Superior -->
+    <header class="header">
+      <div class="brand">
+        <span class="logo-dot"></span>
+        <div>
+          <h1>Anne-IA</h1>
+          <p class="subtitle">Gestão de Instâncias e Clientes</p>
+        </div>
+      </div>
+      <div class="actions">
+        <span id="last-sync-time" class="last-sync">Atualizado em: --:--:--</span>
+        <div class="user-badge" id="user-badge" title="Operador conectado">
+          <span class="user-name" id="current-user-name">Operador</span>
+          <span class="user-role" id="current-user-role">admin</span>
+        </div>
+        <button id="btn-theme-toggle" class="btn btn-secondary btn-icon" title="Alternar tema claro/escuro" aria-label="Alternar tema">
+          <svg id="theme-icon-sun" class="hidden" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+          <svg id="theme-icon-moon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        </button>
+        <button id="btn-refresh" class="btn btn-secondary">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+          Atualizar
+        </button>
+        <button id="btn-new-instance" class="btn btn-primary">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          Nova Instância
+        </button>
+        <button id="btn-logout" class="btn btn-secondary btn-icon" title="Encerrar sessão" aria-label="Sair">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- Navegação de Abas do Topo -->
+    <nav class="page-nav">
+      <button class="page-tab active" data-page-tab="tab-instancias">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+        Instâncias e Clientes
+      </button>
+      <button class="page-tab" data-page-tab="tab-financeiro">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+        Painel Financeiro
+      </button>
+      <button class="page-tab" data-page-tab="tab-ia">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm0 18a8 8 0 1 1 8-8 8 8 0 0 1-8 8z"/><path d="M12 6v6l4 2"/></svg>
+        Inteligência Artificial (IA)
+      </button>
+    </nav>
+
+    <!-- ABA 1: Instâncias e Clientes -->
+    <div id="tab-instancias" class="page-content active">
+      <!-- Resumo de Métricas -->
+      <section class="metrics">
+        <div class="card metric-card">
+          <span class="metric-label">Total de Clientes</span>
+          <span id="metric-total" class="metric-value">0</span>
+        </div>
+        <div class="card metric-card">
+          <span class="metric-label">Instâncias Conectadas</span>
+          <span id="metric-open" class="metric-value text-success">0</span>
+        </div>
+        <div class="card metric-card">
+          <span class="metric-label">Aguardando Conexão</span>
+          <span id="metric-close" class="metric-value text-warning">0</span>
+        </div>
+      </section>
+
+      <!-- Tabela Principal -->
+      <main class="card table-card">
+        <div class="table-header">
+          <h2>Instâncias Ativas</h2>
+          <input type="text" id="search-input" placeholder="Buscar por cliente, ID ou telefone..." class="search-field">
+        </div>
+
+        <div class="table-responsive">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>Cliente</th>
+                <th>ID da Instância</th>
+                <th>WhatsApp</th>
+                <th>Status</th>
+                <th>Atualizado em</th>
+                <th class="text-right">Ações</th>
+              </tr>
+            </thead>
+            <tbody id="instances-tbody">
+              <tr>
+                <td colspan="6" class="text-center py-8 text-muted">Carregando instâncias...</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </main>
+    </div>
+
+    <!-- ABA 2: Painel Financeiro -->
+    <div id="tab-financeiro" class="page-content">
+      <!-- Barra de Filtro de Período -->
+      <div class="finance-filter-bar">
+        <div>
+          <h2 class="finance-title">Visão Geral de Custos e Consumo</h2>
+          <p class="subtitle text-xs">Acompanhamento de tokens, requisições de LLM e custos em USD agregados.</p>
+        </div>
+        <div class="finance-filter-actions">
+          <div class="pill-group">
+            <button class="pill-btn active" data-period="mes_atual">Mês Atual</button>
+            <button class="pill-btn" data-period="7">7 dias</button>
+            <button class="pill-btn" data-period="30">30 dias</button>
+            <button class="pill-btn" data-period="custom">Personalizado</button>
+          </div>
+          <div id="finance-custom-dates" class="finance-custom-dates hidden">
+            <label for="finance-date-start">De:</label>
+            <input type="date" id="finance-date-start" class="date-input">
+            <label for="finance-date-end">Até:</label>
+            <input type="date" id="finance-date-end" class="date-input">
+            <button id="btn-apply-finance-dates" class="btn btn-xs btn-primary">Filtrar</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- KPIs Financeiros (Estilo section-cards) -->
+      <section class="metrics finance-kpis">
+        <div class="card metric-card">
+          <div class="metric-header-row">
+            <span class="metric-label">Custo Total</span>
+            <span id="kpi-custo-delta" class="delta-badge">--</span>
+          </div>
+          <span id="kpi-custo" class="metric-value">$0.00</span>
+          <span class="metric-sublabel">Gasto no período selecionado</span>
+        </div>
+        <div class="card metric-card">
+          <div class="metric-header-row">
+            <span class="metric-label">Requisições LLM</span>
+            <span id="kpi-reqs-delta" class="delta-badge">--</span>
+          </div>
+          <span id="kpi-requisicoes" class="metric-value">0</span>
+          <span class="metric-sublabel">Chamadas à API processadas</span>
+        </div>
+        <div class="card metric-card">
+          <div class="metric-header-row">
+            <span class="metric-label">Tokens Totais</span>
+            <span id="kpi-tokens-delta" class="delta-badge">--</span>
+          </div>
+          <span id="kpi-tokens" class="metric-value">0</span>
+          <span id="kpi-tokens-split" class="metric-sublabel">0 prompt / 0 completion</span>
+        </div>
+        <div class="card metric-card">
+          <div class="metric-header-row">
+            <span class="metric-label">Taxa de Cache</span>
+          </div>
+          <span id="kpi-cache-rate" class="metric-value">0.0%</span>
+          <span id="kpi-custo-medio" class="metric-sublabel">Custo médio: $0.0000 / req</span>
+        </div>
+      </section>
+
+      <!-- Gráfico de Custo por Dia (Estilo chart-area-interactive) -->
+      <div class="card chart-card">
+        <div class="chart-header">
+          <div>
+            <h3>Custo Diário (USD)</h3>
+            <p class="subtitle text-xs">Evolução temporal dos custos de inferência de IA.</p>
+          </div>
+          <div class="chart-actions">
+            <button id="btn-toggle-daily-view" class="btn btn-xs btn-secondary">Ver em Tabela</button>
+          </div>
+        </div>
+        <div id="finance-daily-chart-container" class="chart-container">
+          <!-- SVG renderizado dinamicamente via JS -->
+        </div>
+        <div id="finance-daily-table-container" class="table-responsive hidden">
+          <table class="table text-xs">
+            <thead>
+              <tr>
+                <th>Data</th>
+                <th>Custo (USD)</th>
+                <th>Tokens</th>
+                <th class="text-right">Requisições</th>
+              </tr>
+            </thead>
+            <tbody id="finance-daily-tbody">
+              <tr><td colspan="4" class="text-center py-8 text-muted">Carregando dados...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Grid de Rankings (Estilo chart-bar-horizontal) -->
+      <div class="finance-grid-2">
+        <div class="card chart-card">
+          <div class="chart-header">
+            <div>
+              <h3>Custo por Cliente</h3>
+              <p class="subtitle text-xs">Top clientes ordenados por gasto total em USD.</p>
+            </div>
+          </div>
+          <div id="finance-client-chart-container" class="chart-container-bar">
+            <!-- SVG de barras horizontais -->
+          </div>
+        </div>
+
+        <div class="card chart-card">
+          <div class="chart-header">
+            <div>
+              <h3>Consumo por Modelo</h3>
+              <p class="subtitle text-xs">Distribuição de tokens processados por modelo.</p>
+            </div>
+          </div>
+          <div id="finance-model-chart-container" class="chart-container-bar">
+            <!-- SVG de barras horizontais -->
+          </div>
+        </div>
+      </div>
+
+      <!-- Tabela Detalhada por Cliente (Estilo data-table) -->
+      <div class="card table-card">
+        <div class="table-header">
+          <div>
+            <h2>Detalhamento por Cliente</h2>
+            <p class="subtitle text-xs">Métricas consolidadas de consumo e custo por instância cliente.</p>
+          </div>
+          <input type="text" id="finance-search-input" placeholder="Filtrar cliente..." class="search-field">
+        </div>
+        <div class="table-responsive">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>Cliente / ID</th>
+                <th>Requisições</th>
+                <th>Tokens Totais</th>
+                <th>Taxa de Cache</th>
+                <th>Custo (USD)</th>
+                <th class="text-right">Faturamento</th>
+              </tr>
+            </thead>
+            <tbody id="finance-clients-tbody">
+              <tr>
+                <td colspan="6" class="text-center py-8 text-muted">Carregando dados...</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Rendimento e Poder de Compra por $1 USD (Estimativas no Cliente) -->
+      <div class="card finance-power-card">
+        <h4 class="power-title">Estimativa de Eficiência e Poder de Compra ($1.00 USD)</h4>
+        <div class="power-kpis-grid">
+          <div class="power-item">
+            <span class="power-label">Requisições por $1 USD</span>
+            <span id="kpi-reqs-por-dolar" class="power-value text-success">--</span>
+          </div>
+          <div class="power-item">
+            <span class="power-label">Mensagens por $1 USD</span>
+            <span id="kpi-msgs-por-dolar" class="power-value text-success">--</span>
+          </div>
+          <div class="power-item">
+            <span class="power-label">Tokens por $1 USD</span>
+            <span id="kpi-tokens-por-dolar" class="power-value">--</span>
+          </div>
+          <div class="power-item">
+            <span class="power-label">Média por Mensagem</span>
+            <span id="kpi-media-tokens-msg" class="power-value font-mono">--</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ABA 3: Inteligência Artificial (Hub Unificado) -->
+    <div id="tab-ia" class="page-content">
+      <!-- Sub-navegação IA -->
+      <div class="sub-nav-wrapper">
+        <div class="sub-nav">
+          <button class="sub-tab active" data-ia-subtab="subtab-modelos">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            Modelos de IA
+          </button>
+          <button class="sub-tab" data-ia-subtab="subtab-conhecimento">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+            Base de Conhecimento (RAG)
+          </button>
+        </div>
+      </div>
+
+      <!-- SUB-ABA 1: Modelos de IA -->
+      <div id="subtab-modelos" class="ia-subcontent active">
+        <!-- Resumo de Métricas de Modelos -->
+        <section class="metrics">
+          <div class="card metric-card">
+            <span class="metric-label">Total de Modelos</span>
+            <span id="metric-modelos-total" class="metric-value">0</span>
+          </div>
+          <div class="card metric-card">
+            <span class="metric-label">Modelos Ativos</span>
+            <span id="metric-modelos-ativos" class="metric-value text-success">0</span>
+          </div>
+          <div class="card metric-card">
+            <span class="metric-label">Média Input / 1M</span>
+            <span id="metric-modelos-avg-in" class="metric-value">$0.00</span>
+          </div>
+          <div class="card metric-card">
+            <span class="metric-label">Média Output / 1M</span>
+            <span id="metric-modelos-avg-out" class="metric-value">$0.00</span>
+          </div>
+        </section>
+
+        <!-- Banner Informativo de Conectividade do 9Router -->
+        <div class="card gateway-status-card mb-4">
+          <div class="gateway-status-content">
+            <div class="gateway-status-badge-group">
+              <span class="badge-dot" id="gateway-status-dot"></span>
+              <strong>9Router Gateway:</strong>
+              <code id="gateway-endpoint-display" class="font-mono text-xs">http://9router:20000/v1</code>
+            </div>
+            <div class="gateway-status-info">
+              <span id="gateway-status-badge" class="badge badge-connecting">Checando conexão...</span>
+              <span id="gateway-models-count" class="text-xs text-muted">0 modelos descobertos</span>
+              <button id="btn-sync-9router" class="btn btn-xs btn-secondary" title="Sincronizar catálogo de modelos do 9Router">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+                Sincronizar Modelos
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tabela Principal de Modelos -->
+        <main class="card table-card">
+          <div class="table-header">
+            <div>
+              <h2>Catálogo de Modelos e Custos</h2>
+              <p class="subtitle text-xs">Gestão de provedores, parametrização de preços e teste de conectividade via 9Router.</p>
+            </div>
+            <div class="table-actions-header">
+              <input type="text" id="modelos-search-input" placeholder="Buscar modelo ou provedor..." class="search-field">
+              <button id="btn-new-model" class="btn btn-primary">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                Novo Modelo
+              </button>
+            </div>
+          </div>
+
+          <div class="table-responsive">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>Provedor</th>
+                  <th>Modelo / Alias</th>
+                  <th>Nível do Modelo</th>
+                  <th>Input / 1M</th>
+                  <th>Output / 1M</th>
+                  <th>Cache / 1M</th>
+                  <th>Status</th>
+                  <th class="text-right">Ações</th>
+                </tr>
+              </thead>
+              <tbody id="modelos-tbody">
+                <tr>
+                  <td colspan="8" class="text-center py-8 text-muted">Carregando modelos...</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </main>
+      </div>
+
+      <!-- SUB-ABA 2: Base de Conhecimento (RAG / pgvector) -->
+      <div id="subtab-conhecimento" class="ia-subcontent">
+        <!-- Resumo de Métricas de Conhecimento -->
+        <section class="metrics">
+          <div class="card metric-card">
+            <span class="metric-label">Total de Fragmentos</span>
+            <span id="metric-rag-total" class="metric-value">0</span>
+          </div>
+          <div class="card metric-card">
+            <span class="metric-label">Tenants com RAG</span>
+            <span id="metric-rag-tenants" class="metric-value text-success">0</span>
+          </div>
+          <div class="card metric-card">
+            <span class="metric-label">Média de Caracteres</span>
+            <span id="metric-rag-avg-chars" class="metric-value font-mono">0</span>
+          </div>
+          <div class="card metric-card">
+            <span class="metric-label">Status Vetorial</span>
+            <span id="metric-rag-vetor-status" class="metric-value text-success">100%</span>
+            <span id="metric-rag-vetor-sub" class="metric-sublabel">0 indexados / 0 pendentes</span>
+          </div>
+        </section>
+
+        <!-- Tabela Principal de Conhecimento -->
+        <main class="card table-card">
+          <div class="table-header">
+            <div>
+              <h2>Documentos e Fragmentos Indexados (RAG)</h2>
+              <p class="subtitle text-xs">Chunks textuais, metadados e estado dos vetores no PostgreSQL pgvector.</p>
+            </div>
+            <div class="table-actions-header">
+              <select id="rag-tenant-filter" class="search-field" style="max-width: 220px;">
+                <option value="all">Todas as Empresas</option>
+              </select>
+              <input type="text" id="rag-search-input" placeholder="Buscar texto ou metadados..." class="search-field">
+              <button id="btn-new-rag-doc" class="btn btn-primary">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                Novo Fragmento
+              </button>
+            </div>
+          </div>
+
+          <div class="table-responsive">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th style="width: 60px;">ID</th>
+                  <th>Cliente / Tenant</th>
+                  <th>Fragmento de Texto (Preview)</th>
+                  <th>Origem / Metadados</th>
+                  <th>Vetor</th>
+                  <th class="text-right">Ações</th>
+                </tr>
+              </thead>
+              <tbody id="rag-tbody">
+                <tr>
+                  <td colspan="6" class="text-center py-8 text-muted">Carregando base de conhecimento...</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <!-- Paginação Industrial -->
+          <div class="table-footer-pagination" style="display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; border-top: 1px solid var(--border-color, #2d3748);">
+            <span id="rag-pagination-info" class="text-xs text-muted">Mostrando 0 de 0 fragmentos</span>
+            <div style="display: flex; gap: 8px; align-items: center;">
+              <button id="btn-rag-prev-page" class="btn btn-xs btn-secondary" disabled>Anterior</button>
+              <span id="rag-pagination-current" class="text-xs font-mono" style="padding: 4px 8px;">Pág 1</span>
+              <button id="btn-rag-next-page" class="btn btn-xs btn-secondary" disabled>Próxima</button>
+            </div>
+          </div>
+        </main>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Ficha do Cliente / Instância -->
+  <div id="modal-ficha" class="modal-backdrop hidden">
+    <div class="modal modal-lg">
+      <div class="modal-header">
+        <div>
+          <div class="modal-header-top">
+            <h3 id="ficha-title">Ficha do Cliente</h3>
+            <span id="ficha-status-badge" class="badge">--</span>
+          </div>
+          <p class="subtitle text-sm">Prontuário administrativo e gestão cadastral da instância.</p>
+        </div>
+        <button class="btn-close" data-close="modal-ficha">&times;</button>
+      </div>
+
+      <form id="form-ficha">
+        <div class="modal-body">
+          <!-- Identificador Imutável -->
+          <div class="ficha-readonly-banner">
+            <div>
+              <span class="ficha-label">ID da Instância (Chave Imutável)</span>
+              <div class="ficha-id-row">
+                <code id="ficha-id" class="ficha-code">--</code>
+                <button type="button" id="btn-copy-ficha-id" class="btn btn-xs btn-secondary">Copiar ID</button>
+              </div>
+            </div>
+            <div class="ficha-meta-dates">
+              <div><span class="ficha-label">Criado em:</span> <span id="ficha-criado-em">--</span></div>
+              <div><span class="ficha-label">Atualizado em:</span> <span id="ficha-atualizado-em">--</span></div>
+            </div>
+          </div>
+
+          <!-- Dados Cadastrais Editáveis -->
+          <div class="ficha-section">
+            <h4 class="ficha-section-title">Dados Cadastrais</h4>
+            <div class="form-row">
+              <div class="form-group flex-1">
+                <label for="ficha-nome">Nome do Cliente / Empresa *</label>
+                <input type="text" id="ficha-nome" required class="input" placeholder="Ex: Mercado São José">
+              </div>
+              <div class="form-group flex-1">
+                <label for="ficha-email">E-mail de Contato</label>
+                <input type="email" id="ficha-email" class="input" placeholder="contato@empresa.com">
+              </div>
+            </div>
+            <div class="form-group">
+              <label class="switch-row">
+                <input type="checkbox" id="ficha-ativo" checked>
+                <span>Instância e cliente ativos no sistema</span>
+              </label>
+            </div>
+          </div>
+
+          <!-- WhatsApp e Histórico de Números -->
+          <div class="ficha-section">
+            <h4 class="ficha-section-title">Conexão WhatsApp & Números</h4>
+            <div class="form-row">
+              <div class="form-group flex-1">
+                <label for="ficha-telefone">Número Atual do WhatsApp</label>
+                <input type="tel" id="ficha-telefone" class="input" placeholder="5511999999999">
+                <small class="field-hint">Com DDI e DDD (somente dígitos).</small>
+              </div>
+              <div class="form-group flex-1">
+                <label for="ficha-motivo">Motivo da Alteração (Auditoria)</label>
+                <input type="text" id="ficha-motivo" class="input" placeholder="Ex: Novo chip corporativo">
+              </div>
+            </div>
+            <div class="ficha-actions-row">
+              <button type="button" id="btn-ficha-connect" class="btn btn-secondary">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+                Conectar WhatsApp neste número
+              </button>
+            </div>
+
+            <!-- Histórico Salvo de Números -->
+            <div class="ficha-history-box">
+              <span class="ficha-label">Histórico de Números Salvos</span>
+              <div id="ficha-history-list" class="ficha-history-list">
+                <p class="text-muted text-xs">Nenhum histórico registrado.</p>
+              </div>
+            </div>
+          </div>
+
+          <!-- Prompts do Agente (persona/role/playbook — tabela prompt_config) -->
+          <div class="ficha-section">
+            <h4 class="ficha-section-title">Prompts do Agente</h4>
+            <div class="prompt-grid">
+              <div class="form-group prompt-span-2">
+                <label for="prompt-identity">Identidade</label>
+                <textarea id="prompt-identity" class="input" rows="2" placeholder="Quem é a empresa/agente (nome, negócio, contexto base)"></textarea>
+              </div>
+              <div class="form-group">
+                <label for="prompt-role">Papel</label>
+                <input type="text" id="prompt-role" class="input" placeholder="Ex: Consultor de vendas">
+              </div>
+              <div class="form-group">
+                <label for="prompt-locale">Idioma</label>
+                <input type="text" id="prompt-locale" class="input" value="pt-BR" placeholder="pt-BR">
+              </div>
+              <div class="form-group prompt-span-2">
+                <label for="prompt-personality">Personalidade</label>
+                <textarea id="prompt-personality" class="input" rows="2" placeholder="Tom, estilo e comportamento do agente"></textarea>
+              </div>
+              <div class="form-group prompt-span-2">
+                <label for="prompt-playbook">Modo de Operação</label>
+                <textarea id="prompt-playbook" class="input" rows="3" placeholder="Regras, fluxos e diretrizes de atendimento"></textarea>
+              </div>
+              <div class="form-group prompt-span-2">
+                <label for="prompt-tools">Ferramentas</label>
+                <input type="text" id="prompt-tools" class="input" placeholder="Ex: estoque, pedidos, agenda">
+              </div>
+              <div class="form-group">
+                <label for="prompt-escalation-channel">Escalação — Canal</label>
+                <input type="text" id="prompt-escalation-channel" class="input" placeholder="Ex: WhatsApp">
+              </div>
+              <div class="form-group">
+                <label for="prompt-escalation-target">Escalação — Alvo</label>
+                <input type="text" id="prompt-escalation-target" class="input" placeholder="Ex: número do gestor">
+              </div>
+              <div class="form-group prompt-span-2">
+                <label for="prompt-escalation-policy">Escalação — Política</label>
+                <textarea id="prompt-escalation-policy" class="input" rows="2" placeholder="Quando e como escalar para um humano"></textarea>
+              </div>
+              <div class="form-group prompt-span-2">
+                <label for="prompt-system">System Prompt</label>
+                <textarea id="prompt-system" class="input" rows="3" placeholder="Instruções finais adicionadas ao prompt montado"></textarea>
+              </div>
+              <div class="form-group prompt-span-2">
+                <label for="prompt-fatiamento">Fatiamento Override</label>
+                <textarea id="prompt-fatiamento" class="input" rows="2" placeholder="Override do fluxo de fatiamento (opcional)"></textarea>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="modal-footer">
+          <button type="button" id="btn-ficha-view-rag" class="btn btn-secondary" style="margin-right: auto;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+            Ver Base RAG deste Cliente
+          </button>
+          <button type="button" class="btn btn-secondary" data-close="modal-ficha">Fechar</button>
+          <button type="submit" id="btn-save-ficha" class="btn btn-primary">Salvar Ficha</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Nova Instância / Cliente -->
+  <div id="modal-new" class="modal-backdrop hidden">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>Criar Nova Instância</h3>
+        <button class="btn-close" data-close="modal-new">&times;</button>
+      </div>
+      <form id="form-new-instance">
+        <div class="modal-body">
+          <p class="modal-help">
+            Cadastre os dados do cliente. O identificador da instância será o mesmo ID usado em toda a Anne-IA.
+          </p>
+
+          <div class="form-group">
+            <label for="new-nome">Nome do Cliente ou Empresa *</label>
+            <input type="text" id="new-nome" required placeholder="Ex: Mercado São José" class="input">
+          </div>
+
+          <div class="form-group">
+            <label for="new-id">Identificador da Instância (ID único) *</label>
+            <input type="text" id="new-id" required placeholder="Ex: mercado-sao-jose" class="input">
+            <small class="field-hint">Apenas letras minúsculas, números e traços. Esse valor é a chave do cliente no banco.</small>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label for="new-telefone">Número do WhatsApp</label>
+              <input type="tel" id="new-telefone" placeholder="5511999999999" class="input">
+              <small class="field-hint">Com DDI e DDD (somente dígitos).</small>
+            </div>
+            <div class="form-group">
+              <label for="new-email">E-mail de Contato</label>
+              <input type="email" id="new-email" placeholder="contato@empresa.com" class="input">
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-close="modal-new">Cancelar</button>
+          <button type="submit" class="btn btn-primary" id="btn-submit-new">Criar e Salvar</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Conexão WhatsApp (Pairing Code e QR Code) -->
+  <div id="modal-connect" class="modal-backdrop hidden">
+    <div class="modal modal-md">
+      <div class="modal-header">
+        <div>
+          <h3>Conectar WhatsApp</h3>
+          <p id="connect-instance-subtitle" class="text-muted text-sm"></p>
+        </div>
+        <button class="btn-close" data-close="modal-connect">&times;</button>
+      </div>
+
+      <div class="tabs">
+        <button class="tab-btn active" data-tab="tab-pairing">Código de Pareamento</button>
+        <button class="tab-btn" data-tab="tab-qrcode">QR Code</button>
+      </div>
+
+      <div class="modal-body">
+        <!-- Aba: Código de Pareamento -->
+        <div id="tab-pairing" class="tab-content active">
+          <p class="modal-help">
+            Digite o número do celular com DDI e DDD. O WhatsApp vai gerar um código de 8 dígitos para você digitar no celular sem precisar de câmera.
+          </p>
+
+          <div class="form-group">
+            <label for="pairing-number">Número com DDD e país (DDI)</label>
+            <div class="pairing-input-row">
+              <input type="tel" id="pairing-number" placeholder="5511999999999" class="input">
+              <button id="btn-request-pairing" class="btn btn-primary">
+                Gerar Código
+              </button>
+              <button type="button" id="btn-reconnect-restart" class="btn btn-secondary" title="Reinicia o socket da instância na Evolution API se o pareamento travar">
+                Reiniciar
+              </button>
+            </div>
+            <small class="field-hint">Ex: 5515999999999 (se omitir 55, será adicionado automaticamente).</small>
+          </div>
+
+          <div id="pairing-result-box" class="pairing-box hidden">
+            <span class="pairing-title">Código de pareamento gerado:</span>
+            <div class="pairing-code-wrapper">
+              <span id="pairing-code-display" class="pairing-code">--------</span>
+              <button id="btn-copy-pairing" class="btn btn-sm btn-secondary">Copiar</button>
+            </div>
+            <ol class="pairing-steps">
+              <li>Abra o WhatsApp no aparelho celular.</li>
+              <li>Toque nos três pontos (ou Ajustes) e abra <strong>Aparelhos conectados</strong>.</li>
+              <li>Toque em <strong>Conectar um aparelho</strong>.</li>
+              <li>Selecione <strong>Conectar com número de telefone</strong> na parte inferior.</li>
+              <li>Digite o código de 8 dígitos acima.</li>
+            </ol>
+          </div>
+        </div>
+
+        <!-- Aba: QR Code -->
+        <div id="tab-qrcode" class="tab-content">
+          <p class="modal-help">
+            Aponte a câmera do WhatsApp para o QR Code abaixo para conectar a instância.
+          </p>
+          <div class="qrcode-wrapper">
+            <div id="qrcode-container" class="qrcode-placeholder">
+              <span>Carregando QR Code...</span>
+            </div>
+            <button id="btn-refresh-qrcode" class="btn btn-sm btn-secondary mt-3">Atualizar QR Code</button>
+          </div>
+        </div>
+
+        <!-- Feedback de status em tempo real -->
+        <div id="connection-status-pill" class="status-pill status-pill-waiting">
+          <span class="status-dot"></span>
+          <span id="connection-status-text">Aguardando confirmação do WhatsApp...</span>
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-close="modal-connect">Fechar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Configurações da Instância (Settings) -->
+  <div id="modal-settings" class="modal-backdrop hidden">
+    <div class="modal modal-md">
+      <div class="modal-header">
+        <div>
+          <h3>Configurações da Instância</h3>
+          <p id="settings-instance-subtitle" class="text-muted text-sm"></p>
+        </div>
+        <button class="btn-close" data-close="modal-settings">&times;</button>
+      </div>
+      <form id="form-settings">
+        <div class="modal-body">
+          <p class="modal-help">
+            Ajuste o comportamento do WhatsApp para esta instância. As opções têm efeito imediato.
+          </p>
+
+          <div class="settings-list">
+            <!-- Rejeitar Chamadas -->
+            <div class="setting-item">
+              <div class="setting-info">
+                <strong>Rejeitar chamadas de voz e vídeo</strong>
+                <p>Desliga automaticamente qualquer ligação recebida no número da instância.</p>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="setting-rejectCall">
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <!-- Mensagem para Chamada Recusada -->
+            <div class="form-group setting-conditional" id="box-msgCall">
+              <label for="setting-msgCall">Mensagem para chamadas recusadas</label>
+              <input type="text" id="setting-msgCall" placeholder="Ex: Este número atende apenas por mensagens de texto." class="input">
+            </div>
+
+            <!-- Ignorar Grupos -->
+            <div class="setting-item">
+              <div class="setting-info">
+                <strong>Ignorar mensagens de grupos</strong>
+                <p>Não processa mensagens enviadas em grupos, focando apenas em conversas privadas.</p>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="setting-groupsIgnore">
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <!-- Manter Sempre Online -->
+            <div class="setting-item">
+              <div class="setting-info">
+                <strong>Manter sempre online</strong>
+                <p>Mantém o status online ativo mesmo sem interação recente.</p>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="setting-alwaysOnline">
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <!-- Recibo de Leitura -->
+            <div class="setting-item">
+              <div class="setting-info">
+                <strong>Recibo de leitura (tique azul)</strong>
+                <p>Marca as mensagens recebidas como lidas quando forem entregues à IA.</p>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="setting-readMessages">
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <!-- Ver Status de Contatos -->
+            <div class="setting-item">
+              <div class="setting-info">
+                <strong>Ver status de contatos</strong>
+                <p>Visualiza automaticamente as atualizações de status publicadas pelos contatos.</p>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="setting-readStatus">
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <!-- Sincronizar Histórico Completo -->
+            <div class="setting-item">
+              <div class="setting-info">
+                <strong>Sincronizar histórico completo</strong>
+                <p>Transfere mensagens antigas do celular para a Evolution API na primeira conexão.</p>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="setting-syncFullHistory">
+                <span class="slider"></span>
+              </label>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-close="modal-settings">Cancelar</button>
+          <button type="submit" class="btn btn-primary" id="btn-save-settings">Salvar Alterações</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Adicionar/Editar Modelo de IA -->
+  <div id="modal-modelo" class="modal-backdrop hidden">
+    <div class="modal">
+      <div class="modal-header">
+        <div>
+          <h3 id="modal-modelo-title">Cadastrar Modelo de IA</h3>
+          <p class="subtitle text-sm">Parametrize preços por milhão de tokens e habilite para inferência.</p>
+        </div>
+        <button class="btn-close" data-close="modal-modelo">&times;</button>
+      </div>
+
+      <form id="form-modelo">
+        <input type="hidden" id="modelo-id">
+        <div class="modal-body">
+          <div class="form-row">
+            <div class="form-group flex-1">
+              <label for="modelo-provedor">Provedor *</label>
+              <input type="text" id="modelo-provedor" required class="input" placeholder="Ex: opencode, openai, anthropic" autocomplete="off">
+              <small class="field-hint">Slug do provedor (alfanumérico sem espaços).</small>
+            </div>
+            <div class="form-group flex-1">
+              <label for="modelo-nome">Nome / Alias do Modelo *</label>
+              <input type="text" id="modelo-nome" required list="datalist-9router-models" class="input" placeholder="Ex: anneia, deepseek/deepseek-chat" autocomplete="off">
+              <datalist id="datalist-9router-models"></datalist>
+              <small class="field-hint">Identificador exato consumido pelo 9Router (selecione da lista ou digite).</small>
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group flex-1">
+              <label for="modelo-tier">Nível do Modelo *</label>
+              <select id="modelo-tier" required class="input">
+                <option value="tier_1">Nível 1</option>
+                <option value="tier_2">Nível 2</option>
+                <option value="tier_3">Nível 3</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group flex-1">
+              <label for="modelo-input">Input / 1M (USD) *</label>
+              <input type="number" id="modelo-input" step="0.000001" min="0" required class="input" placeholder="0.15">
+            </div>
+            <div class="form-group flex-1">
+              <label for="modelo-output">Output / 1M (USD) *</label>
+              <input type="number" id="modelo-output" step="0.000001" min="0" required class="input" placeholder="0.60">
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group flex-1">
+              <label for="modelo-cached">Cached / 1M (USD)</label>
+              <input type="number" id="modelo-cached" step="0.000001" min="0" class="input" placeholder="0.075">
+            </div>
+            <div class="form-group flex-1">
+              <label for="modelo-reasoning">Reasoning / 1M (USD)</label>
+              <input type="number" id="modelo-reasoning" step="0.000001" min="0" class="input" placeholder="0.00">
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label class="switch-row">
+              <input type="checkbox" id="modelo-ativo" checked>
+              <span>Modelo ativo para seleção e cálculo de custo</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-close="modal-modelo">Cancelar</button>
+          <button type="submit" class="btn btn-primary" id="btn-save-modelo">Salvar Modelo</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Teste de Conectividade / Inferência do Modelo -->
+  <div id="modal-test-model" class="modal-backdrop hidden">
+    <div class="modal">
+      <div class="modal-header">
+        <div>
+          <h3 id="modal-test-title">Teste de Modelo (Ping 9Router)</h3>
+          <p id="modal-test-subtitle" class="subtitle text-sm">Disparando inferência de checagem...</p>
+        </div>
+        <button class="btn-close" data-close="modal-test-model">&times;</button>
+      </div>
+
+      <div class="modal-body">
+        <div id="test-loading" class="text-center py-6">
+          <div class="spinner mb-3"></div>
+          <p class="text-muted text-sm">Aguardando resposta do gateway 9Router...</p>
+        </div>
+
+        <div id="test-result-box" class="hidden">
+          <div class="test-endpoint-info mb-3">
+            <span class="text-xs text-muted">Endpoint Consultado:</span>
+            <code id="test-endpoint-url" class="font-mono text-xs">http://9router:20000/v1/chat/completions</code>
+          </div>
+
+          <div class="test-stat-row mb-4">
+            <div class="test-stat-card">
+              <span class="text-xs text-muted">Status HTTP</span>
+              <span id="test-status-code" class="text-base font-semibold">--</span>
+            </div>
+            <div class="test-stat-card">
+              <span class="text-xs text-muted">Latência</span>
+              <span id="test-latency" class="text-base font-semibold">--</span>
+            </div>
+            <div class="test-stat-card">
+              <span class="text-xs text-muted">Modelo Solicitado / Efetivo</span>
+              <span id="test-model-effective" class="text-base font-mono">--</span>
+            </div>
+          </div>
+
+          <div class="test-preview-box">
+            <span class="ficha-label" id="test-reply-label">Resposta da IA:</span>
+            <pre id="test-reply-content" class="test-reply-pre">--</pre>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-close="modal-test-model">Fechar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Detalhes do Fragmento RAG (Inspeção Profunda) -->
+  <div id="modal-rag-view" class="modal-backdrop hidden">
+    <div class="modal modal-lg">
+      <div class="modal-header">
+        <div>
+          <div class="modal-header-top">
+            <h3 id="rag-view-title">Fragmento de Conhecimento #--</h3>
+            <span id="rag-view-vetor-badge" class="badge">--</span>
+          </div>
+          <p id="rag-view-client" class="subtitle text-xs">Tenant: --</p>
+        </div>
+        <button class="btn-close" data-close="modal-rag-view">&times;</button>
+      </div>
+
+      <div class="modal-body">
+        <div class="ficha-readonly-banner mb-3">
+          <div>
+            <span class="ficha-label">Identificador Único (ID):</span>
+            <code id="rag-view-id" class="ficha-code">--</code>
+          </div>
+          <div class="ficha-meta-dates">
+            <div><span class="ficha-label">Caracteres:</span> <span id="rag-view-chars" class="font-mono">--</span></div>
+            <div><span class="ficha-label">Vetor:</span> <span id="rag-view-dims" class="font-mono">--</span></div>
+          </div>
+        </div>
+
+        <!-- Conteúdo Textual Integral -->
+        <div class="form-group mb-4">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+            <label class="ficha-label">Conteúdo do Documento (Texto Completo):</label>
+            <button type="button" id="btn-copy-rag-text" class="btn btn-xs btn-primary">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+              Copiar Texto
+            </button>
+          </div>
+          <pre id="rag-view-text" class="prompt-view-code" style="max-height: 280px; overflow-y: auto; white-space: pre-wrap; font-family: inherit; font-size: 0.875rem; line-height: 1.5; color: var(--text-main);">--</pre>
+        </div>
+
+        <!-- Metadados Estruturados JSONB -->
+        <div class="form-group">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+            <label class="ficha-label">Metadados Estruturados (JSONB):</label>
+            <button type="button" id="btn-copy-rag-metadata" class="btn btn-xs btn-secondary">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+              Copiar JSON
+            </button>
+          </div>
+          <pre id="rag-view-metadata" class="prompt-view-code font-mono text-xs" style="max-height: 160px; overflow-y: auto;">{}</pre>
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-close="modal-rag-view">Fechar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Novo Fragmento de Conhecimento RAG -->
+  <div id="modal-rag-new" class="modal-backdrop hidden">
+    <div class="modal modal-lg">
+      <div class="modal-header">
+        <div>
+          <h3>Cadastrar Fragmento de Conhecimento</h3>
+          <p class="subtitle text-sm">Insira textos e metadados contextuais diretamente na base da empresa.</p>
+        </div>
+        <button class="btn-close" data-close="modal-rag-new">&times;</button>
+      </div>
+
+      <form id="form-rag-new">
+        <div class="modal-body">
+          <div class="form-group mb-3">
+            <label for="rag-new-tenant">Empresa / Tenant *</label>
+            <select id="rag-new-tenant" required class="input">
+              <option value="">Selecione o cliente...</option>
+            </select>
+            <small class="field-hint">A qual cliente/instância este conhecimento pertence para isolamento estrito multi-tenant.</small>
+          </div>
+
+          <div class="form-group mb-3">
+            <label for="rag-new-text">Texto do Fragmento / Chunk *</label>
+            <textarea id="rag-new-text" required rows="6" class="input" placeholder="Cole aqui o conteúdo informativo, manual, política de atendimento ou catálogo da empresa..."></textarea>
+            <div class="prompt-meta-counter">
+              <span id="rag-new-char-count">0 caracteres</span>
+              <span class="token-est-badge" id="rag-new-token-est">~0 tokens estimados</span>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label for="rag-new-metadata">Metadados Opcionais (JSON)</label>
+            <textarea id="rag-new-metadata" rows="3" class="input font-mono text-xs" placeholder='{"origem": "manual_atendimento.pdf", "categoria": "faq", "pagina": 1}'>{"origem": "manual"}</textarea>
+            <small class="field-hint">Chaves JSON para identificação, rastreabilidade e filtros semânticos.</small>
+          </div>
+        </div>
+
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-close="modal-rag-new">Cancelar</button>
+          <button type="submit" class="btn btn-primary" id="btn-save-rag-doc">Salvar Fragmento</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Gateway / Cobrança do Cliente (Preparação Industrial) -->
+  <div id="modal-billing-client" class="modal-backdrop hidden">
+    <div class="modal">
+      <div class="modal-header">
+        <div>
+          <h3 id="billing-client-title">Cobrança e Faturamento</h3>
+          <p class="subtitle text-sm">Resumo financeiro do cliente e link de pagamento do gateway.</p>
+        </div>
+        <button class="btn-close" data-close="modal-billing-client">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="card mb-3" style="background-color: var(--bg-subtle);">
+          <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
+            <span class="text-xs text-muted">Cliente:</span>
+            <strong id="billing-modal-client-name" class="text-sm">--</strong>
+          </div>
+          <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
+            <span class="text-xs text-muted">Consumo Período:</span>
+            <span id="billing-modal-cost" class="font-mono text-sm">$0.00</span>
+          </div>
+          <div style="display: flex; justify-content: space-between;">
+            <span class="text-xs text-muted">Status:</span>
+            <span class="badge-billing active">Aguardando Pagamento</span>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="billing-payment-link">Link de Pagamento (Gateway Integrado):</label>
+          <div class="pairing-input-row">
+            <input type="text" id="billing-payment-link" class="input font-mono text-xs" readonly value="https://pay.anneia.app/inv_">
+            <button type="button" id="btn-copy-billing-link" class="btn btn-secondary">Copiar</button>
+          </div>
+          <small class="field-hint">Compartilhe este link seguro com o cliente para liquidação via PIX ou Cartão.</small>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-close="modal-billing-client">Fechar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast de Notificação -->
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="app.js?v=1.1.0"></script>
+</body>
+</html>

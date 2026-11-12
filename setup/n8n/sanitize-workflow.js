@@ -23,14 +23,26 @@ if (!src || !dst) {
   process.exit(1);
 }
 
-const DROP = new Set(['activeVersion', 'activeVersionId', 'versionId', 'shared', 'triggerCount', 'isArchived', 'staticData']);
+const DROP = new Set(['activeVersion', 'activeVersionId', 'versionId', 'shared', 'triggerCount', 'isArchived', 'staticData', 'pinData']);
 
 try {
   const wf = JSON.parse(fs.readFileSync(src, 'utf8'));
   for (const k of DROP) delete wf[k];
+  if (wf.meta && typeof wf.meta === 'object') {
+    delete wf.meta.instanceId;
+    delete wf.meta.templateCredsSetupCompleted;
+  }
   wf.active = false;
+
+  // Remove credenciais de nós para portabilidade entre máquinas e segurança
+  if (Array.isArray(wf.nodes)) {
+    for (const node of wf.nodes) {
+      delete node.credentials;
+    }
+  }
+
   fs.writeFileSync(dst, JSON.stringify(wf, null, 2));
-  console.log('[sanitize-workflow] limpo: ' + dst + ' (active=false)');
+  console.log('[sanitize-workflow] limpo: ' + dst + ' (active=false, credentials=stripped)');
 } catch (e) {
   console.error('[sanitize-workflow] ERRO: ' + src + ' -> ' + e.message);
   process.exit(1);
