@@ -159,8 +159,8 @@ O agente opera sob os princípios da skill **Quasi-Coder**, transformando taquig
 
 ## 🧠 4. Registro Obrigatório no Segundo Cérebro
 
-Caminho do Vault: `~/Documents/SegundoCerebro` (`C:\Users\fabio\Documents\SegundoCerebro`)  
-Contrato Canônico do Vault: `~/Documents/SegundoCerebro/AGENTS.md` (`_CLAUDE.md` é apenas ponteiro)
+Caminho do Vault: `~/Documents/SegundoCerebro` (`~/home/brizotti/Documents/SegundoCerebro`)  
+Contrato Canônico do Vault: `~/home/brizotti/Documents/SegundoCerebroAGENTS.md` (`_CLAUDE.md` é apenas ponteiro)
 
 Qualquer modificação no código, ajuste de infraestrutura, decisão técnica ou pendência identificada **DEVE ser registrada imediatamente** no Segundo Cérebro na mesma sessão.
 

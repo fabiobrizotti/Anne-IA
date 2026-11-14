@@ -851,5 +851,92 @@ CREATE INDEX IF NOT EXISTS idx_dash_auditoria_quando ON dashboard_auditoria_auth
 CREATE INDEX IF NOT EXISTS idx_dash_auditoria_ip_evento ON dashboard_auditoria_auth(ip, evento, quando DESC);
 
 
+-- ============================================================================
+-- AUDITORIA UNIFICADA — TABELAS DE NEGÓCIO (Statement-Level para performance)
+-- ============================================================================
+
+-- Tabela unificada de auditoria
+CREATE TABLE IF NOT EXISTS auditoria_geral (
+  id BIGSERIAL PRIMARY KEY,
+  tabela VARCHAR(60) NOT NULL,
+  operacao CHAR(1) NOT NULL CHECK (operacao IN ('I','U','D')),
+  usuario_db TEXT NOT NULL DEFAULT CURRENT_USER,
+  app_user_id UUID,           -- ID do usuário da aplicação (se disponível)
+  cliente_id VARCHAR(100),    -- Tenant isolado
+  dados_antigos JSONB,        -- Para UPDATE/DELETE
+  dados_novos JSONB,          -- Para INSERT/UPDATE
+  query_original TEXT,        -- Query que disparou (para forense)
+  criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_auditoria_tabela_criado ON auditoria_geral (tabela, criado_em DESC);
+CREATE INDEX IF NOT EXISTS idx_auditoria_cliente_criado ON auditoria_geral (cliente_id, criado_em DESC);
+CREATE INDEX IF NOT EXISTS idx_auditoria_app_user ON auditoria_geral (app_user_id, criado_em DESC);
+
+-- Função genérica de auditoria (statement-level usa transition tables)
+CREATE OR REPLACE FUNCTION fn_auditoria_statement()
+RETURNS TRIGGER AS $$
+DECLARE
+  v_cliente_id VARCHAR(100);
+  v_app_user_id UUID;
+BEGIN
+  -- Tenta extrair cliente_id e app_user_id do contexto da sessão
+  BEGIN
+    v_cliente_id := current_setting('app.cliente_id', true);
+  EXCEPTION WHEN OTHERS THEN
+    v_cliente_id := NULL;
+  END;
+
+  BEGIN
+    v_app_user_id := current_setting('app.user_id', true)::UUID;
+  EXCEPTION WHEN OTHERS THEN
+    v_app_user_id := NULL;
+  END;
+
+  IF (TG_OP = 'INSERT') THEN
+    INSERT INTO auditoria_geral (tabela, operacao, usuario_db, app_user_id, cliente_id, dados_novos, query_original)
+    SELECT TG_TABLE_NAME, 'I', CURRENT_USER, v_app_user_id, v_cliente_id, to_jsonb(new_table), current_query()
+    FROM new_table;
+  ELSIF (TG_OP = 'UPDATE') THEN
+    INSERT INTO auditoria_geral (tabela, operacao, usuario_db, app_user_id, cliente_id, dados_antigos, dados_novos, query_original)
+    SELECT TG_TABLE_NAME, 'U', CURRENT_USER, v_app_user_id, v_cliente_id, to_jsonb(old_table), to_jsonb(new_table), current_query()
+    FROM old_table, new_table WHERE old_table.id = new_table.id;
+  ELSIF (TG_OP = 'DELETE') THEN
+    INSERT INTO auditoria_geral (tabela, operacao, usuario_db, app_user_id, cliente_id, dados_antigos, query_original)
+    SELECT TG_TABLE_NAME, 'D', CURRENT_USER, v_app_user_id, v_cliente_id, to_jsonb(old_table), current_query()
+    FROM old_table;
+  END IF;
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Aplicar triggers nas tabelas críticas (statement-level para performance em bulk)
+-- Tabelas: clientes, base_conhecimento, prompt_config, precos_modelos, uso_tokens,
+-- dashboard_usuarios, dashboard_identidades, dashboard_contatos, dashboard_credenciais,
+-- dashboard_sessoes, dashboard_consentimentos, dashboard_auditoria_auth,
+-- lgpd_auditoria, memorypostgreschat, movimentacoes_estoque, produtos
+
+DO $$
+DECLARE
+  t TEXT;
+  tbls TEXT[] := ARRAY[
+    'clientes', 'base_conhecimento', 'prompt_config', 'precos_modelos', 'uso_tokens',
+    'dashboard_usuarios', 'dashboard_identidades', 'dashboard_contatos', 'dashboard_credenciais',
+    'dashboard_sessoes', 'dashboard_consentimentos', 'dashboard_auditoria_auth',
+    'lgpd_auditoria', 'memorypostgreschat', 'movimentacoes_estoque', 'produtos'
+  ];
+BEGIN
+  FOREACH t IN ARRAY tbls LOOP
+    EXECUTE format('
+      DROP TRIGGER IF EXISTS trg_audit_%s ON %s;
+      CREATE TRIGGER trg_audit_%s
+      AFTER INSERT OR UPDATE OR DELETE ON %s
+      REFERENCING OLD TABLE AS old_table NEW TABLE AS new_table
+      FOR EACH STATEMENT EXECUTE FUNCTION fn_auditoria_statement();
+    ', t, t, t, t);
+  END LOOP;
+END $$;
+
+
 
 

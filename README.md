@@ -1,5 +1,7 @@
 # Anne-IA — Stack Docker (n8n, Evolution API, Postgres, Redis, RabbitMQ, pgAdmin, Dashboard)
 
+**Arquitetura Hardened + Tailscale:** Zero exposição à internet pública. Todos os serviços bindam em `127.0.0.1` na VPS. Acesso via Tailscale mesh VPN (IP `100.x.y.z` ou MagicDNS `http://anneia-vps:porta`).
+
 A stack é auto-inicializável a partir de um clone limpo. A pasta `setup/` concentra as configurações de infraestrutura:
 
 | Artefato | Papel |
@@ -7,7 +9,7 @@ A stack é auto-inicializável a partir de um clone limpo. A pasta `setup/` conc
 | `setup/rabbitmq/rabbitmq.conf` | Limites de memória/disco, paginação, timeout de LLM e carga de definições. |
 | `setup/rabbitmq/definitions.json.template` | Topologia padrão industrial: exchanges diretas, pipeline em 4 etapas com Quorum Queues e DLX/DLQ (senha via `.env`). |
 | `setup/rabbitmq/entrypoint.sh` | Injeta a senha no template e gera o `definitions.json`. |
-| `setup/postgres/init.sql` | **Fonte única (SSOT 100% idempotente)**: schema do negócio, memória LangChain indexada (`memorypostgreschat` com `idx_memorypostgreschat_session` e `criado_em` para retenção LGPD), base RAG isolada multi-tenant (`base_conhecimento` com `instance_id`, índices HNSW vetoriais, B-tree composto de paginação e GIN trigram `pg_trgm`), `clientes` + `Instance` (Evolution API), **alinhamento 1:1** entre `public."Instance"` e `public.clientes` pelo mesmo ID (`clientes.id = Instance.id`), `prompt_config` (persona/role/playbook por cliente), `prompts_padrao` (prompts mestres globais para roteamento e economia de modelos), **ledger contábil e função de custeio** (`precos_modelos`, `uso_tokens`, `fn_registrar_uso_tokens` com idempotência estrita e precificação dinâmica), **autenticação e sessões server-side** (`dashboard_usuarios`, `dashboard_identidades` cifrada via AES-256-GCM com blind index HMAC-SHA-256, `dashboard_contatos`, `dashboard_credenciais` com hash NIST `scrypt`, `dashboard_sessoes`, `dashboard_consentimentos` LGPD e `dashboard_auditoria_auth`) e **governança LGPD nativa** (`lgpd_auditoria` com hash SHA-256 via `pgcrypto`, `vw_clientes_mascarado`, `fn_lgpd_anonimizar_titular`, `fn_lgpd_anonimizar_cliente` e `fn_lgpd_expurgo_retencao`). |
+| `setup/postgres/init.sql` | **Fonte única (SSOT 100% idempotente)**: schema do negócio, memória LangChain indexada (`memorypostgreschat` com `idx_memorypostgreschat_session` e `criado_em` para retenção LGPD), base RAG isolada multi-tenant (`base_conhecimento` com `instance_id`, índices HNSW vetoriais, B-tree composto de paginação e GIN trigram `pg_trgm`), `clientes` + `Instance` (Evolution API), **alinhamento 1:1** entre `public."Instance"` e `public.clientes` pelo mesmo ID (`clientes.id = Instance.id`), `prompt_config` (persona/role/playbook por cliente), `prompts_padrao` (prompts mestres globais para roteamento e economia de modelos), **ledger contábil e função de custeio** (`precos_modelos`, `uso_tokens`, `fn_registrar_uso_tokens` com idempotência estrita e precificação dinâmica), **autenticação e sessões server-side** (`dashboard_usuarios`, `dashboard_identidades` cifrada via AES-256-GCM com blind index HMAC-SHA-256, `dashboard_contatos`, `dashboard_credenciais` com hash NIST `scrypt`, `dashboard_sessoes`, `dashboard_consentimentos` LGPD e `dashboard_auditoria_auth`), **governança LGPD nativa** (`lgpd_auditoria` com hash SHA-256 via `pgcrypto`, `vw_clientes_mascarado`, `fn_lgpd_anonimizar_titular`, `fn_lgpd_anonimizar_cliente` e `fn_lgpd_expurgo_retencao`), **auditoria unificada statement-level** (`auditoria_geral` com triggers em todas tabelas de negócio). |
 | `setup/pgadmin/servers.json` | Auto-provisionamento da conexão do PostgreSQL no pgAdmin 4. |
 | `setup/n8n/clean-workflows.js` | Limpa workflows antigos no SQLite antes de reimportar (idempotência). |
 | `setup/n8n/sanitize-workflow.js` | Remove rastros da instância de origem para evitar falhas no import. |
@@ -16,15 +18,28 @@ Os workflows do n8n não são versionados aqui. Eles vêm de `fabiobrizotti/n8n_
 
 ## 1. Pré-requisitos
 - Docker Engine com Compose v2 (usuário no grupo `docker`: `sudo usermod -aG docker $USER && newgrp docker`).
-- Portas livres: `5678` (n8n), `8081` (Evolution), `5432` (Postgres), `6379` (Redis), `5672`/`15672` (RabbitMQ), `20000` (9Router), `5050` (pgAdmin), `3000` (Dashboard).
+- **Portas ofuscadas (localhost only):** `34567` (n8n), `41283` (Dashboard), `52841` (pgAdmin), `48192` (9Router), `39271` (RabbitMQ Management), `5432` (Postgres), `6379` (Redis), `5672` (RabbitMQ AMQP).
+- **Tailscale** na VPS (host): `curl -fsSL https://tailscale.com/install.sh | sh && sudo tailscale up --authkey=... --hostname=anneia-vps`
 - Conta no GitHub com acesso de leitura (token) ao repositório dos workflows.
 
 ## 2. Instalação
 
 <details>
-<summary><strong><img src="https://raw.githubusercontent.com/devicons/devicon/master/icons/linux/linux-original.svg" width="16" height="16" /> Linux</strong></summary>
+<summary><strong><img src="https://raw.githubusercontent.com/devicons/devicon/master/icons/linux/linux-original.svg" width="16" height="16" /> Linux (VPS com Tailscale)</strong></summary>
 
 ```bash
+# 1. Instalar Tailscale na VPS (host) - ACESSO PRIVADO VIA MESH VPN
+curl -fsSL https://tailscale.com/install.sh | sh
+sudo tailscale up --authkey=tskey-auth-XXXXXXXXXXXXXXXXXXXX --hostname=anneia-vps
+# Verificar IP Tailscale: tailscale ip -4  (ex: 100.64.1.23)
+# Opcional: MagicDNS habilitado no admin console -> acesso via http://anneia-vps:41283
+
+# 2. Firewall UFW - APENAS TAILSCALE UDP + SSH (ZERO PORTAS PÚBLICAS)
+sudo ufw allow 41641/udp   # Tailscale
+sudo ufw allow 22/tcp      # SSH (ou sua porta SSH customizada)
+sudo ufw enable
+
+# 3. Clone e setup da stack
 git clone https://github.com/fabiobrizotti/Anne-IA
 cd Anne-IA
 
@@ -35,7 +50,10 @@ chmod +x scripts/*.sh
 # (Opcional) Ativa sincronização automática do .env após 'git pull'
 git config core.hooksPath .githooks
 
-# Edite o .env para preencher seu GITHUB_TOKEN e N8N_INSTANCE_OWNER_EMAIL
+# Edite o .env para preencher:
+# - GITHUB_TOKEN (para n8n-import clonar workflows)
+# - N8N_INSTANCE_OWNER_EMAIL
+# - TAILSCALE_AUTHKEY (opcional, para documentação)
 # (as senhas de banco, redis, rabbitmq e 9router já foram geradas com segurança)
 
 # O n8n roda como UID 1000, pgAdmin como UID 5050; 9Router persiste em ./data/9router
@@ -53,7 +71,7 @@ docker compose restart n8n
 </details>
 
 <details>
-<summary><strong><img src="https://raw.githubusercontent.com/devicons/devicon/master/icons/windows8/windows8-original.svg" width="16" height="16" /> Windows (Powershell)</strong></summary>
+<summary><strong><img src="https://raw.githubusercontent.com/devicons/devicon/master/icons/windows8/windows8-original.svg" width="16" height="16" /> Windows/Local (Powershell) - Desenvolvimento</strong></summary>
 
 ```powershell
 git clone https://github.com/fabiobrizotti/Anne-IA
@@ -77,7 +95,7 @@ docker compose restart n8n
 
 </details>
 
-O perfil `setup` sobe toda a infraestrutura e executa os scripts via variáveis de ambiente e entrypoints. O `n8n-import` espera o n8n estar saudável antes de limpar e injetar os workflows novos.
+O perfil `setup` sobe toda a infraestrutura e executa os scripts de setup via variáveis de ambiente e entrypoints. O `n8n-import` espera o n8n estar saudável antes de limpar e injetar os workflows novos.
 
 **Para atualizar (reimportar) os workflows:**
 ```bash
@@ -87,6 +105,21 @@ docker compose --profile setup run --rm --no-deps n8n-import
 docker compose start n8n
 ```
 
+---
+
+### 2.1 Acesso aos Serviços (Pós-Instalação)
+
+| Serviço | Local (localhost) | Via Tailscale (VPS) | MagicDNS (se habilitado) |
+|---------|-------------------|---------------------|--------------------------|
+| Dashboard | `http://127.0.0.1:41283` | `http://100.x.y.z:41283` | `http://anneia-vps:41283` |
+| n8n | `http://127.0.0.1:34567` | `http://100.x.y.z:34567` | `http://anneia-vps:34567` |
+| pgAdmin | `http://127.0.0.1:52841` | `http://100.x.y.z:52841` | `http://anneia-vps:52841` |
+| 9Router | `http://127.0.0.1:48192` | `http://100.x.y.z:48192` | `http://anneia-vps:48192` |
+| RabbitMQ Mgmt | `http://127.0.0.1:39271` | `http://100.x.y.z:39271` | `http://anneia-vps:39271` |
+| PostgreSQL | `psql -h 127.0.0.1 -p 5432` | `psql -h 100.x.y.z -p 5432` | `psql -h anneia-vps -p 5432` |
+| Redis | `redis-cli -h 127.0.0.1 -p 6379` | `redis-cli -h 100.x.y.z -p 6379` | `redis-cli -h anneia-vps -p 6379` |
+
+> **Evolution API:** Não exposta no host. Acesso interno via `http://evolution-api:8080` (usado pelo Dashboard e n8n).
 ## 3. Gestão e Sincronização de Ambiente (.env)
 A infraestrutura utiliza o `.env.example` como fonte única da verdade estrutural (schema).
 

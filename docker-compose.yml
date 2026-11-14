@@ -3,7 +3,7 @@ services:
     image: n8nio/n8n:${N8N_VERSION}
     restart: unless-stopped
     ports:
-      - "${N8N_PORT}:${N8N_PORT}"
+      - "${N8N_HOST_BIND}:${N8N_PORT}:${N8N_PORT}"
     env_file:
       - .env
     environment:
@@ -113,6 +113,7 @@ services:
     restart: unless-stopped
     hostname: rabbitmq-anne
     ports:
+      - "${RABBITMQ_HOST_BIND}:${RABBITMQ_PORT}:${RABBITMQ_PORT}"
       - "${RABBITMQ_HOST_BIND}:${RABBITMQ_MANAGEMENT_PORT}:${RABBITMQ_MANAGEMENT_CONTAINER_PORT}"
     env_file:
       - .env
@@ -135,8 +136,6 @@ services:
     image: evoapicloud/evolution-api:${EVOLUTION_API_VERSION}
     container_name: evolution-api
     restart: unless-stopped
-    ports:
-      - "${EVOLUTION_HOST_BIND}:${EVOLUTION_PORT}:${SERVER_PORT}"
     env_file:
       - .env
     volumes:
@@ -146,6 +145,12 @@ services:
     networks:
       - public_net
       - data_net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider --header='Origin: http://anneia-vps:41283' http://127.0.0.1:8080/manager/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
   db-evolution:
     image: pgvector/pgvector:${PGVECTOR_VERSION}
@@ -162,11 +167,11 @@ services:
       - data_net
       - public_net
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
-      interval: 5s
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB} && psql -U ${POSTGRES_USER} -d anneia -c 'SELECT 1 FROM clientes LIMIT 1' > /dev/null 2>&1"]
+      interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 10s
+      start_period: 15s
 
   redis:
     image: redis:${REDIS_VERSION}
@@ -189,11 +194,11 @@ services:
     networks:
       - data_net
     healthcheck:
-      test: ["CMD-SHELL", "redis-cli -a \"${REDIS_PASSWORD}\" ping | grep PONG"]
-      interval: 5s
-      timeout: 3s
+      test: ["CMD-SHELL", "redis-cli -a \"${REDIS_PASSWORD}\" ping | grep PONG && redis-cli -a \"${REDIS_PASSWORD}\" INFO memory | grep -q 'used_memory_human:'"]
+      interval: 10s
+      timeout: 5s
       retries: 5
-      start_period: 5s
+      start_period: 10s
 
   9router:
     image: decolua/9router:${NINE_ROUTER_VERSION}
@@ -212,11 +217,11 @@ services:
       - public_net
       - data_net
     healthcheck:
-      test: ["CMD-SHELL", "node -e \"const http = require('http'); const req = http.request({ host: '127.0.0.1', port: process.env.PORT, path: '/', timeout: 2000 }, (res) => { process.exit(res.statusCode < 500 ? 0 : 1); }); req.on('error', () => { process.exit(1); }); req.end();\""]
-      interval: 10s
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:${NINE_ROUTER_CONTAINER_PORT}/api/health && wget -q --spider http://127.0.0.1:${NINE_ROUTER_CONTAINER_PORT}/v1/models || exit 1"]
+      interval: 15s
       timeout: 5s
       retries: 5
-      start_period: 15s
+      start_period: 20s
 
   pgadmin:
     image: dpage/pgadmin4:${PGADMIN_VERSION}
@@ -283,3 +288,4 @@ networks:
     driver: bridge
   data_net:
     driver: bridge
+    internal: true

@@ -2,6 +2,7 @@ const express = require('express');
 const { Pool } = require('pg');
 const path = require('path');
 const crypto = require('crypto');
+const Redis = require('ioredis');
 const auth = require('./auth');
 
 const app = express();
@@ -30,6 +31,15 @@ if (DATABASE_URL) {
   console.error('[db] DATABASE_URL não configurada. Schema deve ser provisionado por setup/postgres/init.sql.');
 }
 
+// Redis client para rate limiting distribuído
+const redisRateLimit = new Redis(process.env.REDIS_URL || 'redis://:password@redis:6379/7', {
+  maxRetriesPerRequest: 3,
+  retryStrategy: (times) => Math.min(times * 100, 3000),
+  lazyConnect: true
+});
+redisRateLimit.on('error', (err) => console.error('[redis-rate-limit] Erro:', err.message));
+redisRateLimit.connect().catch(() => {});
+
 // Middlewares de Parsing e Segurança Defensiva
 app.disable('x-powered-by');
 app.set('trust proxy', 'loopback');
@@ -45,6 +55,27 @@ app.use((req, res, next) => {
   );
   if (req.secure || req.headers['x-forwarded-proto'] === 'https') {
     res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  }
+  next();
+});
+
+// CORS restrito para origins permitidos (Tailscale + localhost)
+const allowedOrigins = [
+  'http://localhost:3000',
+  'http://localhost:5678',
+  process.env.DASHBOARD_TAILSCALE_URL,
+  process.env.N8N_TAILSCALE_URL,
+  `http://${process.env.TAILSCALE_HOSTNAME}:${process.env.DASHBOARD_PORT}`,
+  `http://${process.env.TAILSCALE_HOSTNAME}:${process.env.N8N_PORT}`,
+  `http://${process.env.TAILSCALE_HOSTNAME}.tailnet:${process.env.DASHBOARD_PORT}`,
+  `http://${process.env.TAILSCALE_HOSTNAME}.tailnet:${process.env.N8N_PORT}`,
+].filter(Boolean);
+
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (origin && allowedOrigins.includes(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
   }
   next();
 });
@@ -150,6 +181,7 @@ async function evolutionFetch(endpoint, options = {}) {
   const headers = {
     'apikey': EVOLUTION_API_KEY,
     'Content-Type': 'application/json',
+    'Origin': process.env.DASHBOARD_TAILSCALE_URL || 'http://anneia-vps:41283',
     ...(options.headers || {})
   };
 
@@ -1392,35 +1424,27 @@ app.get('/api/v1/financeiro', async (req, res) => {
 // ROTAS DE GESTÃO E TESTE DE MODELOS (/api/v1/modelos)
 // -----------------------------------------------------------------------------
 
-// Rate limit simples em memória para testes de modelo (máx 10 testes por minuto por IP)
-// ponytail: Map em memória com teto de 1000 entradas; migrar para Redis só se dashboard rodar em múltiplas réplicas
-const testRateLimits = new Map();
-const MAX_RATE_LIMIT_ENTRIES = 1000;
-function checkTestRateLimit(ip) {
+// Rate limit Redis-backed para testes de modelo (máx 10 testes por minuto por IP)
+async function checkTestRateLimitRedis(key, maxRequests = 10, windowMs = 60 * 1000) {
   const now = Date.now();
-  const windowMs = 60 * 1000;
-  const maxRequests = 10;
+  const windowStart = now - windowMs;
+  const redisKey = `ratelimit:${key}`;
 
-  if (testRateLimits.size >= MAX_RATE_LIMIT_ENTRIES && !testRateLimits.has(ip)) {
-    for (const [k, v] of testRateLimits.entries()) {
-      if (now > v.resetAt) testRateLimits.delete(k);
-    }
-    if (testRateLimits.size >= MAX_RATE_LIMIT_ENTRIES) {
-      const oldestKey = testRateLimits.keys().next().value;
-      if (oldestKey !== undefined) testRateLimits.delete(oldestKey);
-    }
+  try {
+    const multi = redisRateLimit.multi();
+    multi.zremrangebyscore(redisKey, 0, windowStart);
+    multi.zcard(redisKey);
+    multi.zadd(redisKey, now, `${now}-${Math.random()}`);
+    multi.expire(redisKey, Math.ceil(windowMs / 1000) + 1);
+    const results = await multi.exec();
+
+    const currentCount = results[1][1];
+    return currentCount < maxRequests;
+  } catch (err) {
+    console.error('[rate-limit] Erro ao verificar rate limit Redis:', err.message);
+    // Fail-open: permitir requisição se Redis indisponível
+    return true;
   }
-
-  const record = testRateLimits.get(ip) || { count: 0, resetAt: now + windowMs };
-
-  if (now > record.resetAt) {
-    record.count = 1;
-    record.resetAt = now + windowMs;
-  } else {
-    record.count += 1;
-  }
-  testRateLimits.set(ip, record);
-  return record.count <= maxRequests;
 }
 
 // GET /api/v1/9router/status - Diagnóstico e lista de modelos do 9Router
@@ -1650,7 +1674,8 @@ app.post('/api/v1/modelos/:id/testar', async (req, res) => {
   if (!id || id <= 0) return res.status(400).json({ success: false, error: 'ID inválido' });
 
   const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'local';
-  if (!checkTestRateLimit(clientIp)) {
+  const rateLimitOk = await checkTestRateLimitRedis(clientIp);
+  if (!rateLimitOk) {
     return res.status(429).json({ success: false, error: 'Limite de testes atingido (máx 10 por minuto). Aguarde.' });
   }
 
