@@ -138,6 +138,12 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+      # URLs Tailscale construídas dinamicamente (mudam junto com TAILSCALE_HOSTNAME)
+      DASHBOARD_TAILSCALE_URL: http://${TAILSCALE_HOSTNAME}:${DASHBOARD_PORT}
+      N8N_TAILSCALE_URL: http://${TAILSCALE_HOSTNAME}:${N8N_PORT}
+      PGADMIN_TAILSCALE_URL: http://${TAILSCALE_HOSTNAME}:${PGADMIN_PORT}
+      NINE_ROUTER_TAILSCALE_URL: http://${TAILSCALE_HOSTNAME}:${NINE_ROUTER_PORT}
     volumes:
       - ./data/evolution-api:/evolution/instances
     depends_on:
@@ -146,7 +152,7 @@ services:
       - public_net
       - data_net
     healthcheck:
-      test: ["CMD-SHELL", "wget -q --spider --header='Origin: http://anneia-vps:41283' http://127.0.0.1:8080/manager/health || exit 1"]
+      test: ["CMD-SHELL", "wget -q --spider --header='Origin: http://localhost:3000' http://127.0.0.1:8080/manager/health || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 5
@@ -268,6 +274,11 @@ services:
       CPF_ENC_KEY: ${CPF_ENC_KEY:-}
       CPF_HMAC_KEY: ${CPF_HMAC_KEY:-}
       AUTH_SECRET_KEY: ${AUTH_SECRET_KEY:-}
+      # URLs Tailscale construídas dinamicamente (mudam junto com TAILSCALE_HOSTNAME)
+      DASHBOARD_TAILSCALE_URL: http://${TAILSCALE_HOSTNAME}:${DASHBOARD_PORT}
+      N8N_TAILSCALE_URL: http://${TAILSCALE_HOSTNAME}:${N8N_PORT}
+      PGADMIN_TAILSCALE_URL: http://${TAILSCALE_HOSTNAME}:${PGADMIN_PORT}
+      NINE_ROUTER_TAILSCALE_URL: http://${TAILSCALE_HOSTNAME}:${NINE_ROUTER_PORT}
     networks:
       - public_net
       - data_net
