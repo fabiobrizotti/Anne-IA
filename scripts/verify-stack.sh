@@ -29,12 +29,15 @@ cd "${PROJECT_ROOT}"
 ENV_FILE="${ENV_FILE:-${PROJECT_ROOT}/.env}"
 
 TIMEOUT=0
+REQUIRE_REVISION=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --timeout) TIMEOUT="${2:-0}"; shift 2 ;;
     --timeout=*) TIMEOUT="${1#*=}"; shift ;;
+    --require-revision) REQUIRE_REVISION=1; shift ;;
     -h|--help)
-      echo "Uso: $0 [--timeout SEGUNDOS]"
+      echo "Uso: $0 [--timeout SEGUNDOS] [--require-revision]"
+      echo "  --require-revision  reprova se o container não estiver no HEAD do checkout"
       exit 0 ;;
     *) echo "[erro] Argumento desconhecido: $1" >&2; exit 1 ;;
   esac
@@ -58,6 +61,8 @@ fail() { CHECKS=$((CHECKS + 1)); FAILS=$((FAILS + 1)); printf '  \033[31m[falha]
 # não conta como verificação: usado quando a checagem não se aplica (ex.: GIT_SHA
 # ainda não marcado, porque o update.sh nunca rodou neste diretório).
 skip() { printf '  \033[33m[skip]\033[0m  %s\n' "$*"; }
+# não reprova a stack, mas sinaliza divergência (ver check_revision).
+warn() { CHECKS=$((CHECKS + 1)); printf '  \033[33m[aviso]\033[0m %s\n' "$*"; }
 
 # ------------------------------------------------------------------------------
 # HEALTHCHECK DO DOCKER POR SERVIÇO
@@ -178,6 +183,11 @@ check_http() {
 
 # Prova objetiva de que a stack roda o código deste checkout:
 # compara o `sha` reportado por /api/health com o HEAD do repositório.
+#
+# Por padrão a divergência é apenas [aviso]: num clone de desenvolvimento é
+# normal commitar e rodar a imagem uma revisão atrás. Com --require-revision
+# (usado pelo gate do update.sh) a divergência reprova a stack — porque aí a
+# pergunta é "o deploy aplicou o commit?", e a resposta precisa ser sim.
 check_revision() {
   local dash_port body running expected
   dash_port="$(env_get DASHBOARD_PORT 41283)"
@@ -189,8 +199,11 @@ check_revision() {
     return
   fi
   if [[ "${running}" == "unknown" ]]; then
-    # Esperado antes do primeiro `update.sh` (imagem construída à mão).
-    skip "revisão: container sem GIT_SHA (rode ./scripts/update.sh para marcar)"
+    if [[ "${REQUIRE_REVISION}" -eq 1 ]]; then
+      fail "revisão: container sem GIT_SHA (deploy não carimbou a revisão)"
+    else
+      skip "revisão: container sem GIT_SHA (rode ./scripts/update.sh para marcar)"
+    fi
     return
   fi
 
@@ -199,8 +212,10 @@ check_revision() {
     skip "revisão: repositório git indisponível para comparar"
   elif [[ "${running}" == "${expected}" ]]; then
     ok "revisão: container em ${running} = HEAD do checkout"
-  else
+  elif [[ "${REQUIRE_REVISION}" -eq 1 ]]; then
     fail "revisão: container em ${running} != HEAD ${expected} (atualização não aplicada?)"
+  else
+    warn "revisão: container em ${running}, HEAD ${expected} (rode ./scripts/update.sh)"
   fi
 }
 

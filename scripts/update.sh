@@ -152,7 +152,8 @@ ok "${REMOTE}/${BRANCH} em $(git rev-parse --short "${REMOTE_REV}")"
 if [[ "${REMOTE_REV}" == "${PREV_REV}" ]]; then
   ok "já está na última revisão — nada a atualizar"
   if [[ "${DRY_RUN}" -eq 1 ]]; then exit 0; fi
-  ./scripts/verify-stack.sh --timeout "${HEALTH_TIMEOUT}" || die "estava na última revisão, mas a stack não está saudável"
+  ./scripts/verify-stack.sh --timeout "${HEALTH_TIMEOUT}" --require-revision \
+    || die "sem commits novos, mas a stack não está saudável ou não roda a revisão ${PREV_SHORT}"
   echo ""
   printf ' \033[32m%s\033[0m\n' "NADA A FAZER — revisão ${PREV_SHORT} já aplicada e stack saudável."
   exit 0
@@ -162,7 +163,8 @@ BEHIND="$(git rev-list --count "HEAD..${REMOTE_REV}")"
 if [[ "${BEHIND}" -eq 0 ]]; then
   ok "nenhum commit novo em ${REMOTE}/${BRANCH} (HEAD está à frente ou igual)"
   if [[ "${DRY_RUN}" -eq 1 ]]; then exit 0; fi
-  ./scripts/verify-stack.sh --timeout "${HEALTH_TIMEOUT}" || die "sem commits novos, mas a stack não está saudável"
+  ./scripts/verify-stack.sh --timeout "${HEALTH_TIMEOUT}" --require-revision \
+    || die "sem commits novos, mas a stack não está saudável ou não roda a revisão ${PREV_SHORT}"
   echo ""
   printf ' \033[32m%s\033[0m\n' "NADA A FAZER — ${PREV_SHORT} já aplicada e stack saudável."
   exit 0
@@ -297,7 +299,7 @@ ok "containers aplicados"
 # GATE + ROLLBACK
 # ------------------------------------------------------------------------------
 step "[8/8] Gate de saúde (até ${HEALTH_TIMEOUT}s)"
-if ./scripts/verify-stack.sh --timeout "${HEALTH_TIMEOUT}"; then
+if ./scripts/verify-stack.sh --timeout "${HEALTH_TIMEOUT}" --require-revision; then
   printf '%s\n' "${NEW_REV}" > "${BACKUP_DIR}/last-success"
   echo ""
   printf ' \033[32m%s\033[0m\n' "ATUALIZAÇÃO CONCLUÍDA — $(git rev-parse --short HEAD) aplicada e stack saudável."
