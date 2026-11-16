@@ -254,6 +254,12 @@ services:
     build:
       context: ./dashboard
       dockerfile: Dockerfile
+      args:
+        # Revisão/versão injetadas no build e expostas em /api/health.
+        # `docker compose build` interpola do shell antes do .env, então o
+        # update.sh exporta GIT_SHA=$(git rev-parse --short HEAD) no build.
+        GIT_SHA: ${GIT_SHA:-unknown}
+        APP_VERSION: ${DASHBOARD_VERSION:-unknown}
     image: anne-ia/dashboard:${DASHBOARD_VERSION}
     container_name: dashboard
     restart: unless-stopped
@@ -266,6 +272,11 @@ services:
       EVOLUTION_API_URL: http://evolution-api:${SERVER_PORT}
       EVOLUTION_API_KEY: ${AUTHENTICATION_API_KEY}
       DATABASE_URL: postgresql://${POSTGRES_USER}:${CHAVE_POSTGRES_PASSWORD}@db-evolution:${POSTGRES_CONTAINER_PORT}/anneia
+      # Revisão em execução (gravada no .env pelo update.sh). Em runtime, para que
+      # /api/health sempre reflita o HEAD aplicado — inclusive em updates que só
+      # tocaram documentação e por isso não reconstroem a imagem.
+      GIT_SHA: ${GIT_SHA:-unknown}
+      APP_VERSION: ${DASHBOARD_VERSION:-unknown}
       DASHBOARD_AUTH_ENABLED: ${DASHBOARD_AUTH_ENABLED}
       DASHBOARD_USERNAME: ${DASHBOARD_USERNAME}
       DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD}

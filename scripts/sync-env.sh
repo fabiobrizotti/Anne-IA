@@ -127,6 +127,7 @@ is_sensitive_key() {
 declare -a MISSING_KEYS=()
 declare -a ORPHAN_KEYS=()
 declare -a VALUE_DIFFS=()
+VERSION_UPDATED=0
 
 # 1. Chaves presentes no .env.example
 for key in "${EXAMPLE_KEYS_ORDER[@]}"; do
@@ -233,6 +234,17 @@ while IFS= read -r line || [[ -n "${line}" ]]; do
     key="${BASH_REMATCH[1]}"
     ex_val="${BASH_REMATCH[2]}"
     if [[ -v ENV_VARS["${key}"] ]]; then
+      # Exceção deliberada: chaves *_VERSION fixam a TAG da imagem no compose.
+      # Preservar o valor antigo faria a VPS continuar rodando a versão velha
+      # mesmo após um bump no .env.example — o update "funcionaria" sem atualizar
+      # o serviço. Não são segredos nem configuração do host, então seguem a
+      # release. (Portas, binds e credenciais continuam preservados.)
+      if [[ "${key}" == *_VERSION ]] && [[ "${ENV_VARS[${key}]}" != "${ex_val}" ]]; then
+        echo "[atualizada] ${key}: ${ENV_VARS[${key}]} -> ${ex_val} (release)"
+        echo "${key}=${ex_val}" >> "${TMP_FILE}"
+        VERSION_UPDATED=$((VERSION_UPDATED + 1))
+        continue
+      fi
       # Preserva valor existente no .env
       echo "${key}=${ENV_VARS[${key}]}" >> "${TMP_FILE}"
     else
@@ -264,6 +276,10 @@ chmod 600 "${ENV_FILE}"
 trap - EXIT
 
 echo "[ok] .env sincronizado com sucesso preservando todos os valores existentes."
+if [[ ${VERSION_UPDATED} -gt 0 ]]; then
+  echo "[ok] ${VERSION_UPDATED} versão(ões) de imagem atualizada(s) para a release do .env.example."
+  echo "     Rode o update para reconstruir/rebaixar as imagens afetadas."
+fi
 
 # ------------------------------------------------------------------------------
 # PROVISIONAMENTO DE SENHAS SEGURAS BASE62

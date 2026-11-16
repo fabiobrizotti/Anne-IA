@@ -277,8 +277,17 @@ function normalizePhoneNumber(raw) {
 // -----------------------------------------------------------------------------
 
 // Healthcheck
+// Expõe a revisão em execução para que a atualização da VPS seja verificável
+// de fora: se o `sha` aqui não bate com o HEAD do GitHub, o deploy não aplicou.
+// Sem segredos — apenas versão, hash curto do commit e uptime.
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  res.json({
+    status: 'ok',
+    version: process.env.APP_VERSION || 'unknown',
+    sha: process.env.GIT_SHA || 'unknown',
+    uptime: Math.floor(process.uptime()),
+    timestamp: new Date().toISOString()
+  });
 });
 
 // -----------------------------------------------------------------------------

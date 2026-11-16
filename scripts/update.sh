@@ -243,6 +243,16 @@ else
   ok ".env.example sem mudanças"
 fi
 
+# Marca a revisão aplicada: /api/health passa a devolver este sha, então a
+# verificação "a VPS está mesmo nesse commit?" é objetiva e externa.
+NEW_SHORT="$(git rev-parse --short HEAD)"
+if grep -qE '^GIT_SHA=' "${ENV_FILE}"; then
+  sed -i "s|^GIT_SHA=.*|GIT_SHA=${NEW_SHORT}|" "${ENV_FILE}"
+else
+  printf 'GIT_SHA=%s\n' "${NEW_SHORT}" >> "${ENV_FILE}"
+fi
+ok "GIT_SHA=${NEW_SHORT} gravado no .env (reaparece em /api/health)"
+
 # ------------------------------------------------------------------------------
 # DOCKER COMPOSE
 # ------------------------------------------------------------------------------

@@ -55,6 +55,9 @@ CHECKS=0
 
 ok()   { CHECKS=$((CHECKS + 1)); printf '  \033[32m[ok]\033[0m   %s\n' "$*"; }
 fail() { CHECKS=$((CHECKS + 1)); FAILS=$((FAILS + 1)); printf '  \033[31m[falha]\033[0m %s\n' "$*"; }
+# não conta como verificação: usado quando a checagem não se aplica (ex.: GIT_SHA
+# ainda não marcado, porque o update.sh nunca rodou neste diretório).
+skip() { printf '  \033[33m[skip]\033[0m  %s\n' "$*"; }
 
 # ------------------------------------------------------------------------------
 # HEALTHCHECK DO DOCKER POR SERVIÇO
@@ -173,6 +176,34 @@ check_http() {
   check_evolution_internal
 }
 
+# Prova objetiva de que a stack roda o código deste checkout:
+# compara o `sha` reportado por /api/health com o HEAD do repositório.
+check_revision() {
+  local dash_port body running expected
+  dash_port="$(env_get DASHBOARD_PORT 41283)"
+  body="$(curl -s -m 8 "http://127.0.0.1:${dash_port}/api/health" 2>/dev/null || true)"
+  running="$(printf '%s' "${body}" | sed -n 's/.*"sha":"\([^"]*\)".*/\1/p')"
+
+  if [[ -z "${running}" ]]; then
+    fail "revisão: /api/health não informou o campo 'sha'"
+    return
+  fi
+  if [[ "${running}" == "unknown" ]]; then
+    # Esperado antes do primeiro `update.sh` (imagem construída à mão).
+    skip "revisão: container sem GIT_SHA (rode ./scripts/update.sh para marcar)"
+    return
+  fi
+
+  expected="$(git -C "${PROJECT_ROOT}" rev-parse --short HEAD 2>/dev/null || true)"
+  if [[ -z "${expected}" ]]; then
+    skip "revisão: repositório git indisponível para comparar"
+  elif [[ "${running}" == "${expected}" ]]; then
+    ok "revisão: container em ${running} = HEAD do checkout"
+  else
+    fail "revisão: container em ${running} != HEAD ${expected} (atualização não aplicada?)"
+  fi
+}
+
 # ------------------------------------------------------------------------------
 # EXECUÇÃO
 # ------------------------------------------------------------------------------
@@ -212,6 +243,8 @@ check_redis
 check_rabbit
 echo "--- aplicações ---"
 check_http
+echo "--- revisão em execução ---"
+check_revision
 
 echo "==================================================================="
 if [[ ${FAILS} -eq 0 ]]; then
