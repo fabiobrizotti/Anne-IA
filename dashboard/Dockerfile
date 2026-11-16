@@ -11,8 +11,10 @@ ENV GIT_SHA=${GIT_SHA}
 ENV APP_VERSION=${APP_VERSION}
 
 # Copia manifestos e instala dependências de produção
+#   `npm ci` (não `npm install`): instala EXATAMENTE o package-lock.json,
+#   então a imagem é reproduzível e idêntica à árvore que o CI auditou.
 COPY package*.json ./
-RUN npm install --omit=dev --no-audit --no-fund
+RUN npm ci --omit=dev --no-audit --no-fund
 
 # Copia código-fonte e arquivos estáticos
 COPY src/ ./src/

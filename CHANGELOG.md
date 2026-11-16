@@ -2,6 +2,26 @@
 
 ## [1.2.0] - 2026-11-16
 
+### Fixed — primeira execução real do CI no GitHub Actions (run 43969044849)
+
+O `actionlint` valida sintaxe e expressões, mas **não** valida se os SHAs pinados
+existem nem se as ferramentas do runner têm a mesma versão da máquina local.
+O primeiro run de verdade encontrou 4 problemas — todos de CI, nenhum de produto:
+
+| Job | Falha | Causa raiz | Correção |
+|---|---|---|---|
+| `schema-idempotency` | — | **passou (0 falhas)** | — |
+| `dast` | — | **passou** (stack completa no runner, fixtures, pentest) | — |
+| `secret-scan` | `Set up job` | `gitleaks/gitleaks-action@f91b498f...` **não existe** no repositório da action (SHA inventado, comentado como `v2.3.8`) | pin no SHA real de `v2.3.9`: `ff98106e4c7b2bc287b24eaf42907196329070c7` |
+| `unit-tests` | `Instalar Dependências` | `npm ci` exige `package-lock.json`, que **nunca foi commitado** (nem estava no `.gitignore`) | `dashboard/package-lock.json` gerado e versionado (93 pacotes, `lockfileVersion: 3`) |
+| `sca-audit` | `npm audit` | mesmo motivo: `ENOLOCK` | idem |
+| `lint-and-sast` | `ShellCheck` | `apt install shellcheck` entrega **0.9.x**, que emite `SC2317` em função chamada via `trap`; a 0.11 não emite | CI passa a usar `koalaman/shellcheck:v0.11.0` (mesma versão do ambiente local) |
+
+Consequência prática do lockfile: `dashboard/Dockerfile` trocou `npm install` por
+`npm ci --omit=dev`, então a imagem passa a instalar **exatamente** a árvore que o
+CI auditou — antes, cada build resolvia semver de novo e podia produzir uma imagem
+diferente da testada.
+
 ### Bateria final de verificação (antes de fechar a release)
 
 Executada com a árvore limpa em `302dcda`:

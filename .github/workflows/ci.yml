@@ -40,8 +40,12 @@ jobs:
 
       - name: Validação de Scripts Shell (ShellCheck)
         run: |
-          sudo apt-get update && sudo apt-get install -y shellcheck
-          shellcheck scripts/*.sh tests/*.sh
+          # Versão PINADA: o shellcheck do apt (ubuntu-24.04) é 0.9.x e reporta
+          # SC2317 em funções chamadas apenas via `trap`, que a 0.11 não emite.
+          # Usar a mesma versão do ambiente de desenvolvimento evita "passa aqui,
+          # falha no CI".
+          docker run --rm -v "$PWD:/mnt:ro" koalaman/shellcheck:v0.11.0 \
+            scripts/*.sh tests/*.sh
 
       - name: Validação de Sintaxe Python (py_compile)
         run: |
@@ -127,7 +131,7 @@ jobs:
           fetch-depth: 0
 
       - name: Escaneamento de Segredos com Gitleaks
-        uses: gitleaks/gitleaks-action@f91b498f3c7809635fae7df07a6a438ee2e89ab0 # v2.3.8
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
