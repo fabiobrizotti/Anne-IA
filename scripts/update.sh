@@ -71,6 +71,43 @@ ok()   { printf '    \033[32m[ok]\033[0m %s\n' "$*"; }
 warn() { printf '    \033[33m[aviso]\033[0m %s\n' "$*"; }
 die()  { printf '\n    \033[31m[erro]\033[0m %s\n' "$*"; printf '    log: %s\n' "${LOG_FILE}"; exit 1; }
 
+# Grava a revisão aplicada no .env. `up -d` recria o container com o novo valor,
+# e /api/health passa a devolver este sha — é o que permite afirmar de fora que a
+# stack roda o commit esperado.
+stamp_git_sha() {
+  local short="$1"
+  if grep -qE '^GIT_SHA=' "${ENV_FILE}"; then
+    sed -i "s|^GIT_SHA=.*|GIT_SHA=${short}|" "${ENV_FILE}"
+  else
+    printf 'GIT_SHA=%s\n' "${short}" >> "${ENV_FILE}"
+  fi
+}
+
+# Código já está na revisão certa — mas o container também precisa estar.
+# Se a stack está saudável e roda a revisão, termina com "NADA A FAZER". Se o
+# container ficou para trás (update interrompido depois do pull, `git pull`
+# manual, container recriado de imagem antiga), converge — carimba o sha e
+# recria — em vez de abortar: é exatamente o resultado que o operador queria.
+up_to_date() {
+  local short="$1"
+
+  if ./scripts/verify-stack.sh --timeout "${HEALTH_TIMEOUT}" --require-revision; then
+    echo ""
+    printf ' \033[32m%s\033[0m\n' "NADA A FAZER — revisão ${short} já aplicada e stack saudável."
+    exit 0
+  fi
+
+  warn "código em ${short}, mas o container não está nessa revisão — convergindo"
+  stamp_git_sha "${short}"
+  docker compose up -d >/dev/null 2>&1 \
+    || die "docker compose up -d falhou ao convergir para ${short}"
+  ./scripts/verify-stack.sh --timeout "${HEALTH_TIMEOUT}" --require-revision \
+    || die "não convergiu para ${short} — stack não está saudável (veja o log)"
+  echo ""
+  printf ' \033[32m%s\033[0m\n' "CONVERGIDO — container recriado em ${short}, stack saudável."
+  exit 0
+}
+
 env_get() {
   local key="$1" default="${2:-}"
   local val
@@ -152,22 +189,14 @@ ok "${REMOTE}/${BRANCH} em $(git rev-parse --short "${REMOTE_REV}")"
 if [[ "${REMOTE_REV}" == "${PREV_REV}" ]]; then
   ok "já está na última revisão — nada a atualizar"
   if [[ "${DRY_RUN}" -eq 1 ]]; then exit 0; fi
-  ./scripts/verify-stack.sh --timeout "${HEALTH_TIMEOUT}" --require-revision \
-    || die "sem commits novos, mas a stack não está saudável ou não roda a revisão ${PREV_SHORT}"
-  echo ""
-  printf ' \033[32m%s\033[0m\n' "NADA A FAZER — revisão ${PREV_SHORT} já aplicada e stack saudável."
-  exit 0
+  up_to_date "${PREV_SHORT}"
 fi
 
 BEHIND="$(git rev-list --count "HEAD..${REMOTE_REV}")"
 if [[ "${BEHIND}" -eq 0 ]]; then
   ok "nenhum commit novo em ${REMOTE}/${BRANCH} (HEAD está à frente ou igual)"
   if [[ "${DRY_RUN}" -eq 1 ]]; then exit 0; fi
-  ./scripts/verify-stack.sh --timeout "${HEALTH_TIMEOUT}" --require-revision \
-    || die "sem commits novos, mas a stack não está saudável ou não roda a revisão ${PREV_SHORT}"
-  echo ""
-  printf ' \033[32m%s\033[0m\n' "NADA A FAZER — ${PREV_SHORT} já aplicada e stack saudável."
-  exit 0
+  up_to_date "${PREV_SHORT}"
 fi
 
 echo ""
@@ -248,11 +277,7 @@ fi
 # Marca a revisão aplicada: /api/health passa a devolver este sha, então a
 # verificação "a VPS está mesmo nesse commit?" é objetiva e externa.
 NEW_SHORT="$(git rev-parse --short HEAD)"
-if grep -qE '^GIT_SHA=' "${ENV_FILE}"; then
-  sed -i "s|^GIT_SHA=.*|GIT_SHA=${NEW_SHORT}|" "${ENV_FILE}"
-else
-  printf 'GIT_SHA=%s\n' "${NEW_SHORT}" >> "${ENV_FILE}"
-fi
+stamp_git_sha "${NEW_SHORT}"
 ok "GIT_SHA=${NEW_SHORT} gravado no .env (reaparece em /api/health)"
 
 # ------------------------------------------------------------------------------
