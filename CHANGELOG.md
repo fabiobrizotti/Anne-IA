@@ -47,7 +47,32 @@ duas vezes (boot limpo + reaplicação). Baseline: **4 ERRORs** em ambos os cen�
   dado sentinela, 51 triggers, seed `admin/*/*`, funções críticas e DML real
   (INSERT/UPDATE/DELETE em tabela com e sem coluna `id`).
 
+- `scripts/verify-stack.sh` — smoke test em 4 camadas (healthcheck do Docker, dados via
+  `docker exec`, HTTP dos serviços, schema do banco `anneia`). 14 verificações, somente
+  leitura, com `--timeout` para aguardar convergência. `evolution-api` é testada pela rede
+  interna (não publica porta no host) usando a porta interna 3000 no header `Origin`,
+  exigida pelo CORS da Evolution.
+
+- `scripts/update.sh` — **comando único de atualização** para a VPS:
+  `preflight → backup → git pull --ff-only → sync .env → schema → rebuild → gate de saúde
+  → rollback automático`. Garantias implementadas:
+  - `flock` impede atualização concorrente; toda execução grava `logs/update-<ts>.log`.
+  - Preflight aborta com árvore Git suja, branch errada, `.env` ausente ou < 2 GB livres.
+  - Backup antes de tocar em qualquer coisa: `.env`, revisão anterior e `pg_dump` do banco
+    `anneia` (retenção dos 10 mais recentes).
+  - `git pull --ff-only` (nunca merge cego) + validação `docker compose config -q`.
+  - Reaplica `init.sql` **somente** quando ele mudou (ou com `--schema`).
+  - Rebuild do dashboard **somente** quando `dashboard/` mudou; aborta antes de reiniciar
+    nada se o build falhar.
+  - Gate obrigatório via `verify-stack.sh --timeout 180`; em falha, restaura `.env`,
+    `git reset --hard` para a revisão anterior e sobe de novo (exit code 2).
+  - Flags: `--yes` (não-interativo), `--dry-run`, `--schema`, `--branch`, `--help`.
+  - `UPDATE_REMOTE` permite apontar para um remoto alternativo (usado nos testes).
+
 ### Changed
+- `scripts/sync-env.sh`: zerado o `shellcheck` (4 achados legados — padrão `*PASS*`
+  redundante, array `PROCESSED_KEYS` morto e redirects individuais). Nenhuma mudança de
+  comportamento; `sha256` dos 12 segredos do `.env` idêntico antes/depois.
 - `.env.example`: `N8N_VERSION` 2.36.5 → **2.47.7** (alinhado à versão validada em execução;
   evitava VPS nova nascer com versão diferente do ambiente de desenvolvimento).
 - `.env.example` + `dashboard/package.json`: `DASHBOARD_VERSION`/`version` 1.1.0 → **1.2.0**.
@@ -76,6 +101,18 @@ curl -s http://127.0.0.1:41283/api/health
 
 ./scripts/sync-env.sh   # prova de não-destruição
 # sha256 dos 12 segredos idêntico antes/depois; .env 600; .env.bak gerado
+
+./scripts/verify-stack.sh
+# STACK SAUDÁVEL — 14 verificações ok  (exit 0)
+# teste negativo: docker compose stop dashboard
+#   [falha] container dashboard não está em execução
+#   [falha] dashboard: HTTP 000
+#   [falha] evolution: inacessível pela rede interna
+#   STACK COM PROBLEMAS — 3/14 falhas  (exit 1)
+# docker compose start dashboard -> volta a exit 0
+
+docker run --rm -v "$PWD:/mnt:ro" koalaman/shellcheck:stable scripts/*.sh tests/*.sh
+# exit 0 (antes: 4 achados em sync-env.sh)
 ```
 
 ---

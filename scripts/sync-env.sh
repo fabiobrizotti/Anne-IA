@@ -112,7 +112,7 @@ done < "${ENV_EXAMPLE}"
 is_sensitive_key() {
   local k="$1"
   case "${k}" in
-    *PASS*|*PASSWORD*|*SECRET*|*KEY*|*TOKEN*|*CREDENTIAL*|*HASH*)
+    *PASS*|*SECRET*|*KEY*|*TOKEN*|*CREDENTIAL*|*HASH*)
       return 0
       ;;
     *)
@@ -227,14 +227,11 @@ chmod 600 "${TMP_FILE}"
 # Garante remoção de tmp se o script for interrompido
 trap 'rm -f "${TMP_FILE}"' EXIT
 
-declare -A PROCESSED_KEYS=()
-
 # Reconstrói .env seguindo rigorosamente a estrutura, ordem e comentários do .env.example
 while IFS= read -r line || [[ -n "${line}" ]]; do
   if [[ "${line}" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
     key="${BASH_REMATCH[1]}"
     ex_val="${BASH_REMATCH[2]}"
-    PROCESSED_KEYS["${key}"]=1
     if [[ -v ENV_VARS["${key}"] ]]; then
       # Preserva valor existente no .env
       echo "${key}=${ENV_VARS[${key}]}" >> "${TMP_FILE}"
@@ -250,13 +247,15 @@ done < "${ENV_EXAMPLE}"
 
 # Se houver chaves órfãs no .env, preserva-as ao final do arquivo
 if [[ ${#ORPHAN_KEYS[@]} -gt 0 ]]; then
-  echo "" >> "${TMP_FILE}"
-  echo "# ==============================================================================" >> "${TMP_FILE}"
-  echo "# VARIÁVEIS LOCAIS PERSONALIZADAS (Não catalogadas no .env.example)" >> "${TMP_FILE}"
-  echo "# ==============================================================================" >> "${TMP_FILE}"
-  for key in "${ORPHAN_KEYS[@]}"; do
-    echo "${key}=${ENV_VARS[${key}]}" >> "${TMP_FILE}"
-  done
+  {
+    echo ""
+    echo "# =============================================================================="
+    echo "# VARIÁVEIS LOCAIS PERSONALIZADAS (Não catalogadas no .env.example)"
+    echo "# =============================================================================="
+    for key in "${ORPHAN_KEYS[@]}"; do
+      echo "${key}=${ENV_VARS[${key}]}"
+    done
+  } >> "${TMP_FILE}"
 fi
 
 # Substituição atômica no filesystem

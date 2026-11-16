@@ -35,6 +35,7 @@ FAILS=0
 
 mkdir -p "${LOG_DIR}"
 
+# shellcheck disable=SC2329  # invocada indiretamente via trap EXIT
 cleanup() {
   docker rm -f "${CONTAINER}" >/dev/null 2>&1 || true
   rm -rf "${LOG_DIR}"
@@ -139,29 +140,37 @@ else
 fi
 
 say "[6/7] Verificando integridade pós-reaplicação..."
+
+assert_eq() { # desc esperado obtido
+  if [[ "$3" == "$2" ]]; then ok "$1"; else bad "$1 (obtido: ${3:-vazio}, esperado: $2)"; fi
+}
+assert_ge() { # desc minimo obtido
+  local got="${3:-0}"
+  if [[ "${got}" =~ ^[0-9]+$ ]] && [[ "${got}" -ge "$2" ]]; then ok "$1"; else bad "$1 (obtido: ${got}, mínimo: $2)"; fi
+}
 SENTINELA="$(psql_q "SELECT count(*) FROM clientes WHERE id='tenant-teste-idempotencia'")"
-[[ "${SENTINELA}" == "1" ]] && ok "Dado sentinela preservado (sem perda)" || bad "Dado sentinela PERDIDO (idempotência destrutiva!)"
+assert_eq "Dado sentinela preservado (idempotência não destrutiva)" "1" "${SENTINELA}"
 
 TABELAS="$(psql_q "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE'")"
-[[ "${TABELAS:-0}" -ge 18 ]] && ok "${TABELAS} tabelas no schema public" || bad "Apenas ${TABELAS:-0} tabelas (esperado >= 18)"
+assert_ge "Tabelas no schema public (${TABELAS:-0})" 18 "${TABELAS}"
 
 TRIGGERS="$(psql_q "SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND tgname LIKE 'trg_audit%'")"
-[[ "${TRIGGERS:-0}" -eq 51 ]] && ok "51 triggers de auditoria (17 tabelas x 3 eventos)" || bad "${TRIGGERS:-0} triggers de auditoria (esperado 51)"
+assert_eq "Triggers de auditoria (17 tabelas x 3 eventos)" "51" "${TRIGGERS}"
 
 ADMIN="$(psql_q "SELECT count(*) FROM dashboard_permissoes WHERE role='admin' AND recurso='*' AND acao='*'")"
-[[ "${ADMIN}" == "1" ]] && ok "Seed wildcard admin/*/* presente" || bad "Seed wildcard admin/*/* ausente (CHECK constraint barrando)"
+assert_eq "Seed wildcard admin/*/* presente" "1" "${ADMIN}"
 
 FUNCS="$(psql_q "SELECT count(*) FROM pg_proc WHERE proname IN ('fn_auditoria_statement','fn_limpar_logs_antigos','fn_registrar_uso_tokens','fn_lgpd_expurgo_retencao')")"
-[[ "${FUNCS:-0}" -eq 4 ]] && ok "4 funções críticas presentes" || bad "${FUNCS:-0}/4 funções críticas presentes"
+assert_eq "Funções críticas presentes" "4" "${FUNCS}"
 
 AUD_PROD="$(psql_q "SELECT count(*) FROM auditoria_geral WHERE tabela='produtos'")"
-[[ "${AUD_PROD:-0}" -ge 3 ]] && ok "${AUD_PROD} eventos auditados em produtos (I+U+D)" || bad "${AUD_PROD:-0} eventos em produtos (esperado >= 3)"
+assert_ge "Eventos auditados em produtos (I+U+D)" 3 "${AUD_PROD}"
 
 AUD_PAR="$(psql_q "SELECT count(*) FROM auditoria_geral WHERE tabela='produtos' AND operacao='U' AND dados_antigos IS NOT NULL AND dados_novos IS NOT NULL")"
-[[ "${AUD_PAR:-0}" -ge 1 ]] && ok "UPDATE auditado com dados_antigos + dados_novos (pareamento ok)" || bad "UPDATE sem pareamento antigo/novo"
+assert_ge "UPDATE auditado com dados_antigos + dados_novos (pareamento)" 1 "${AUD_PAR}"
 
 AUD_CLI="$(psql_q "SELECT count(*) FROM auditoria_geral WHERE tabela='clientes' AND operacao='U'")"
-[[ "${AUD_CLI:-0}" -ge 1 ]] && ok "UPDATE em clientes auditado (tabela com PK id)" || bad "UPDATE em clientes não auditado"
+assert_ge "UPDATE em clientes auditado (tabela com PK id)" 1 "${AUD_CLI}"
 
 say "[7/7] Resultado final..."
 if [[ ${FAILS} -eq 0 ]]; then
