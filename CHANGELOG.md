@@ -2,6 +2,76 @@
 
 ## [1.2.0] - 2026-11-16
 
+### Fixed — CI (`dast`) nunca executou: YAML inválido e alvos errados
+
+O workflow estava **inválido** (GitHub não conseguia nem fazer parse), então os jobs
+jamais rodaram. Quatro defeitos encadeados:
+
+1. **YAML inválido** — `- name: Checkout Completo do Repositório (fetch-depth: 0)` sem
+   aspas: o `:` dentro do escalar quebrava o parser (`mapping values are not allowed here`).
+   Correção: nome entre aspas.
+2. **Serviço inexistente** — `docker compose up -d postgres dashboard` referenciava um
+   serviço `postgres` que não existe (o nome real é `db-evolution`). O job falharia no
+   primeiro comando.
+3. **Porta errada** — o health-wait usava `http://127.0.0.1:3000/...`, que é a porta
+   **interna** do container. No host o dashboard responde em `DASHBOARD_PORT` (41283).
+   Alem disso `/api/v1/health` é protegido (401); o endpoint público é `/api/health`.
+4. **Banco errado nas fixtures** — o painel rodava em `-d "$POSTGRES_DB"` (`evolution`,
+   banco do Prisma da Evolution API). As tabelas de negócio vivem em `anneia`.
+5. **`actionlint` (SC2046)** — `python3 -m py_compile $(git ls-files "*.py")` sem `xargs`.
+
+### Fixed — `setup/postgres/fixtures-test.sql` desalinhado do schema real
+
+O arquivo referenciava colunas que não existem mais (`clientes.status`,
+`clientes.max_instances`, `clientes.max_tokens_dia`) e violava CHECKs:
+
+- `uso_tokens.origem` aceita apenas `n8n | 9router_sync | manual`; usava `'pentest'`
+  → trocado para `'manual'` com modelo marcado como `pentest-gpt-4o-mini` (sirve de
+  filtro seguro na limpeza).
+- Colunas presentes na tabela por engano (`telefone`/`email` são NOT NULL mas têm
+  default vazio; `ativo`/`configuracoes`/`historico_telefones`/`codigo` têm default).
+- `dashboard_consentimentos` **não tem UNIQUE** além da PK serial, portanto
+  `ON CONFLICT DO NOTHING` não protegia nada e cada execução duplicava as linhas
+  (4 → 8 → 12). Substituído por `WHERE NOT EXISTS` sobre `(user_id, documento, versao)`.
+- Hash scrypt dos operadores era inválido (não correspondia a `SenhaBeta#2026`).
+  Regenerado com N=16384/r=8/p=1 e **verificado por `verifyPassword()`** do app antes
+  de entrar no repositório.
+
+### Added
+- Job `schema-idempotency` no CI: roda `tests/test_init_sql.sh` (boot limpo, reaplicação,
+  51 triggers, seed admin/*/*, DML real em tabela com e sem coluna `id`). É o mesmo
+  teste do qual o `update.sh` depende para reaplicar o schema na VPS.
+- `tests/pentest_dashboard.sh`: porta derivada de `DASHBOARD_PORT` (antes fixa em 3000).
+
+### Testes executados (2026-11-16)
+```bash
+./tests/pentest_dashboard.sh
+# Alvo: http://127.0.0.1:41283
+# 16 aprovados, 0 reprovados (inclui login beta@pentest.local / SenhaBeta#2026,
+# BOLA/BFLA, CSRF, SQLi, path traversal, payload 413)
+
+# idempotência das fixtures (3 execuções consecutivas)
+for i in 1 2 3; do docker exec -i db-evolution psql -v ON_ERROR_STOP=1 -U evolution \
+  -d anneia < setup/postgres/fixtures-test.sql; done
+# run1/run2/run3: exit 0, 0 ERRORs
+# contagens estáveis: clientes=2 uso_tokens=2 usuarios=2 consentimentos=4
+
+# verificação do hash scrypt pelo próprio app
+node -e "require('./dashboard/src/auth.js').verifyPassword('SenhaBeta#2026', HASH)"
+# true (senha correta) / false (senha errada)
+
+python3 -c "import yaml; yaml.safe_load(open('.github/workflows/ci.yml'))"
+# [ok] jobs: lint-and-sast, sca-audit, unit-tests, schema-idempotency, secret-scan, dast
+
+docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:latest
+# exit 0 (antes: SC2046 na validação de Python)
+
+# cenário CI de .env do zero
+rm .env && ./scripts/sync-env.sh && docker compose --env-file .env config -q
+# sync exit 0; compose resolve todas as variáveis
+```
+
+
 ### Fixed — Boot e idempotência do `setup/postgres/init.sql` (bloqueavam deploy em VPS)
 
 Diagnóstico feito aplicando o `init.sql` em container `pgvector:pg15` descartável,
