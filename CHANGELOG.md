@@ -2,6 +2,37 @@
 
 ## [1.2.0] - 2026-11-16
 
+### Bateria final de verificação (antes de fechar a release)
+
+Executada com a árvore limpa em `302dcda`:
+
+```bash
+docker run --rm -v "$PWD:/mnt:ro" koalaman/shellcheck:stable scripts/*.sh tests/*.sh
+# exit 0  (antes desta entrega: 4 achados legados em sync-env.sh)
+
+for f in scripts/*.sh tests/*.sh .githooks/*; do bash -n "$f"; done        # ok
+node --check dashboard/src/server.js && node --check dashboard/src/auth.js # ok
+python3 -c "import yaml;yaml.safe_load(open('.github/workflows/ci.yml'))"  # ok
+docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:latest            # exit 0
+docker compose config -q                                                    # ok
+
+./tests/test_init_sql.sh
+# SUCESSO — boot limpo 0 erros, reaplicação 0 erros, 21 tabelas,
+# 51 triggers, admin/*/*, 4 funções, I+U+D em produtos (sem coluna id)
+
+cd dashboard && npm test
+# tests 26 | pass 26 | fail 0
+
+./scripts/verify-stack.sh --require-revision
+# STACK SAUDÁVEL — 15 verificações ok (exit 0)
+
+./tests/pentest_dashboard.sh
+# 16 aprovados, 0 reprovados
+```
+
+Também registrado no Segundo Cérebro: `20_Projects/Projeto - TCC Anne IA (ETEC).md`
+(log da sessão com commits e evidências) e `01_Daily/2026-11-16.md`.
+
 ### Added — runbook de atualização em produção (`README` §12)
 
 Seção nova respondendo "como atualizo a VPS?" e "como sei que atualizou?": tabela
