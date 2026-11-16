@@ -175,6 +175,55 @@ app.get('/login.html', async (req, res, next) => {
 // Arquivos estáticos da interface Vanilla
 app.use(express.static(path.join(__dirname, '../public')));
 
+// ============================================================================
+// MIDDLEWARE DE AUTENTICAÇÃO PARA /api/v1/* (deve vir ANTES dos endpoints)
+// ============================================================================
+
+app.use('/api/v1', async (req, res, next) => {
+  // Autentica TODAS as rotas /api/v1/* (incluindo /auth/*)
+  // O middleware de login/register em /api/v1/auth lida com suas próprias validações
+
+  // req.originalUrl contém o caminho completo incluindo /api/v1
+  const fullPath = req.originalUrl || req.url;
+
+  const user = await resolveSessionUser(req);
+  if (user) {
+    req.user = user;
+    console.log('[auth-mw] Session user:', user.role, user.id, 'path:', fullPath);
+    return next();
+  }
+
+  if (verifyBasicAuth(req)) {
+    req.user = { id: 'basic', role: 'admin', nome: 'Admin' };
+    console.log('[auth-mw] Basic auth user: admin path:', fullPath, 'user:', JSON.stringify(req.user));
+    return next();
+  }
+
+  // Permite rotas públicas de auth sem autenticação
+  if (fullPath.startsWith('/api/v1/auth/') &&
+      (fullPath === '/api/v1/auth/login' ||
+       fullPath === '/api/v1/auth/register' ||
+       fullPath.startsWith('/api/v1/auth/legal/'))) {
+    console.log('[auth-mw] Public auth path, allowing:', fullPath);
+    return next();
+  }
+
+  console.log('[auth-mw] No auth - path:', fullPath);
+  res.status(401).json({ success: false, error: 'Sessão expirada ou não autenticada.' });
+});
+
+// Helpers de Autorização RBAC / Isolamento Multi-Tenant
+function isAdmin(req) {
+  return Boolean(req.user && req.user.role === 'admin');
+}
+
+function canAccessInstance(req, targetId) {
+  if (!req.user) return false;
+  if (req.user.role === 'admin') return true;
+  if (!req.user.cliente_id || !targetId) return false;
+  return String(req.user.cliente_id).trim().toLowerCase() === String(targetId).trim().toLowerCase();
+}
+
 // Helper de requisição para a Evolution API
 async function evolutionFetch(endpoint, options = {}) {
   const url = `${EVOLUTION_API_URL}${endpoint}`;
@@ -238,6 +287,25 @@ app.get('/api/health', (req, res) => {
 
 app.use('/api/v1/auth', (req, res, next) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+  console.log('[auth-legal-mw] Path:', req.originalUrl, 'req.user:', req.user ? { role: req.user.role } : 'undefined');
+  next();
+});
+
+// Add debug middleware to trace req.user - MUST be before routes
+app.use('/api/v1', (req, res, next) => {
+  console.log('[debug-mw] After auth, req.user:', req.user ? { role: req.user.role, id: req.user.id } : 'undefined', 'path:', req.originalUrl);
+  next();
+});
+
+// Test middleware
+app.use('/api/v1', (req, res, next) => {
+  console.log('[test-mw] Running for:', req.originalUrl);
+  next();
+});
+
+// Test middleware 2
+app.use('/api/v1', (req, res, next) => {
+  console.log('[test-mw-2] Running for:', req.originalUrl, 'req.user:', req.user ? { role: req.user.role } : 'undefined');
   next();
 });
 
@@ -388,9 +456,31 @@ function checkRegisterRateLimit(ip) {
   return true;
 }
 
-// POST /api/v1/auth/register
+// POST /api/v1/auth/register - Restrito ao usuário mestre do .env
 app.post('/api/v1/auth/register', async (req, res) => {
   if (!pool) return res.status(500).json({ success: false, error: 'Banco de dados não disponível' });
+
+  // Verifica se é o usuário mestre (admin do .env)
+  const masterUsername = process.env.DASHBOARD_USERNAME || 'admin';
+  const masterEmail = process.env.DASHBOARD_EMAIL || 'admin@anne-ia.local';
+  const user = await resolveSessionUser(req);
+
+  const isMaster = user && (user.customer_code?.startsWith('ADM-') || user.email === masterEmail || user.nome?.includes(masterUsername));
+  if (!isMaster && !verifyBasicAuth(req)) {
+    await auth.recordAudit(pool, {
+      identificador: 'unknown',
+      evento: 'REGISTER_DENIED_NOT_MASTER',
+      sucesso: false,
+      ip: req.ip || '',
+      userAgent: req.headers['user-agent'] || '',
+      detalhes: { reason: 'apenas_usuario_mestre' }
+    });
+    return res.status(403).json({
+      success: false,
+      error: 'Apenas o administrador mestre (configurado no .env) pode criar novas contas.'
+    });
+  }
+
   const ip = req.ip || req.socket.remoteAddress || '';
   const userAgent = req.headers['user-agent'] || '';
 
@@ -601,37 +691,493 @@ app.get('/api/v1/auth/me', async (req, res) => {
   res.status(401).json({ success: false, error: 'Não autenticado' });
 });
 
-// Middleware de Proteção das Rotas /api/v1/*
-app.use('/api/v1', async (req, res, next) => {
-  if (req.path.startsWith('/auth/')) return next();
+// Helpers de Autorização RBAC / Isolamento Multi-Tenant
+function isAdmin(req) {
+  return Boolean(req.user && req.user.role === 'admin');
+}
 
-  const user = await resolveSessionUser(req);
-  if (user) {
-    req.user = user;
+function canAccessInstance(req, targetId) {
+  if (!req.user) return false;
+  if (req.user.role === 'admin') return true;
+  if (!req.user.cliente_id || !targetId) return false;
+  return String(req.user.cliente_id).trim().toLowerCase() === String(targetId).trim().toLowerCase();
+}
 
-    // Defesa anti-CSRF para requisições mutantes autenticadas via cookie de sessão
-    const isMutating = ['POST', 'PUT', 'DELETE', 'PATCH'].includes(req.method);
-    if (isMutating) {
-      const origin = req.headers.origin;
-      const host = req.headers.host;
-      const requestedWith = req.headers['x-requested-with'];
-      const hasCustomHeader = requestedWith === 'XMLHttpRequest';
-      const isSameOrigin = origin && host ? origin.endsWith(host) : true;
+// ============================================================================
+// ENDPOINTS DE GESTÃO DE USUÁRIOS (Admin only)
+// ============================================================================
 
-      if (!hasCustomHeader && !isSameOrigin) {
-        return res.status(403).json({ success: false, error: 'Requisição rejeitada por política de segurança anti-CSRF.' });
+// GET /api/v1/auth/users - Lista todos os usuários (admin only)
+app.get('/api/v1/auth/users', (req, res, next) => {
+  console.log('[endpoint-mw] req.user:', req.user ? { role: req.user.role, id: req.user.id } : 'undefined', 'path:', req.originalUrl);
+  next();
+}, requirePermission('usuarios', 'read'), async (req, res) => {
+  if (!isAdmin(req)) return res.status(403).json({ success: false, error: 'Apenas administradores' });
+  if (!pool) return res.status(503).json({ success: false, error: 'Banco de dados indisponível' });
+
+  try {
+    const res_query = await pool.query(
+      `SELECT u.id, u.customer_code, u.status, u.role, u.cliente_id, u.criado_em, u.atualizado_em,
+              COALESCE(i.nome, 'Operador') AS nome, c.email, c.telefone, i.nascimento,
+              (SELECT MAX(ultimo_uso) FROM dashboard_sessoes WHERE user_id = u.id) AS ultimo_acesso
+       FROM dashboard_usuarios u
+       LEFT JOIN dashboard_identidades i ON i.user_id = u.id
+       LEFT JOIN dashboard_contatos c ON c.user_id = u.id
+       ORDER BY u.criado_em DESC`
+    );
+    res.json({ success: true, data: res_query.rows });
+  } catch (err) {
+    console.error('[users] Erro ao listar:', err.message);
+    res.status(500).json({ success: false, error: 'Falha ao carregar usuários' });
+  }
+});
+
+// PUT /api/v1/auth/users/:id - Atualiza usuário (admin only)
+app.put('/api/v1/auth/users/:id', requirePermission('usuarios', 'update'), async (req, res) => {
+  if (!isAdmin(req)) return res.status(403).json({ success: false, error: 'Apenas administradores' });
+  if (!pool) return res.status(503).json({ success: false, error: 'Banco de dados indisponível' });
+
+  try {
+    const id = req.params.id;
+    const { nome, email, telefone, role, cliente_id, ativo, password, data_nascimento } = req.body;
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      // Atualiza dashboard_usuarios
+      await client.query(
+        `UPDATE dashboard_usuarios
+         SET role = COALESCE($1, role),
+             cliente_id = $2,
+             status = $3,
+             atualizado_em = NOW()
+         WHERE id = $4`,
+        [role, cliente_id || null, ativo ? 'ativo' : 'bloqueado', id]
+      );
+
+      // Atualiza dashboard_identidades (nome, nascimento)
+      if (nome || data_nascimento) {
+        await client.query(
+          `UPDATE dashboard_identidades
+           SET nome = COALESCE($1, nome),
+               nascimento = COALESCE($2, nascimento),
+               atualizado_em = NOW()
+           WHERE user_id = $3`,
+          [nome, data_nascimento, id]
+        );
+      }
+
+      // Atualiza dashboard_contatos (email, telefone)
+      if (email || telefone !== undefined) {
+        await client.query(
+          `UPDATE dashboard_contatos
+           SET email = COALESCE($1, email),
+               telefone = COALESCE($2, telefone),
+               atualizado_em = NOW()
+           WHERE user_id = $3`,
+          [email || null, telefone || null, id]
+        );
+      }
+
+      // Atualiza senha se fornecida
+      if (password && password.length >= 8) {
+        const passwordHash = await auth.hashPassword(password);
+        await client.query(
+          `UPDATE dashboard_credenciais SET password_hash = $1, atualizado_em = NOW() WHERE user_id = $2`,
+          [passwordHash, id]
+        );
+      }
+
+      await client.query('COMMIT');
+
+      await writeLog('info', 'auth', `Usuário atualizado: ${id}`, { id, role, ativo });
+
+      res.json({ success: true, message: 'Usuário atualizado com sucesso' });
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.error('[users] Erro ao atualizar:', err.message);
+    res.status(500).json({ success: false, error: 'Falha ao atualizar usuário' });
+  }
+});
+
+// DELETE /api/v1/auth/users/:id - Exclui usuário (admin only)
+app.delete('/api/v1/auth/users/:id', requirePermission('usuarios', 'delete'), async (req, res) => {
+  if (!isAdmin(req)) return res.status(403).json({ success: false, error: 'Apenas administradores' });
+  if (!pool) return res.status(503).json({ success: false, error: 'Banco de dados indisponível' });
+
+  try {
+    const id = req.params.id;
+
+    // Impede auto-exclusão
+    if (req.user && req.user.id === id) {
+      return res.status(400).json({ success: false, error: 'Não é possível excluir a si mesmo' });
+    }
+
+    await pool.query('DELETE FROM dashboard_usuarios WHERE id = $1', [id]);
+
+    await writeLog('info', 'auth', `Usuário excluído: ${id}`, { id });
+
+    res.json({ success: true, message: 'Usuário excluído com sucesso' });
+  } catch (err) {
+    console.error('[users] Erro ao excluir:', err.message);
+    res.status(500).json({ success: false, error: 'Falha ao excluir usuário' });
+  }
+});
+
+// ============================================================================
+// ENDPOINTS DE LOGS DO SISTEMA (com cache + SSE)
+// ============================================================================
+
+// GET /api/v1/logs - Lista logs com paginação, filtros e cache
+app.get('/api/v1/logs', requirePermission('logs', 'read'), async (req, res) => {
+  if (!pool) return res.status(503).json({ success: false, error: 'Banco de dados indisponível' });
+
+  try {
+    const {
+      nivel,
+      origem,
+      busca,
+      cliente_id,
+      page = 1,
+      limit = 50,
+      use_cache,
+      inicio,
+      fim
+    } = req.query;
+
+    const pageNum = Math.max(1, parseInt(page, 10));
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10)));
+    const offset = (pageNum - 1) * limitNum;
+
+    // Cache instantâneo para últimas 50 (página 1, sem filtros)
+    if (use_cache === 'true' && pageNum === 1 && !nivel && !origem && !busca && !cliente_id && !inicio && !fim) {
+      const cachedData = logCache.slice(0, limitNum);
+      return res.json({
+        success: true,
+        data: cachedData,
+        cached: true,
+        total: logCache.length,
+        page: 1,
+        limit: limitNum
+      });
+    }
+
+    // Query no banco com filtros dinâmicos
+    const conditions = [];
+    const values = [];
+    let paramIdx = 1;
+
+    // Filtro por tenant (isolamento multi-tenant)
+    const targetClienteId = isAdmin(req) ? (cliente_id || null) : req.user.cliente_id;
+    if (targetClienteId) {
+      conditions.push(`cliente_id = $${paramIdx++}`);
+      values.push(targetClienteId);
+    }
+
+    if (nivel) {
+      conditions.push(`nivel = $${paramIdx++}`);
+      values.push(nivel);
+    }
+
+    if (origem) {
+      conditions.push(`origem = $${paramIdx++}`);
+      values.push(origem);
+    }
+
+    if (busca) {
+      conditions.push(`(mensagem ILIKE $${paramIdx} OR contexto::text ILIKE $${paramIdx})`);
+      values.push(`%${busca}%`);
+      paramIdx++;
+    }
+
+    if (inicio) {
+      conditions.push(`criado_em >= $${paramIdx++}`);
+      values.push(inicio);
+    }
+
+    if (fim) {
+      conditions.push(`criado_em <= $${paramIdx++}`);
+      values.push(fim);
+    }
+
+    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+    // Total count
+    const countRes = await pool.query(
+      `SELECT COUNT(*)::int AS total FROM system_logs ${whereClause}`,
+      values
+    );
+    const total = countRes.rows[0].total;
+
+    // Data query
+    values.push(limitNum, offset);
+    const dataRes = await pool.query(
+      `SELECT id, nivel, origem, mensagem, contexto, cliente_id, criado_em
+       FROM system_logs
+       ${whereClause}
+       ORDER BY criado_em DESC
+       LIMIT $${paramIdx++} OFFSET $${paramIdx}`,
+      values
+    );
+
+    res.json({
+      success: true,
+      data: dataRes.rows,
+      cached: false,
+      total,
+      page: pageNum,
+      limit: limitNum,
+      totalPages: Math.ceil(total / limitNum)
+    });
+  } catch (err) {
+    console.error('[logs] Erro ao listar logs:', err.message);
+    res.status(500).json({ success: false, error: 'Falha ao carregar logs' });
+  }
+});
+
+// GET /api/v1/logs/stream - Server-Sent Events para tempo real
+app.get('/api/v1/logs/stream', requirePermission('logs', 'read'), (req, res) => {
+  // Headers SSE
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no'); // Desabilita buffer nginx
+  res.flushHeaders();
+
+  // Envia últimas 50 do cache imediatamente (heartbeat + histórico)
+  logCache.slice(0, 50).forEach(entry => {
+    res.write(`data: ${JSON.stringify(entry)}\n\n`);
+  });
+
+  // Registra cliente SSE
+  const clientId = Date.now() + Math.random();
+  sseClients.set(clientId, res);
+
+  // Heartbeat a cada 30s para manter conexão viva
+  const heartbeatInterval = setInterval(() => {
+    res.write(`: heartbeat\n\n`);
+  }, 30000);
+
+  // Cleanup ao fechar
+  req.on('close', () => {
+    clearInterval(heartbeatInterval);
+    sseClients.delete(clientId);
+  });
+});
+
+// GET /api/v1/logs/stats - Contadores por nível para badges
+app.get('/api/v1/logs/stats', requirePermission('logs', 'read'), async (req, res) => {
+  if (!pool) return res.status(503).json({ success: false, error: 'Banco de dados indisponível' });
+
+  try {
+    const { periodo = '24h' } = req.query;
+    let interval = '24 hours';
+    if (periodo === '1h') interval = '1 hour';
+    else if (periodo === '7d') interval = '7 days';
+    else if (periodo === '30d') interval = '30 days';
+
+    const targetClienteId = isAdmin(req) ? req.query.cliente_id : req.user.cliente_id;
+    const clienteFilter = targetClienteId ? 'AND cliente_id = $1' : '';
+    const values = targetClienteId ? [targetClienteId] : [];
+
+    const res_query = await pool.query(
+      `SELECT nivel, COUNT(*)::int AS count
+       FROM system_logs
+       WHERE criado_em >= NOW() - INTERVAL '${interval}'
+       ${clienteFilter}
+       GROUP BY nivel`,
+      values
+    );
+
+    const stats = { critical: 0, error: 0, warn: 0, info: 0, debug: 0 };
+    for (const row of res_query.rows) {
+      if (stats.hasOwnProperty(row.nivel)) {
+        stats[row.nivel] = row.count;
       }
     }
 
-    return next();
+    res.json({ success: true, data: stats, periodo: interval });
+  } catch (err) {
+    console.error('[logs] Erro ao buscar stats:', err.message);
+    res.status(500).json({ success: false, error: 'Falha ao carregar estatísticas' });
+  }
+});
+
+// GET /api/v1/logs/origens - Lista origens únicas para filtro
+app.get('/api/v1/logs/origens', requirePermission('logs', 'read'), async (req, res) => {
+  if (!pool) return res.status(503).json({ success: false, error: 'Banco de dados indisponível' });
+
+  try {
+    const targetClienteId = isAdmin(req) ? req.query.cliente_id : req.user.cliente_id;
+    const clienteFilter = targetClienteId ? 'WHERE cliente_id = $1' : '';
+    const values = targetClienteId ? [targetClienteId] : [];
+
+    const res_query = await pool.query(
+      `SELECT DISTINCT origem FROM system_logs ${clienteFilter} ORDER BY origem`,
+      values
+    );
+
+    res.json({ success: true, data: res_query.rows.map(r => r.origem) });
+  } catch (err) {
+    console.error('[logs] Erro ao buscar origens:', err.message);
+    res.status(500).json({ success: false, error: 'Falha ao carregar origens' });
+  }
+});
+
+// POST /api/v1/logs/limpar - Limpeza manual de logs antigos (admin only)
+app.post('/api/v1/logs/limpar', requirePermission('logs', 'delete'), async (req, res) => {
+  if (!isAdmin(req)) return res.status(403).json({ success: false, error: 'Apenas administradores podem limpar logs' });
+  if (!pool) return res.status(503).json({ success: false, error: 'Banco de dados indisponível' });
+
+  try {
+    const { dias = 90 } = req.body;
+    const diasNum = Math.max(1, parseInt(dias, 10));
+
+    const result = await pool.query('SELECT fn_limpar_logs_antigos($1) AS result', [diasNum]);
+    const data = result.rows[0].result;
+
+    // Limpa cache em memória também
+    const cutoff = new Date(Date.now() - diasNum * 24 * 60 * 60 * 1000);
+    logCache = logCache.filter(e => new Date(e.criado_em) >= cutoff);
+
+    await writeLog('info', 'system', `Limpeza de logs executada: ${data.removidos} entradas removidas (retenção ${diasNum} dias)`, { dias: diasNum, removidos: data.removidos });
+
+    res.json({ success: true, data });
+  } catch (err) {
+    console.error('[logs] Erro ao limpar logs:', err.message);
+    res.status(500).json({ success: false, error: 'Falha ao limpar logs' });
+  }
+});
+
+// ============================================================================
+// ENDPOINTS DE PERMISSÕES (RBAC)
+// ============================================================================
+
+// GET /api/v1/permissoes/matrix - Matriz de permissões efetivas do usuário
+app.get('/api/v1/permissoes/matrix', async (req, res) => {
+  const user = await resolveSessionUser(req);
+  if (!user && !verifyBasicAuth(req)) {
+    return res.status(401).json({ success: false, error: 'Não autenticado' });
   }
 
-  if (verifyBasicAuth(req)) {
-    req.user = { id: 'basic', role: 'admin', nome: 'Admin' };
-    return next();
+  const effectiveUser = user || { role: 'admin', id: 'basic' };
+
+  // Se admin, retorna todas as permissões possíveis
+  if (effectiveUser.role === 'admin') {
+    const recursos = ['instances', 'financeiro', 'modelos', 'conhecimento', 'logs', 'usuarios', 'settings'];
+    const acoes = ['create', 'read', 'update', 'delete', 'execute'];
+    const matrix = {};
+    for (const recurso of recursos) {
+      matrix[recurso] = {};
+      for (const acao of acoes) {
+        matrix[recurso][acao] = true;
+      }
+    }
+    return res.json({ success: true, data: matrix, role: 'admin', isAdmin: true });
   }
 
-  res.status(401).json({ success: false, error: 'Sessão expirada ou não autenticada.' });
+  // Para outros roles, consulta cache/banco
+  if (!permissoesCacheLoaded) {
+    await loadPermissoesCache();
+  }
+
+  const roleMap = permissoesCache.get(effectiveUser.role) || new Map();
+  const recursos = ['instances', 'financeiro', 'modelos', 'conhecimento', 'logs', 'usuarios', 'settings'];
+  const acoes = ['create', 'read', 'update', 'delete', 'execute'];
+  const matrix = {};
+
+  for (const recurso of recursos) {
+    matrix[recurso] = {};
+    const recursoPerms = roleMap.get(recurso) || new Set();
+    for (const acao of acoes) {
+      matrix[recurso][acao] = recursoPerms.has(acao);
+    }
+  }
+
+  res.json({ success: true, data: matrix, role: effectiveUser.role, isAdmin: false });
+});
+
+// GET /api/v1/permissoes/list - Lista todas as permissões cadastradas (admin only)
+app.get('/api/v1/permissoes/list', requirePermission('usuarios', 'read'), async (req, res) => {
+  if (!pool) return res.status(503).json({ success: false, error: 'Banco de dados indisponível' });
+
+  try {
+    const res_query = await pool.query(
+      'SELECT id, role, recurso, acao, permitido FROM dashboard_permissoes ORDER BY role, recurso, acao'
+    );
+    res.json({ success: true, data: res_query.rows });
+  } catch (err) {
+    console.error('[permissoes] Erro ao listar:', err.message);
+    res.status(500).json({ success: false, error: 'Falha ao carregar permissões' });
+  }
+});
+
+// POST /api/v1/permissoes - Cria/atualiza permissão (admin only)
+app.post('/api/v1/permissoes', requirePermission('usuarios', 'create'), async (req, res) => {
+  if (!isAdmin(req)) return res.status(403).json({ success: false, error: 'Apenas administradores' });
+  if (!pool) return res.status(503).json({ success: false, error: 'Banco de dados indisponível' });
+
+  try {
+    const { role, recurso, acao, permitido = true } = req.body;
+
+    if (!role || !recurso || !acao) {
+      return res.status(400).json({ success: false, error: 'role, recurso e acao são obrigatórios' });
+    }
+
+    if (!['admin', 'operador', 'visualizador'].includes(role)) {
+      return res.status(400).json({ success: false, error: 'Role inválida' });
+    }
+
+    if (!['create', 'read', 'update', 'delete', 'execute'].includes(acao)) {
+      return res.status(400).json({ success: false, error: 'Ação inválida' });
+    }
+
+    const result = await pool.query(
+      `INSERT INTO dashboard_permissoes (role, recurso, acao, permitido)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (role, recurso, acao) DO UPDATE SET permitido = EXCLUDED.permitido
+       RETURNING *`,
+      [role, recurso, acao, permitido]
+    );
+
+    // Invalida cache para recarregar
+    permissoesCacheLoaded = false;
+    await loadPermissoesCache();
+
+    await writeLog('info', 'auth', `Permissão atualizada: ${role}.${recurso}.${acao} = ${permitido}`, { role, recurso, acao, permitido });
+
+    res.json({ success: true, data: result.rows[0] });
+  } catch (err) {
+    console.error('[permissoes] Erro ao salvar:', err.message);
+    res.status(500).json({ success: false, error: 'Falha ao salvar permissão' });
+  }
+});
+
+// DELETE /api/v1/permissoes/:id - Remove permissão (admin only)
+app.delete('/api/v1/permissoes/:id', requirePermission('usuarios', 'delete'), async (req, res) => {
+  if (!isAdmin(req)) return res.status(403).json({ success: false, error: 'Apenas administradores' });
+  if (!pool) return res.status(503).json({ success: false, error: 'Banco de dados indisponível' });
+
+  try {
+    const id = parseInt(req.params.id, 10);
+    await pool.query('DELETE FROM dashboard_permissoes WHERE id = $1', [id]);
+
+    permissoesCacheLoaded = false;
+    await loadPermissoesCache();
+
+    await writeLog('info', 'auth', `Permissão removida: ID ${id}`, { id });
+
+    res.json({ success: true, message: 'Permissão removida' });
+  } catch (err) {
+    console.error('[permissoes] Erro ao remover:', err.message);
+    res.status(500).json({ success: false, error: 'Falha ao remover permissão' });
+  }
 });
 
 // Helpers de Autorização RBAC / Isolamento Multi-Tenant
@@ -645,6 +1191,143 @@ function canAccessInstance(req, targetId) {
   if (!req.user.cliente_id || !targetId) return false;
   return String(req.user.cliente_id).trim().toLowerCase() === String(targetId).trim().toLowerCase();
 }
+
+// ============================================================================
+// SISTEMA DE LOGS COM CACHE EM MEMÓRIA + SSE TEMPO REAL
+// ============================================================================
+
+// Cache em memória das últimas 50 entradas (evita sobrecarga do servidor)
+const LOG_CACHE_MAX = 50;
+let logCache = [];  // [{id, nivel, origem, mensagem, contexto, cliente_id, criado_em}]
+const sseClients = new Map();  // clientId -> response object
+
+function addToLogCache(entry) {
+  logCache.unshift(entry);
+  if (logCache.length > LOG_CACHE_MAX) logCache.length = LOG_CACHE_MAX;
+
+  // Broadcast para clientes SSE conectados
+  const data = `data: ${JSON.stringify(entry)}\n\n`;
+  sseClients.forEach((client, clientId) => {
+    client.write(data).catch(() => {
+      sseClients.delete(clientId);
+    });
+  });
+}
+
+// Função auxiliar para registrar log (usada por outros módulos)
+async function writeLog(nivel, origem, mensagem, contexto = {}, clienteId = null) {
+  const entry = {
+    nivel,
+    origem,
+    mensagem,
+    contexto,
+    cliente_id: clienteId,
+    criado_em: new Date().toISOString()
+  };
+
+  // Persiste no banco (async, não bloqueia)
+  if (pool) {
+    pool.query(
+      `INSERT INTO system_logs (nivel, origem, mensagem, contexto, cliente_id) VALUES ($1,$2,$3,$4,$5)`,
+      [nivel, origem, mensagem, JSON.stringify(contexto), clienteId]
+    ).catch(err => console.error('[log] Falha ao persistir:', err.message));
+  }
+
+  // Adiciona ao cache + broadcast SSE
+  addToLogCache({ ...entry, id: Date.now() + Math.random() });
+
+  return entry;
+}
+
+
+// ============================================================================
+// RBAC GRANULAR - Matriz de Permissões por Role/Recurso/Ação
+// ============================================================================
+
+// Cache em memória das permissões (recarregado periodicamente)
+let permissoesCache = new Map();  // role -> Map<recurso, Set<acao>>
+let permissoesCacheLoaded = false;
+
+async function loadPermissoesCache() {
+  if (!pool) return;
+  try {
+    const res = await pool.query('SELECT role, recurso, acao, permitido FROM dashboard_permissoes WHERE permitido = true');
+    permissoesCache.clear();
+    for (const row of res.rows) {
+      if (!permissoesCache.has(row.role)) {
+        permissoesCache.set(row.role, new Map());
+      }
+      const roleMap = permissoesCache.get(row.role);
+      if (!roleMap.has(row.recurso)) {
+        roleMap.set(row.recurso, new Set());
+      }
+      roleMap.get(row.recurso).add(row.acao);
+    }
+    permissoesCacheLoaded = true;
+    console.log('[rbac] Cache de permissões carregado:', permissoesCache.size, 'roles');
+  } catch (err) {
+    console.error('[rbac] Erro ao carregar permissões:', err.message);
+  }
+}
+
+// Verifica se usuário tem permissão para recurso/ação
+function canAccessResource(user, recurso, acao) {
+  if (!user) return false;
+  if (user.role === 'admin') return true;  // Admin tem acesso total (wildcard *)
+
+  // Se cache não carregado, tenta carregar (fallback para defaults conservadores)
+  if (!permissoesCacheLoaded) {
+    // Defaults conservadores baseados no seed do init.sql
+    const defaults = {
+      operador: {
+        instances: new Set(['read', 'update', 'execute']),
+        financeiro: new Set(['read']),
+        modelos: new Set(['read']),
+        conhecimento: new Set(['read', 'create', 'update']),
+        logs: new Set(['read'])
+      },
+      visualizador: {
+        instances: new Set(['read']),
+        financeiro: new Set(['read']),
+        modelos: new Set(['read']),
+        conhecimento: new Set(['read']),
+        logs: new Set(['read'])
+      }
+    };
+    const roleDefaults = defaults[user.role];
+    if (!roleDefaults) return false;
+    const recursoPerms = roleDefaults[recurso];
+    return recursoPerms ? recursoPerms.has(acao) : false;
+  }
+
+  const roleMap = permissoesCache.get(user.role);
+  if (!roleMap) return false;
+
+  // Verifica wildcard * para admin (já tratado acima) ou recurso específico
+  const recursoPerms = roleMap.get(recurso) || roleMap.get('*');
+  if (!recursoPerms) return false;
+
+  return recursoPerms.has(acao) || recursoPerms.has('*');
+}
+
+// Middleware factory para proteger rotas com permissão específica
+function requirePermission(recurso, acao) {
+  return (req, res, next) => {
+    if (!canAccessResource(req.user, recurso, acao)) {
+      return res.status(403).json({
+        success: false,
+        error: `Permissão negada: ${recurso}.${acao} (role: ${req.user?.role})`
+      });
+    }
+    next();
+  };
+}
+
+// Carrega permissões na inicialização
+loadPermissoesCache().catch(() => {});
+
+// Recarrega permissões a cada 5 minutos
+setInterval(loadPermissoesCache, 5 * 60 * 1000);
 
 // 1. Listar Instâncias e Clientes
 app.get('/api/v1/instances', async (req, res) => {
