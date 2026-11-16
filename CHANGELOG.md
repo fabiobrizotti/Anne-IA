@@ -2,6 +2,30 @@
 
 ## [1.2.0] - 2026-11-16
 
+### Fixed — `update.sh` abortava quando o código estava certo e o container não
+
+O caminho "nada a fazer" morria com exit 1 se o container não rodasse o `HEAD`.
+Essa é uma situação **recuperável e comum**: update interrompido depois do pull,
+`git pull` feito à mão, container recriado a partir de imagem antiga. O operador
+ficava com a stack inconsistente e sem ação óbvia.
+
+Agora o script converge: carimba o `GIT_SHA`, roda `docker compose up -d` e
+revalida com `--require-revision`. `NADA A FAZER` quando tudo já casa,
+`CONVERGIDO — container recriado em <sha>` quando precisou recriar, e erro (com
+log) só se a stack continuar insalubre.
+
+### Fixed — `GIT_SHA` herdado do ambiente anulava silenciosamente o carimbo
+
+O Docker Compose dá **precedência ao ambiente do shell sobre o `.env`**. Com um
+`GIT_SHA` exportado na sessão (deploy anterior, script de CI, shell interativo),
+o script gravava `d7025ca` no `.env`, o Compose resolvia `fe81794` do ambiente e
+o container **nunca era recriado** — a convergência falhava com "não convergiu"
+sem causa aparente. `stamp_git_sha()` agora grava **e exporta**, tornando o
+`update.sh` a autoridade sobre a revisão.
+
+Mesma armadilha vale para `DASHBOARD_VERSION`/`N8N_VERSION` (documentada em
+§12.5 do README): `env -u DASHBOARD_VERSION docker compose ...` isola o teste.
+
 ### Fixed — primeira execução real do CI no GitHub Actions (run 43969044849)
 
 O `actionlint` valida sintaxe e expressões, mas **não** valida se os SHAs pinados

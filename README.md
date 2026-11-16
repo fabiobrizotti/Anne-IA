@@ -552,6 +552,17 @@ O script executa 8 etapas e **aborta na primeira que falhar**:
 Códigos de saída: `0` sucesso (ou nada a fazer) · `1` abortado no preflight ·
 `2` aplicado, gate falhou e o rollback foi executado.
 
+Se o código já está na revisão certa, o script **não** reaplica schema nem
+reconstrói imagem — mas confere se o *container* também está. Quando o container
+ficou para trás (update interrompido depois do pull, `git pull` manual, container
+recriado a partir de imagem antiga), ele converge: carimba o `GIT_SHA`, roda
+`docker compose up -d` e revalida. A saída é uma das duas:
+
+```
+ NADA A FAZER — revisão e6197de já aplicada e stack saudável.
+ CONVERGIDO — container recriado em e6197de, stack saudável.
+```
+
 ### 12.2. Como afirmar que a VPS está na revisão certa
 
 O `/api/health` devolve a revisão em execução:
@@ -630,6 +641,7 @@ Logs completos de cada execução: `logs/update-<AAAAmmdd-HHMMSS>.log`.
 | `ROLLBACK CONCLUÍDO` (exit 2) | update quebrou a stack | stack está na revisão anterior e saudável; corrija e republique |
 | `ROLLBACK INCOMPLETO` (exit 2) | falha generalizada | restaure `backups/anneia-<ts>.sql.gz` e `backups/env-<ts>` manualmente |
 | health com `sha` de outro commit | container antigo | `docker compose up -d dashboard` ou rode o update novamente |
+| `update` diz `CONVERGIDO` mas a versão da imagem não muda | variável exportada no shell vence o `.env` (Compose) | `unset DASHBOARD_VERSION` / `unset N8N_VERSION` antes de rodar; o `update.sh` já exporta o `GIT_SHA` que ele mesmo carimba |
 
 ### 12.6. Rollback manual (sem o script)
 
