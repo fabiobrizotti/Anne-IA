@@ -74,6 +74,11 @@ die()  { printf '\n    \033[31m[erro]\033[0m %s\n' "$*"; printf '    log: %s\n' 
 # Grava a revisão aplicada no .env. `up -d` recria o container com o novo valor,
 # e /api/health passa a devolver este sha — é o que permite afirmar de fora que a
 # stack roda o commit esperado.
+#
+# O `export` não é redundante: o Docker Compose dá precedência ao ambiente do
+# shell sobre o .env, então um GIT_SHA herdado (deploy anterior, script de CI,
+# sessão interativa) silenciosamente sobrescreveria o valor recém-gravado e o
+# container não seria recriado.
 stamp_git_sha() {
   local short="$1"
   if grep -qE '^GIT_SHA=' "${ENV_FILE}"; then
@@ -81,6 +86,7 @@ stamp_git_sha() {
   else
     printf 'GIT_SHA=%s\n' "${short}" >> "${ENV_FILE}"
   fi
+  export GIT_SHA="${short}"
 }
 
 # Código já está na revisão certa — mas o container também precisa estar.
