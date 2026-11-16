@@ -571,16 +571,19 @@ git -C ~/Anne-IA rev-parse --short HEAD   # compare com "sha"
 O próprio gate já faz essa comparação e falha em divergência:
 
 ```bash
-./scripts/verify-stack.sh
+./scripts/verify-stack.sh --require-revision
 # ...
 #   [ok]   revisão: container em abbdf62 = HEAD do checkout
 #  STACK SAUDÁVEL — 15 verificações ok
 ```
 
-Três estados possíveis da checagem de revisão:
+Quatro estados possíveis da checagem de revisão:
 
 - `[ok]` — container e checkout no mesmo commit.
-- `[falha]` — container em commit diferente (update não aplicado / imagem antiga).
+- `[aviso]` — container em outro commit, em execução **manual** do `verify-stack.sh`
+  (num clone de desenvolvimento é normal rodar uma revisão atrás do HEAD).
+- `[falha]` — divergência sob `--require-revision` (é o que o `update.sh` usa):
+  atualização não aplicada ou imagem antiga.
 - `[skip]` — `GIT_SHA=unknown`: a stack foi construída à mão, sem passar pelo
   `update.sh`. Rode `./scripts/update.sh` uma vez para começar a rastrear.
 
@@ -593,6 +596,11 @@ Três estados possíveis da checagem de revisão:
 ./scripts/update.sh --branch main    # branch de origem (padrão: dev)
 UPDATE_HEALTH_TIMEOUT=300 ./scripts/update.sh   # mais tempo para o gate
 UPDATE_REMOTE=upstream ./scripts/update.sh      # remoto alternativo
+
+# verificação manual da stack
+./scripts/verify-stack.sh                  # divergência de revisão = [aviso]
+./scripts/verify-stack.sh --require-revision   # divergência = falha (exit 1)
+./scripts/verify-stack.sh --timeout 180        # aguarda convergência
 ```
 
 Logs completos de cada execução: `logs/update-<AAAAmmdd-HHMMSS>.log`.

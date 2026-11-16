@@ -2,6 +2,52 @@
 
 ## [1.2.0] - 2026-11-16
 
+### Added — runbook de atualização em produção (`README` §12)
+
+Seção nova respondendo "como atualizo a VPS?" e "como sei que atualizou?": tabela
+das 8 etapas, verificação por `/api/health` + gate, flags, tabela dos cenários
+efetivamente testados, tabela sintoma → causa → ação, rollback manual e hooks.
+§2 agora avisa que reinstalar não é o caminho de atualização.
+
+### Changed — divergência de revisão: aviso no uso local, falha no deploy
+
+A 15ª verificação compara o `sha` do container com o `HEAD`. Reprovar sempre
+tornava o `verify-stack.sh` inútil em desenvolvimento (container legitimamente
+uma revisão atrás). Agora:
+
+- `verify-stack.sh` sem flag → `[aviso]` (não reprova).
+- `verify-stack.sh --require-revision` → `[falha]` (exit 1).
+- `update.sh` usa `--require-revision` no gate pós-update e nos caminhos
+  "nada a fazer"; o gate pós-rollback **não** usa (caminho de recuperação — se o
+  `.env` anterior tinha `GIT_SHA=unknown`, exigir revisão transformaria um
+  rollback bem-sucedido em "INCOMPLETO").
+
+### Testes executados (2026-11-16)
+```bash
+./scripts/verify-stack.sh                      # container 1 commit atrás
+# [aviso] revisão: container em abbdf62, HEAD 93149a7 (rode ./scripts/update.sh)
+# STACK SAUDÁVEL — 15 verificações ok            (exit 0)
+
+./scripts/verify-stack.sh --require-revision
+# [falha] revisão: container em abbdf62 != HEAD 93149a7 (atualização não aplicada?)
+# STACK COM PROBLEMAS — 1/15 falhas              (exit 1)
+
+# após carimbar GIT_SHA=93149a7 no .env + up -d
+./scripts/verify-stack.sh --require-revision
+# [ok] revisão: container em 93149a7 = HEAD do checkout
+# STACK SAUDÁVEL — 15 verificações ok            (exit 0)
+
+./scripts/update.sh --dry-run        # árvore limpa, nada a fazer: não escreve
+# backups/ = 0 arquivos
+
+# árvore suja (arquivo rastreado modificado) -> bloqueia
+./scripts/update.sh --dry-run
+# [erro] Árvore Git suja. ...                    (exit 1)
+
+# arquivo NÃO rastreado -> não bloqueia (untracked-files=no)
+```
+
+
 ### Added — revisão rastreável (`/api/health`) e gate de atualização
 
 Antes disso não era possível **afirmar** que a VPS rodava o commit do GitHub: o
