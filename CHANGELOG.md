@@ -2,6 +2,64 @@
 
 ## [1.2.0] - 2026-11-16
 
+### Added — revisão rastreável (`/api/health`) e gate de atualização
+
+Antes disso não era possível **afirmar** que a VPS rodava o commit do GitHub: o
+health respondia apenas `{"status":"ok"}`. Um deploy que falhasse silenciosamente
+(imagem antiga reaproveitada, container não recriado) era indistinguível de sucesso.
+
+- `dashboard/Dockerfile`: `ARG GIT_SHA` / `ARG APP_VERSION` (fallback `unknown`).
+- `docker-compose.yml`: `build.args` **e** `environment` no serviço `dashboard`.
+  O runtime é necessário porque um update que só toca documentação não reconstrói
+  a imagem — mas a revisão em execução precisa mudar mesmo assim.
+- `dashboard/src/server.js`: `/api/health` devolve `version`, `sha` e `uptime`.
+  Nenhum segredo: só a versão e o hash curto do commit.
+- `scripts/update.sh`: grava `GIT_SHA=<sha>` no `.env` a cada deploy; o compose
+  recria o container com o novo valor (sem rebuild, custo ~1s).
+- `scripts/verify-stack.sh`: 15ª verificação — compara o `sha` do container com o
+  `HEAD` do checkout. Três estados explícitos: `ok` (casa), `falha` (divergiu) e
+  `skip` (container ainda sem `GIT_SHA`, porque o `update.sh` nunca rodou ali).
+
+### Fixed — bump de versão de imagem nunca chegava à VPS
+
+`sync-env.sh` preservava **todos** os valores existentes no `.env`, incluindo
+`N8N_VERSION` e `DASHBOARD_VERSION`. Resultado: subir `N8N_VERSION` no
+`.env.example` e rodar o update mantinha a VPS na versão antiga — a atualização
+"passava" sem atualizar o serviço. Agora as chaves `*_VERSION` seguem a release do
+`.env.example` (são pinos de tag, não configuração do host) e o sync informa
+`[atualizada] CHAVE: antiga -> nova`. Portas, binds e credenciais continuam
+preservados.
+
+### Testes executados (2026-11-16)
+```bash
+curl -s http://127.0.0.1:41283/api/health
+# {"status":"ok","version":"1.2.0","sha":"abbdf62","uptime":10,...}
+# git rev-parse --short HEAD -> abbdf62   (coincide)
+
+./scripts/verify-stack.sh
+# [ok] revisão: container em abbdf62 = HEAD do checkout
+# STACK SAUDÁVEL — 15 verificações ok
+
+# teste negativo: GIT_SHA=deadbee no .env + up -d
+# [falha] revisão: container em deadbee != HEAD abbdf62 (atualização não aplicada?)
+# STACK COM PROBLEMAS — 1/15 falhas (exit 1)
+# teste neutro: GIT_SHA=unknown
+# [skip]  revisão: container sem GIT_SHA (rode ./scripts/update.sh para marcar)
+# STACK SAUDÁVEL — 14 verificações ok
+
+# update.sh end-to-end com remoto falso (commit que só toca CHANGELOG)
+# [ok] GIT_SHA=cd126f4 gravado no .env (reaparece em /api/health)
+# [ok] dashboard sem mudanças — imagem reaproveitada
+# [ok] revisão: container em cd126f4 = HEAD do checkout
+# segunda execução: NADA A FAZER — revisão cd126f4 já aplicada
+
+# sync-env.sh: bump N8N_VERSION 2.47.7 -> 2.47.8
+# [atualizada] N8N_VERSION: 2.47.7 -> 2.47.8 (release)
+# sha256 dos 12 segredos idêntico antes/depois
+# segunda execução: 0 gerada(s), 13 mantida(s), 0 sincronizada(s)
+```
+
+
 ### Fixed — CI (`dast`) nunca executou: YAML inválido e alvos errados
 
 O workflow estava **inválido** (GitHub não conseguia nem fazer parse), então os jobs
