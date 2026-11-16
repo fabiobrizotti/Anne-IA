@@ -522,3 +522,128 @@ docker stats --format "table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}"
 curl -s -u root:"$RABBITMQ_DEFAULT_PASS" http://127.0.0.1:15672/api/nodes | jq '.[0] | {mem_used, mem_limit, mem_alarm}'
 ```
 
+
+## 12. Atualização em Produção (VPS) — Um Comando, com Rollback
+
+Esta seção responde a duas perguntas operacionais: **"como atualizo a VPS?"** e
+**"como sei que a atualização realmente aconteceu?"**.
+
+### 12.1. Fluxo normal
+
+```bash
+cd ~/Anne-IA          # ou onde o repositório vive na VPS
+git status --short    # deve estar vazio
+./scripts/update.sh   # pede confirmação; --yes para automação
+```
+
+O script executa 8 etapas e **aborta na primeira que falhar**:
+
+| # | Etapa | O que garante |
+|---|---|---|
+| 1 | Preflight | branch correta, árvore Git limpa, `.env` com `chmod 600`, ≥ 2 GB livres, `flock` contra execução concorrente |
+| 2 | Busca | `git fetch` do remoto e diff legível (commits + arquivos); `--dry-run` termina aqui sem escrever nada |
+| 3 | Backup | `.env`, revisão anterior e `pg_dump` do banco `anneia` em `backups/` (retenção: 10 de cada) |
+| 4 | Reconcílio `.env` | `sync-env.sh` só quando `.env.example` mudou + carimba `GIT_SHA=<sha>` |
+| 5 | Compose | `docker compose config -q` antes de tocar em qualquer container |
+| 6 | Schema | reaplica `init.sql` **somente** se ele mudou (ou `--schema`) |
+| 7 | Aplicação | rebuild do dashboard **somente** se `dashboard/` mudou; `docker compose up -d` |
+| 8 | Gate | `verify-stack.sh` com 15 verificações; falhou → **rollback automático** |
+
+Códigos de saída: `0` sucesso (ou nada a fazer) · `1` abortado no preflight ·
+`2` aplicado, gate falhou e o rollback foi executado.
+
+### 12.2. Como afirmar que a VPS está na revisão certa
+
+O `/api/health` devolve a revisão em execução:
+
+```bash
+curl -s http://127.0.0.1:${DASHBOARD_PORT:-41283}/api/health | jq
+# {
+#   "status": "ok",
+#   "version": "1.2.0",      <- DASHBOARD_VERSION do .env
+#   "sha": "abbdf62",        <- commit aplicado pelo update.sh
+#   "uptime": 42,
+#   "timestamp": "..."
+# }
+git -C ~/Anne-IA rev-parse --short HEAD   # compare com "sha"
+```
+
+O próprio gate já faz essa comparação e falha em divergência:
+
+```bash
+./scripts/verify-stack.sh
+# ...
+#   [ok]   revisão: container em abbdf62 = HEAD do checkout
+#  STACK SAUDÁVEL — 15 verificações ok
+```
+
+Três estados possíveis da checagem de revisão:
+
+- `[ok]` — container e checkout no mesmo commit.
+- `[falha]` — container em commit diferente (update não aplicado / imagem antiga).
+- `[skip]` — `GIT_SHA=unknown`: a stack foi construída à mão, sem passar pelo
+  `update.sh`. Rode `./scripts/update.sh` uma vez para começar a rastrear.
+
+### 12.3. Flags úteis
+
+```bash
+./scripts/update.sh --dry-run        # mostra commits/arquivos; não escreve nada
+./scripts/update.sh --yes            # não-interativo (cron, CI, systemd-timer)
+./scripts/update.sh --schema         # força reaplicar o init.sql
+./scripts/update.sh --branch main    # branch de origem (padrão: dev)
+UPDATE_HEALTH_TIMEOUT=300 ./scripts/update.sh   # mais tempo para o gate
+UPDATE_REMOTE=upstream ./scripts/update.sh      # remoto alternativo
+```
+
+Logs completos de cada execução: `logs/update-<AAAAmmdd-HHMMSS>.log`.
+
+### 12.4. O que foi verificado antes de confiar neste fluxo
+
+| Cenário | Resultado |
+|---|---|
+| `init.sql` em volume vazio (boot limpo) | 0 ERRORs, 21 tabelas, 51 triggers de auditoria |
+| `init.sql` reaplicado em banco populado | 0 ERRORs, dado sentinela preservado |
+| `UPDATE` em tabela **sem** coluna `id` (produtos, movimentações) | auditado com antes/depois |
+| Update com 1 commit novo (só README) | exit 0, sha do health acompanhou o HEAD, sem rebuild |
+| Rodar o update duas vezes seguidas | exit 0, "NADA A FAZER — revisão já aplicada" |
+| Remoto divergente (`git pull` sem fast-forward) | abortado com exit 1, nada aplicado |
+| Gate falhando (healthcheck sabotado) | **rollback**: código e `.env` restaurados, stack saudável, exit 2 |
+| Bump de `N8N_VERSION` no `.env.example` | `[atualizada] 2.47.7 -> 2.48.x` no `.env` |
+| `sync-env.sh` sobre `.env` preenchido | sha256 dos 12 segredos idêntico antes/depois |
+
+### 12.5. Quando algo dá errado
+
+| Sintoma | Causa provável | Ação |
+|---|---|---|
+| `[erro] Árvore Git suja` | commit/edição local na VPS | commite ou `git checkout -- .` **antes** de atualizar |
+| `[erro] git pull --ff-only falhou` | histórico divergente | `git log --oneline HEAD..origin/dev` e reconcilie na sua máquina |
+| `[erro] branch atual 'x' != esperada 'dev'` | VPS numa branch errada | `git switch dev` ou use `--branch` |
+| `init.sql falhou` | mudança de schema inválida | leia `logs/schema-<ts>.log`; o código **não** foi trocado |
+| `ROLLBACK CONCLUÍDO` (exit 2) | update quebrou a stack | stack está na revisão anterior e saudável; corrija e republique |
+| `ROLLBACK INCOMPLETO` (exit 2) | falha generalizada | restaure `backups/anneia-<ts>.sql.gz` e `backups/env-<ts>` manualmente |
+| health com `sha` de outro commit | container antigo | `docker compose up -d dashboard` ou rode o update novamente |
+
+### 12.6. Rollback manual (sem o script)
+
+```bash
+# 1. código
+git reset --hard "$(cat backups/rev-<ts>)"
+
+# 2. .env
+cp -p backups/env-<ts> .env && chmod 600 .env
+
+# 3. banco (somente se o schema mudou de forma incompatível)
+gunzip -c backups/anneia-<ts>.sql.gz | \
+  docker exec -i db-evolution psql -U evolution -d anneia
+
+# 4. subir e verificar
+docker compose up -d --build
+./scripts/verify-stack.sh --timeout 180
+```
+
+### 12.7. Hooks de Git (opcional, recomendado)
+
+Com `git config core.hooksPath .githooks`, o `.env` é sincronizado automaticamente
+após `git pull`/`git merge` (`post-merge`) e após `git pull --rebase`
+(`post-rewrite`) — este último sempre, porque durante o rebase o `ORIG_HEAD` não é
+confiável e o `sync-env.sh` é idempotente e nunca sobrescreve segredos.
