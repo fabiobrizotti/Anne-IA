@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# ANNE-IA — GIT POST-REWRITE HOOK
+# ==============================================================================
+# O post-merge NÃO roda em `git pull --rebase` (rebase não gera merge commit).
+# Este hook cobre esse caso.
+#
+# Por que sincroniza sempre (e não só quando .env.example muda)?
+#   Durante um rebase o `ORIG_HEAD` não aponta de forma confiável para a base
+#   anterior, e os pares (old, new) recebidos no stdin contêm apenas os commits
+#   REESCRITOS — não a mudança que veio do upstream. Como `sync-env.sh` é
+#   idempotente e NUNCA sobrescreve valores/senhas locais (só adiciona chaves
+#   novas do .env.example e gera senhas vazias), rodar sempre é seguro e
+#   elimina o risco de .env desatualizado após `git pull --rebase`.
+#
+# $1 = "rebase" | "amend"; amend é ignorado (não altera o upstream).
+#
+# Habilitar no repositório local (uma vez por clone):
+#   git config core.hooksPath .githooks
+# ==============================================================================
+
+set -euo pipefail
+
+[[ "${1:-}" == "rebase" ]] || exit 0
+
+PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+
+echo ""
+echo "==================================================================="
+echo "  [hook] rebase concluído — sincronizando .env com .env.example"
+echo "  (idempotente: valores e senhas locais são preservados)"
+echo "==================================================================="
+if [[ -x "${PROJECT_ROOT}/scripts/sync-env.sh" ]]; then
+  "${PROJECT_ROOT}/scripts/sync-env.sh"
+else
+  echo "  [aviso] scripts/sync-env.sh ausente ou sem permissão — rode manualmente"
+fi
+
+exit 0

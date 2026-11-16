@@ -2,25 +2,14 @@
 # ==============================================================================
 # ANNE-IA — GIT POST-MERGE HOOK
 # ==============================================================================
-# Dispara automaticamente a sincronização do .env caso o .env.example tenha
-# sofrido alterações no git pull / merge.
+# Dispara a sincronização do .env quando um `git pull`/`git merge` traz
+# alterações em .env.example. A lógica vive em sync-env-if-changed (compartilhada
+# com o post-rewrite, que cobre `git pull --rebase`).
 #
-# Para habilitar este hook no repositório local:
+# Habilitar no repositório local (uma vez por clone):
 #   git config core.hooksPath .githooks
 # ==============================================================================
 
 set -euo pipefail
 
-PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-
-# Verifica se .env.example foi modificado no último merge
-if git diff-tree -r --name-only --no-commit-id ORIG_HEAD HEAD 2>/dev/null | grep -q '^\.env\.example$'; then
-  echo ""
-  echo "==================================================================="
-  echo "  [hook] Alterações detectadas em .env.example após git pull!"
-  echo "  Sincronizando .env automaticamente..."
-  echo "==================================================================="
-  if [[ -x "${PROJECT_ROOT}/scripts/sync-env.sh" ]]; then
-    "${PROJECT_ROOT}/scripts/sync-env.sh"
-  fi
-fi
+exec "$(dirname "${BASH_SOURCE[0]}")/sync-env-if-changed" ORIG_HEAD

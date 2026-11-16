@@ -389,8 +389,16 @@ A suíte valida integralmente:
 Como `setup/postgres/init.sql` é **100% idempotente** (`CREATE TABLE IF NOT EXISTS`, `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`, `CREATE OR REPLACE FUNCTION`), alterações de schema, índices ou funções podem ser aplicadas diretamente no container ativo sem derrubar volumes:
 
 ```bash
-docker exec -i db-evolution psql -v ON_ERROR_STOP=1 -U evolution -d postgres < setup/postgres/init.sql
+docker exec -i db-evolution psql -v ON_ERROR_STOP=1 -U evolution -d anneia < setup/postgres/init.sql
 ```
+
+> **Por que `-d anneia` e não `-d postgres`?** O `init.sql` cria o banco `anneia` e faz
+> `\connect anneia`; conectado em `postgres`, o `CREATE DATABASE`/`\connect` ainda
+> funciona, mas qualquer erro de conexão passa despercebido. Conectando direto no banco
+> de negócio, `ON_ERROR_STOP=1` aborta no primeiro problema real.
+>
+> **Não precisa fazer isso à mão:** `./scripts/update.sh` reaplica o `init.sql`
+> automaticamente quando ele muda entre revisões (ver §12).
 
 ### 9.2. Rotinas Nativas de Conformidade LGPD (Lei nº 13.709/2018)
 O banco `anneia` inclui procedimentos armazenados auditáveis com pseudonimização criptográfica SHA-256 (`pgcrypto`):
