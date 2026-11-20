@@ -1,5 +1,61 @@
 # CHANGELOG - Anne-IA Dashboard
 
+## [Unreleased] - 2026-11-19
+
+### Fixed — a aba "Logs" ficava vazia porque nada era interceptado
+
+O diagnóstico foi direto: `system_logs` tinha **0 linhas**. A aba existia, a tabela
+existia e o `INSERT` funcionava, mas nenhum ponto do código chamava a escrita para
+requisições HTTP — só 6 call sites gravavam eventos de negócio. O "middleware de
+logging automático" anunciado na versão de 2026-11-15 **nunca existiu**.
+
+- **Logger extraído para um módulo único** (`dashboard/src/logger.js`): cache em
+  memória, SSE, `writeLog`/`writeLogThrottled`, `requestLogger`, retenção e
+  utilitários de higienização saíram do `server.js` inline.
+- **`requestLogger` montado logo após `express.json`**, capturando o path de
+  `req.originalUrl` na entrada (o Express reescreve `req.url` em sub-routers).
+  Persiste método, rota normalizada, status, duração e nível derivado do status.
+- **Anti-loop de feedback**: `/api/v1/logs*`, `/api/health` e estáticos são
+  ignorados; sem isso, cada listagem da aba gerava um log novo.
+- **Falhas de processo persistidas**: `unhandledRejection`, `uncaughtException` e
+  o handler global de erros gravam em `system_logs`.
+- **`writeLog` usa `INSERT ... RETURNING id`**, devolvendo o id real do banco para
+  o frontend deduplicar SSE + listagem sem repetir linhas.
+- **Isolamento multi-tenant no SSE**: replay e broadcast filtram por `cliente_id`;
+  `use_cache` ficou restrito a admin (antes vazava cache global entre tenants).
+- **`Assignment to constant variable`** na listagem de logs: `paramIdx` era `const`
+  e sofria `++` no `LIMIT/OFFSET`. Corrigido com índice local mutável.
+- **Rate limit com Redis**: `REDIS_URL` montada no Compose a partir de
+  `CHAVE_REDIS_PASSWORD` (db 7, exclusivo do Dashboard). Sem Redis, o rate limit
+  cai para memória (fail-open) — fim do `WRONGPASS` derrubando o login.
+- **Throttle de 5 min em `dashboard_sessoes`**: sem ele, cada requisição
+  autenticada disparava um `UPDATE` e o trigger de auditoria gravava uma linha em
+  `auditoria_geral` por request.
+- **4 middlewares de debug/`console.log` por request removidos.**
+
+### Added
+- `GET /api/v1/logs/export`: exportação CSV server-side respeitando os filtros
+  (antes o CSV era montado no navegador e truncava em 100 linhas).
+- `DELETE /api/v1/logs/cache`: limpa só o cache em memória, preservando o banco.
+- `POST /api/v1/logs/ingest`: ingestão de eventos externos (n8n, Evolution,
+  scripts) via `X-Log-Token` com `crypto.timingSafeEqual`, whitelist de
+  nível/origem e rate limit de 120/min. Sem `LOG_INGEST_TOKEN`, responde `503`.
+- `LOG_RETENTION_DAYS` (padrão 90): job diário de retenção no boot
+  (`startRetentionJob`).
+- Frontend: dedupe por `renderedLogIds`, buffer enquanto pausado, reconexão SSE
+  com backoff, export/clear-cache pela UI e filtros em `buildLogFilterParams()`.
+- CSS monocromático com escala de severidade, `.log-message`, layout responsivo
+  abaixo de 720px e `data-label` nos contadores.
+- `dashboard/tests/logger.test.js` (40 asserções, sem banco) e
+  `tests/test_logs_smoke.sh` (pula com exit 0 se a stack não estiver acessível).
+
+### Changed
+- `dashboard/package.json`: `test` passa a rodar `node --test tests/` (auth + logger).
+- `README.md`: aba, endpoints, `LOG_RETENTION_DAYS`, `LOG_INGEST_TOKEN` e `REDIS_URL`
+  documentados na seção 8.
+- `setup/postgres/init.sql`: comentário do throttle de 5 min em `dashboard_sessoes`
+  (sem alteração de schema).
+
 ## [1.2.0] - 2026-11-16
 
 ### Fixed — `update.sh` abortava quando o código estava certo e o container não
@@ -374,7 +430,7 @@ docker run --rm -v "$PWD:/mnt:ro" koalaman/shellcheck:stable scripts/*.sh tests/
   - Função `fn_limpar_logs_antigos(p_dias INT DEFAULT 90)` para retenção configurável
   - Cache em memória das últimas 50 entradas (evita sobrecarga do servidor)
   - Server-Sent Events (SSE) em `/api/v1/logs/stream` para tempo real com heartbeat 30s
-  - Middleware de logging automático para todas as rotas `/api/v1/*` (persiste assíncrono + cache)
+  - ~~Middleware de logging automático para todas as rotas `/api/v1/*`~~ — **alegação incorreta**: esse middleware nunca existiu (ver entrada de 2026-11-19).
   - Endpoints: listagem paginada com filtros, stats por nível, origens únicas, limpeza manual (admin)
   - Filtros frontend: nível, origem, busca textual, período; exportação CSV; pause/retomar streaming
 

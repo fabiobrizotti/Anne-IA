@@ -324,6 +324,15 @@ O Dashboard administrativo é uma aplicação web ultra-leve construída em **Va
    - Índices de performance industrial: B-tree composto `(instance_id, id DESC)` para paginação multi-tenant instantânea e GIN `pg_trgm` para buscas textuais rápidas.
    - Projeção de dados otimizada sem tráfego de vetores brutos (zero vector leakage).
    - Filtro por tenant/empresa, busca textual em tempo real, visualizador completo com syntax highlighting de metadados, contagem de tokens e exclusão/cadastro rápido.
+7. **Observabilidade Operacional (Aba Logs do Sistema)**:
+   - **Captura automática**: o `requestLogger` (em `dashboard/src/logger.js`) registra toda requisição autenticada em `/api/v1/*` com método, rota normalizada, status HTTP, duração e nível derivado do status (`info` 2xx/3xx, `warn` 4xx, `error` 5xx). Rotas de logs, `/api/health` e arquivos estáticos são ignorados de propósito para não criar loop de feedback.
+   - **Eventos de negócio e falhas**: login OK/falha/lockout, CRUD de instâncias, conhecimento, modelos e prompts padrão são gravados explicitamente; `unhandledRejection`, `uncaughtException` e o handler global de erros também persistem em `system_logs`.
+   - **Tempo real sem duplicar**: SSE em `/api/v1/logs/stream` entrega o replay do cache e os eventos novos; o frontend deduplica pelo `id` real do banco (o `INSERT` usa `RETURNING id`).
+   - **Isolamento multi-tenant**: o cache só é servido a admin (`use_cache=true`); SSE e listagem filtram por `cliente_id`, então operador/visualizador enxerga apenas o próprio tenant.
+   - **LGPD por padrão**: o logger não grava corpo de requisição, senha, CPF ou e-mail no contexto e mascara o IP (`203.0.113.x` / `2001:db8::x`), além de truncar mensagens e contexto antes de gravar no `jsonb`.
+   - **Operação**: retenção diária configurável (`LOG_RETENTION_DAYS`, padrão 90) e ingestão externa opcional (`POST /api/v1/logs/ingest`) autenticada por `X-Log-Token` (`LOG_INGEST_TOKEN`); sem o token o endpoint responde `503`.
+   - **Rate limit distribuído**: `REDIS_URL` (db 7, dedicado ao Dashboard) é montada no Compose a partir de `CHAVE_REDIS_PASSWORD`; sem Redis a aplicação cai para rate limit em memória (fail-open) em vez de derrubar o login.
+
 
 ### 8.4. Endpoints da API REST (v1)
 
@@ -364,6 +373,14 @@ O Dashboard administrativo é uma aplicação web ultra-leve construída em **Va
 | `POST` | `/api/v1/conhecimento/bulk-delete` | Exclusão em lote segura de múltiplos fragmentos via array de IDs |
 | `POST` | `/api/v1/instances/:id/restart` | Reinicia a conexão da instância |
 | `DELETE` | `/api/v1/instances/:id` | Remove a instância na Evolution API e no banco de dados |
+| `GET` | `/api/v1/logs` | Lista logs paginados com filtros (`nivel`, `origem`, `busca`, `inicio`, `fim`, `cliente_id`, `page`, `limit`); `use_cache=true` só vale para admin |
+| `GET` | `/api/v1/logs/stats` | Contadores por nível (`critical`, `error`, `warn`, `info`, `debug`) para os badges, respeitando os mesmos filtros |
+| `GET` | `/api/v1/logs/origens` | Lista as origens distintas visíveis ao usuário (alimenta o filtro) |
+| `GET` | `/api/v1/logs/stream` | Server-Sent Events: replay do cache + eventos em tempo real (heartbeat de 30s) |
+| `GET` | `/api/v1/logs/export` | Exportação CSV server-side respeitando filtros (até 5000 linhas para admin, 1000 para tenant) |
+| `DELETE` | `/api/v1/logs/cache` | Limpa apenas o cache em memória (não apaga o histórico do banco) |
+| `POST` | `/api/v1/logs/limpar` | Remove logs mais antigos que `dias` (admin; usa `fn_limpar_logs_antigos`) |
+| `POST` | `/api/v1/logs/ingest` | Ingestão de eventos externos (n8n, Evolution, scripts) via header `X-Log-Token`; `503` quando `LOG_INGEST_TOKEN` está vazio |
 
 ### 8.5. Testes Unitários Nativos (NIST SP 800-63B / LGPD)
 O backend do dashboard inclui suíte completa de testes unitários nativos (`node:test` e `node:assert/strict`), sem dependências extras, executada em menos de 3 segundos:
@@ -380,6 +397,15 @@ A suíte valida integralmente:
 - **NIST SP 800-63B**: tamanho de 8 a 128 caracteres, suporte a Unicode, rejeição de caracteres de controle e bloqueio de senhas comuns/fracas conhecidas.
 - **Lockout Desacoplado & NAT-Safe**: backoff progressivo por conta com IP sujeito apenas a rate limit volumétrico (30 req/min, HTTP 429).
 - **Gestão de Sessão**: cookies `HttpOnly; SameSite=Lax` com prefixo seguro `__Host-sid` em HTTPS.
+- **Logger operacional (`tests/logger.test.js`)**: classificação de nível por status, origem curta por rota, skip anti-loop, mascaramento de IP (IPv4/IPv6), truncamento de contexto e isolamento multi-tenant no cache/SSE — 40 asserções, sem banco.
+
+Smoke test da aba em stack real (pula e sai com `0` se o Dashboard não estiver acessível):
+
+```bash
+./tests/test_logs_smoke.sh
+```
+
+Valida 401 sem sessão, listagem autenticada com registros, anti-loop (contagem estável após várias listagens), export CSV e recusa de ingestão anônima.
 
 ---
 
