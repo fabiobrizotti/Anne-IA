@@ -268,6 +268,19 @@ body {
 .text-sm      { font-size: 12px; }
 .text-xs      { font-size: 11px; }
 
+/* Rótulo acessível: lido pelo leitor de tela, invisível na tela. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 /* Tabela Principal */
 .table-card {
   padding: 0;
@@ -404,6 +417,192 @@ body {
   color: var(--badge-close-text);
 }
 .badge-close .badge-dot { background-color: var(--badge-close-dot); }
+
+/* ---------------------------------------------------------------------------
+   Severidade de logs — escala monocromática (peso/borda/preenchimento)
+   Distingue os níveis sem depender de cor, funcionando em claro e escuro.
+   --------------------------------------------------------------------------- */
+.badge-outline {
+  background-color: transparent;
+  border-color: var(--border);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+}
+
+.badge-critical {
+  background-color: var(--primary);
+  border-color: var(--primary);
+  color: var(--primary-text);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.badge-error {
+  background-color: var(--bg-subtle);
+  border-color: var(--text-main);
+  border-width: 1.5px;
+  color: var(--text-main);
+  font-weight: 700;
+}
+
+.badge-warn {
+  background-color: var(--bg-card);
+  border-color: var(--border-strong);
+  color: var(--text-main);
+  font-weight: 600;
+}
+
+.badge-info {
+  background-color: var(--bg-subtle);
+  border-color: var(--border);
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.badge-debug {
+  background-color: transparent;
+  border-style: dashed;
+  border-color: var(--border);
+  color: var(--text-subtle);
+  font-weight: 400;
+}
+
+/* ---------------------------------------------------------------------------
+   Aba de Logs — cabeçalho, contadores e barra de filtros
+   --------------------------------------------------------------------------- */
+.logs-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.logs-header h2 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.logs-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* Rótulo curto ao lado do contador (o número continua sendo o textContent) */
+.logs-stats .badge::after {
+  content: attr(data-label);
+  margin-left: 4px;
+  font-size: 10px;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  opacity: 0.7;
+}
+
+.logs-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.logs-filters .filter-group {
+  display: flex;
+  min-width: 0;
+}
+
+.logs-filters .search-field {
+  width: auto;
+  max-width: none;
+}
+
+.logs-filters .filter-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-left: auto;
+}
+
+/* Mensagem do log: uma linha, com reticências (o detalhe completo vai no modal) */
+.log-message {
+  display: block;
+  max-width: 560px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Larguras fixas das colunas e controles de paginação da aba (sem inline style) */
+.logs-table .col-timestamp { width: 160px; }
+.logs-table .col-nivel { width: 90px; }
+.logs-table .col-origem { width: 100px; }
+.logs-table .col-contexto { width: 100px; }
+
+.logs-pagination-controls {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.logs-page-indicator {
+  padding: 4px 8px;
+}
+
+@media (max-width: 720px) {
+  /* Cabeçalho e navegação não podem empurrar a página na horizontal:
+     as ações quebram linha e as abas rolam dentro do próprio contêiner. */
+  .header {
+    align-items: flex-start;
+  }
+
+  .actions {
+    flex-wrap: wrap;
+  }
+
+  .page-nav {
+    display: flex;
+    max-width: 100%;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .page-nav::-webkit-scrollbar {
+    display: none;
+  }
+
+  .logs-header,
+  .logs-filters {
+    align-items: stretch;
+  }
+
+  .logs-filters .filter-group,
+  .logs-filters .search-field {
+    flex: 1 1 100%;
+    width: 100%;
+  }
+
+  .logs-filters .filter-actions {
+    margin-left: 0;
+    width: 100%;
+  }
+
+  .logs-filters .filter-actions .btn {
+    flex: 1 1 auto;
+    justify-content: center;
+  }
+
+  .log-message {
+    max-width: 220px;
+  }
+}
 
 .cell-actions {
   display: flex;

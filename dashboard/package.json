@@ -6,7 +6,7 @@
   "type": "commonjs",
   "scripts": {
     "start": "node src/server.js",
-    "test": "node --test tests/auth.test.js"
+    "test": "node --test tests/"
   },
   "dependencies": {
     "dotenv": "^16.4.5",

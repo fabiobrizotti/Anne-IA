@@ -4,16 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Anne-IA — Gestão de Instâncias</title>
-  <script>
-    (function() {
-      try {
-        var saved = localStorage.getItem('anne_theme');
-        var prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
-        var theme = saved ? saved : (prefersDark ? 'dark' : 'light');
-        document.documentElement.setAttribute('data-theme', theme);
-      } catch (e) {}
-    })();
-  </script>
+  <script src="theme-init.js"></script>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -472,17 +463,17 @@
     <div class="logs-header">
       <h2>Logs do Sistema em Tempo Real</h2>
       <div class="logs-stats">
-        <span class="badge badge-critical" id="log-stat-critical" title="Crítico">0</span>
-        <span class="badge badge-error" id="log-stat-error" title="Erro">0</span>
-        <span class="badge badge-warn" id="log-stat-warn" title="Aviso">0</span>
-        <span class="badge badge-info" id="log-stat-info" title="Info">0</span>
-        <span class="badge badge-debug" id="log-stat-debug" title="Debug">0</span>
+        <span class="badge badge-critical" id="log-stat-critical" data-label="crítico" title="Eventos críticos nas últimas 24h">0</span>
+        <span class="badge badge-error" id="log-stat-error" data-label="erro" title="Erros nas últimas 24h">0</span>
+        <span class="badge badge-warn" id="log-stat-warn" data-label="aviso" title="Avisos nas últimas 24h">0</span>
+        <span class="badge badge-info" id="log-stat-info" data-label="info" title="Eventos informativos nas últimas 24h">0</span>
+        <span class="badge badge-debug" id="log-stat-debug" data-label="debug" title="Eventos de depuração nas últimas 24h">0</span>
       </div>
     </div>
     <div class="logs-filters">
       <div class="filter-group">
         <label for="log-filter-nivel" class="visually-hidden">Filtrar por nível</label>
-        <select id="log-filter-nivel" class="search-field" style="max-width: 140px;">
+        <select id="log-filter-nivel" class="search-field">
           <option value="">Todos os níveis</option>
           <option value="critical">Crítico</option>
           <option value="error">Erro</option>
@@ -493,17 +484,17 @@
       </div>
       <div class="filter-group">
         <label for="log-filter-origem" class="visually-hidden">Filtrar por origem</label>
-        <select id="log-filter-origem" class="search-field" style="max-width: 160px;">
+        <select id="log-filter-origem" class="search-field">
           <option value="">Todas as origens</option>
         </select>
       </div>
       <div class="filter-group">
         <label for="log-filter-busca" class="visually-hidden">Buscar mensagem</label>
-        <input type="text" id="log-filter-busca" placeholder="Buscar na mensagem..." class="search-field" style="max-width: 280px;">
+        <input type="text" id="log-filter-busca" placeholder="Buscar na mensagem..." class="search-field">
       </div>
       <div class="filter-group">
         <label for="log-filter-periodo" class="visually-hidden">Período</label>
-        <select id="log-filter-periodo" class="search-field" style="max-width: 140px;">
+        <select id="log-filter-periodo" class="search-field">
           <option value="24h">Últimas 24h</option>
           <option value="1h">Última hora</option>
           <option value="7d">Últimos 7 dias</option>
@@ -527,14 +518,14 @@
     </div>
     <main class="card table-card">
       <div class="table-responsive">
-        <table class="table">
+        <table class="table logs-table">
           <thead>
             <tr>
-              <th style="width: 160px;">Timestamp</th>
-              <th style="width: 90px;">Nível</th>
-              <th style="width: 100px;">Origem</th>
+              <th class="col-timestamp">Timestamp</th>
+              <th class="col-nivel">Nível</th>
+              <th class="col-origem">Origem</th>
               <th>Mensagem</th>
-              <th style="width: 100px;">Contexto</th>
+              <th class="col-contexto">Contexto</th>
             </tr>
           </thead>
           <tbody id="logs-tbody">
@@ -546,9 +537,9 @@
       </div>
       <div class="table-footer-pagination">
         <span id="logs-pagination-info" class="text-xs text-muted">Mostrando 0 de 0 logs</span>
-        <div style="display: flex; gap: 8px; align-items: center;">
+        <div class="logs-pagination-controls">
           <button id="btn-logs-prev-page" class="btn btn-xs btn-secondary" disabled>Anterior</button>
-          <span id="logs-pagination-current" class="text-xs font-mono" style="padding: 4px 8px;">Pág 1</span>
+          <span id="logs-pagination-current" class="text-xs font-mono logs-page-indicator">Pág 1</span>
           <button id="btn-logs-next-page" class="btn btn-xs btn-secondary" disabled>Próxima</button>
         </div>
       </div>

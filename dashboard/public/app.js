@@ -285,6 +285,9 @@
   let logsPagination = { page: 1, limit: 50, total: 0, totalPages: 1 };
   let logsPaused = false;
   let currentLogFilters = { nivel: '', origem: '', busca: '', periodo: '24h' };
+  const renderedLogIds = new Set();   // dedupe entre carga inicial e SSE
+  let pendingLogs = [];               // eventos recebidos enquanto pausado
+  let logRetryDelay = 3000;           // backoff da reconexão SSE
 
   // ===== NOVOS: Estado Usuários/Permissões =====
   let usersList = [];
@@ -1033,27 +1036,6 @@
   // ---------------------------------------------------------------------------
   // NAVEGAÇÃO DE PÁGINAS / ABAS PRINCIPAIS
   // ---------------------------------------------------------------------------
-
-  function switchPageTab(targetTabId) {
-    activePageTab = targetTabId;
-    elements.pageTabs.forEach(btn => {
-      btn.classList.toggle('active', btn.dataset.pageTab === targetTabId);
-    });
-
-    elements.pageContents.forEach(content => {
-      content.classList.toggle('active', content.id === targetTabId);
-    });
-
-    if (targetTabId === 'tab-financeiro') {
-      loadFinanceData();
-    } else if (targetTabId === 'tab-ia' || targetTabId === 'tab-modelos') {
-      if (activeIaSubTab === 'subtab-conhecimento') {
-        loadKnowledge();
-      } else {
-        loadModels();
-      }
-    }
-  }
 
   function switchIaSubTab(subTabId) {
     activeIaSubTab = subTabId;
@@ -2197,7 +2179,7 @@
         loadModels();
       }
     } else if (activePageTab === 'tab-logs') {
-      loadLogs(true);  // use cache
+      loadLogs();
       loadLogStats();
       loadLogOrigens();
     } else if (activePageTab === 'tab-usuarios') {
@@ -2336,28 +2318,39 @@
   // ABA LOGS DO SISTEMA - Tempo Real com SSE
   // ============================================================================
 
-  function loadLogs(useCache = false) {
-    if (!elements.logsTbody) return;
-
-    const params = new URLSearchParams();
-    params.set('page', logsPagination.page);
-    params.set('limit', logsPagination.limit);
-    if (useCache) params.set('use_cache', 'true');
-    if (currentLogFilters.nivel) params.set('nivel', currentLogFilters.nivel);
-    if (currentLogFilters.origem) params.set('origem', currentLogFilters.origem);
-    if (currentLogFilters.busca) params.set('busca', currentLogFilters.busca);
+  // Converte o filtro de período em `inicio` (ISO) para a API.
+  function buildLogPeriodParams(params) {
     if (currentLogFilters.periodo && currentLogFilters.periodo !== '24h') {
       const hours = currentLogFilters.periodo === '1h' ? 1 : (currentLogFilters.periodo === '7d' ? 168 : 720);
       const inicio = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
       params.set('inicio', inicio);
     }
+  }
+
+  function buildLogFilterParams() {
+    const params = new URLSearchParams();
+    if (currentLogFilters.nivel) params.set('nivel', currentLogFilters.nivel);
+    if (currentLogFilters.origem) params.set('origem', currentLogFilters.origem);
+    if (currentLogFilters.busca) params.set('busca', currentLogFilters.busca);
+    buildLogPeriodParams(params);
+    return params;
+  }
+
+  // Sempre lê do banco: o cache em memória do servidor zera a cada restart e
+  // antes deixava a aba "vazia" mesmo havendo histórico.
+  function loadLogs() {
+    if (!elements.logsTbody) return;
+
+    const params = buildLogFilterParams();
+    params.set('page', logsPagination.page);
+    params.set('limit', logsPagination.limit);
 
     api(`/api/v1/logs?${params.toString()}`)
       .then(res => {
         const logs = res.data || [];
         logsPagination.total = res.total || 0;
         logsPagination.totalPages = res.totalPages || 1;
-        renderLogs(logs, res.cached || false);
+        renderLogs(logs);
         updateLogsPagination();
       })
       .catch(err => {
@@ -2368,19 +2361,23 @@
       });
   }
 
-  function renderLogs(logs, fromCache = false) {
+  function renderLogs(logs) {
     if (!elements.logsTbody) return;
+
+    renderedLogIds.clear();
 
     if (logs.length === 0) {
       elements.logsTbody.innerHTML = `
         <tr>
           <td colspan="5" class="text-center py-8 text-muted">
-            ${fromCache ? 'Cache vazio - aguardando logs...' : 'Nenhum log encontrado para os filtros atuais.'}
+            Nenhum log encontrado para os filtros atuais. Novos eventos aparecem aqui em tempo real.
           </td>
         </tr>
       `;
       return;
     }
+
+    logs.forEach(log => renderedLogIds.add(String(log.id)));
 
     elements.logsTbody.innerHTML = logs.map(log => {
       const nivelClass = `badge-${log.nivel}`;
@@ -2395,7 +2392,7 @@
           <td><code>${timestamp}</code></td>
           <td><span class="badge ${nivelClass}">${nivelLabel}</span></td>
           <td><span class="badge badge-outline">${origemEsc}</span></td>
-          <td style="max-width: 500px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${mensagemEsc}</td>
+          <td><span class="log-message">${mensagemEsc}</span></td>
           <td>
             <button class="btn btn-xs btn-secondary" data-action="log-detail"
                     data-mensagem="${escapeHtml(log.mensagem)}"
@@ -2425,7 +2422,9 @@
   }
 
   function loadLogStats() {
-    api('/api/v1/logs/stats')
+    const params = buildLogFilterParams();
+    params.set('periodo', currentLogFilters.periodo || '24h');
+    api(`/api/v1/logs/stats?${params.toString()}`)
       .then(res => {
         if (res.success && res.data) {
           logStats = res.data;
@@ -2463,31 +2462,50 @@
 
     logEventSource = new EventSource('/api/v1/logs/stream');
 
+    logEventSource.onopen = () => {
+      logRetryDelay = 3000; // reconexão bem-sucedida: reseta o backoff
+    };
+
     logEventSource.onmessage = (e) => {
-      if (logsPaused) return;
-
+      let entry;
       try {
-        const entry = JSON.parse(e.data);
-
-        // Ignora heartbeat
-        if (entry === ': heartbeat' || (typeof entry === 'object' && entry.heartbeat)) return;
-
-        // Adiciona no topo da tabela (máx 100 linhas visíveis)
-        prependLogRow(entry);
-        updateLogStat(entry.nivel);
+        entry = JSON.parse(e.data);
       } catch (_e) {
-        // Ignora parse errors
+        return; // heartbeat/linha de comentário
       }
+      if (!entry || !entry.nivel) return;
+
+      // Pausado: bufferiza em vez de descartar (nada se perde ao retomar)
+      if (logsPaused) {
+        pendingLogs.push(entry);
+        if (pendingLogs.length > 200) pendingLogs.shift();
+        return;
+      }
+
+      prependLogRow(entry);
+      updateLogStat(entry.nivel);
     };
 
     logEventSource.onerror = () => {
-      console.warn('[logs] SSE erro, reconectando em 5s...');
-      setTimeout(connectLogStream, 5000);
+      if (logEventSource) logEventSource.close();
+      logEventSource = null;
+      const delay = Math.min(logRetryDelay, 30000);
+      logRetryDelay = Math.min(logRetryDelay * 2, 30000);
+      console.warn(`[logs] SSE caiu, reconectando em ${Math.round(delay / 1000)}s...`);
+      setTimeout(() => {
+        if (activePageTab === 'tab-logs') connectLogStream();
+      }, delay);
     };
   }
 
   function prependLogRow(entry) {
     if (!elements.logsTbody) return;
+
+    // Dedupe: o servidor reenvia as últimas 50 no handshake do SSE e a listagem
+    // inicial já trouxe parte delas.
+    const id = String(entry.id);
+    if (renderedLogIds.has(id)) return;
+    renderedLogIds.add(id);
 
     // Se está na página 1 e sem filtros, adiciona no topo
     if (logsPagination.page === 1 && !currentLogFilters.nivel && !currentLogFilters.origem && !currentLogFilters.busca) {
@@ -2504,7 +2522,7 @@
         <td><code>${timestamp}</code></td>
         <td><span class="badge ${nivelClass}">${nivelLabel}</span></td>
         <td><span class="badge badge-outline">${origemEsc}</span></td>
-        <td style="max-width: 500px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${mensagemEsc}</td>
+        <td><span class="log-message">${mensagemEsc}</span></td>
         <td>
           <button class="btn btn-xs btn-secondary" data-action="log-detail"
                   data-mensagem="${escapeHtml(entry.mensagem)}"
@@ -2550,36 +2568,36 @@
     openModal(elements.modalLogDetail);
   }
 
-  function exportLogs() {
-    const params = new URLSearchParams();
-    if (currentLogFilters.nivel) params.set('nivel', currentLogFilters.nivel);
-    if (currentLogFilters.origem) params.set('origem', currentLogFilters.origem);
-    if (currentLogFilters.busca) params.set('busca', currentLogFilters.busca);
-    params.set('limit', '1000');
+  // Exportação server-side: respeita os filtros e não é truncada em 100 linhas
+  // (antes o front pedia limit=1000 e a API cortava silenciosamente em 100).
+  async function exportLogs() {
+    try {
+      const params = buildLogFilterParams();
+      const res = await fetch(`/api/v1/logs/export?${params.toString()}`, {
+        headers: { 'X-Requested-With': 'XMLHttpRequest' }
+      });
 
-    api(`/api/v1/logs?${params.toString()}`)
-      .then(res => {
-        const logs = res.data || [];
-        const csv = [
-          ['Timestamp', 'Nível', 'Origem', 'Mensagem', 'Contexto'],
-          ...logs.map(l => [
-            l.criado_em,
-            l.nivel,
-            l.origem,
-            `"${(l.mensagem || '').replace(/"/g, '""')}"`,
-            `"${JSON.stringify(l.contexto || {}).replace(/"/g, '""')}"`
-          ])
-        ].map(r => r.join(',')).join('\n');
+      if (res.status === 401) {
+        window.location.href = '/login.html';
+        return;
+      }
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || 'Falha ao exportar logs');
+      }
 
-        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-        const link = document.createElement('a');
-        link.href = URL.createObjectURL(blob);
-        link.download = `logs_anneia_${new Date().toISOString().slice(0,19).replace(/:/g, '-')}.csv`;
-        link.click();
-        URL.revokeObjectURL(link.href);
-        showToast('Logs exportados com sucesso!');
-      })
-      .catch(err => showToast(`Erro ao exportar: ${err.message}`, 'error'));
+      const blob = await res.blob();
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = `logs_anneia_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(link.href);
+      showToast('Logs exportados com sucesso!');
+    } catch (err) {
+      showToast(`Erro ao exportar: ${err.message}`, 'error');
+    }
   }
 
   // Event Listeners Logs
@@ -2620,10 +2638,14 @@
     elements.logBtnExport.addEventListener('click', exportLogs);
   }
   if (elements.logBtnClearCache) {
-    elements.logBtnClearCache.addEventListener('click', () => {
-      logCache.length = 0;
-      loadLogs(true);
-      showToast('Cache local limpo');
+    elements.logBtnClearCache.addEventListener('click', async () => {
+      try {
+        await api('/api/v1/logs/cache', { method: 'DELETE' });
+        loadLogs();
+        showToast('Cache do servidor limpo');
+      } catch (err) {
+        showToast(`Erro ao limpar cache: ${err.message}`, 'error');
+      }
     });
   }
   if (elements.logBtnPause) {
@@ -2631,6 +2653,16 @@
       logsPaused = !logsPaused;
       elements.logPauseText.textContent = logsPaused ? 'Retomar' : 'Pausar';
       elements.logBtnPause.classList.toggle('btn-warning', logsPaused);
+
+      if (!logsPaused && pendingLogs.length > 0) {
+        // Descarrega o buffer preservando a ordem (mais antigo -> mais novo)
+        pendingLogs.forEach(entry => {
+          prependLogRow(entry);
+          updateLogStat(entry.nivel);
+        });
+        pendingLogs = [];
+      }
+
       showToast(logsPaused ? 'Streaming pausado' : 'Streaming retomado');
     });
   }
@@ -2986,8 +3018,7 @@
   // ATUALIZAÇÃO DA NAVEGAÇÃO DE ABAS
   // ============================================================================
 
-  // Sobrescreve switchPageTab para incluir logs e usuarios
-  const originalSwitchPageTab = switchPageTab;
+  // Navegação de abas (inclui logs e usuários)
   function switchPageTab(targetTabId) {
     activePageTab = targetTabId;
     elements.pageTabs.forEach(btn => {
@@ -3011,7 +3042,7 @@
         loadModels();
       }
     } else if (targetTabId === 'tab-logs') {
-      loadLogs(true);  // use cache
+      loadLogs();
       loadLogStats();
       loadLogOrigens();
       connectLogStream();
@@ -3031,7 +3062,6 @@
   }
 
   // Cleanup ao trocar de aba
-  const originalSwitchPageTabCleanup = switchPageTab;
   // Adiciona cleanup de SSE ao sair da aba logs
   const tabsContainer = document.querySelector('.page-nav');
   if (tabsContainer) {
