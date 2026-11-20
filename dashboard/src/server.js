@@ -4,6 +4,7 @@ const path = require('path');
 const crypto = require('crypto');
 const Redis = require('ioredis');
 const auth = require('./auth');
+const logger = require('./logger');
 
 const app = express();
 const port = parseInt(process.env.PORT || '3000', 10);
@@ -31,19 +32,47 @@ if (DATABASE_URL) {
   console.error('[db] DATABASE_URL não configurada. Schema deve ser provisionado por setup/postgres/init.sql.');
 }
 
-// Redis client para rate limiting distribuído
-const redisRateLimit = new Redis(process.env.REDIS_URL || 'redis://:password@redis:6379/7', {
-  maxRetriesPerRequest: 3,
-  retryStrategy: (times) => Math.min(times * 100, 3000),
-  lazyConnect: true
-});
-redisRateLimit.on('error', (err) => console.error('[redis-rate-limit] Erro:', err.message));
-redisRateLimit.connect().catch(() => {});
+// Injeta o pool no logger ANTES de qualquer rota poder logar.
+logger.init(pool);
+
+// Redis client para rate limiting distribuído.
+// Sem REDIS_URL o rate limit cai no fallback em memória (fail-open) em vez de
+// tentar uma credencial fixa — evita WRONGPASS/NOAUTH a cada requisição.
+const REDIS_URL = process.env.REDIS_URL || '';
+const redisRateLimit = REDIS_URL
+  ? new Redis(REDIS_URL, {
+    maxRetriesPerRequest: 3,
+    retryStrategy: (times) => Math.min(times * 100, 3000),
+    lazyConnect: true
+  })
+  : null;
+
+if (redisRateLimit) {
+  redisRateLimit.on('error', (err) => {
+    console.error('[redis-rate-limit] Erro:', err.message);
+    logger.writeLogThrottled(
+      'redis_rate_limit',
+      5 * 60 * 1000,
+      'warn',
+      'redis',
+      `Rate limit distribuído indisponível: ${err.message}`,
+      { host: 'redis' }
+    ).catch(() => {});
+  });
+  redisRateLimit.connect().catch(() => {});
+} else {
+  console.warn('[redis-rate-limit] REDIS_URL ausente: usando rate limit em memória.');
+}
 
 // Middlewares de Parsing e Segurança Defensiva
 app.disable('x-powered-by');
 app.set('trust proxy', 'loopback');
 app.use(express.json({ limit: '256kb' }));
+
+// Interceptação de acesso: método, rota declarada, status e latência.
+// Roda no `finish`, quando req.user já foi resolvido pelo middleware de auth.
+app.use(logger.requestLogger());
+
 app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
@@ -102,11 +131,15 @@ async function resolveSessionUser(req) {
     if (res.rowCount === 0) return null;
     const row = res.rows[0];
 
-    // Atualiza sliding window em background
+    // Atualiza sliding window em background.
+    // Throttle de 5 minutos: sem ele, CADA requisição autenticada disparava um
+    // UPDATE em dashboard_sessoes — e o trigger de auditoria gravava uma linha
+    // em auditoria_geral por request (amplificação de escrita desnecessária).
     pool.query(
       `UPDATE dashboard_sessoes
        SET ultimo_uso = NOW(), expira_em = NOW() + INTERVAL '30 minutes'
-       WHERE id_hash = $1`,
+       WHERE id_hash = $1
+         AND ultimo_uso < NOW() - INTERVAL '5 minutes'`,
       [tokenHash]
     ).catch(() => {});
 
@@ -189,13 +222,11 @@ app.use('/api/v1', async (req, res, next) => {
   const user = await resolveSessionUser(req);
   if (user) {
     req.user = user;
-    console.log('[auth-mw] Session user:', user.role, user.id, 'path:', fullPath);
     return next();
   }
 
   if (verifyBasicAuth(req)) {
     req.user = { id: 'basic', role: 'admin', nome: 'Admin' };
-    console.log('[auth-mw] Basic auth user: admin path:', fullPath, 'user:', JSON.stringify(req.user));
     return next();
   }
 
@@ -204,11 +235,15 @@ app.use('/api/v1', async (req, res, next) => {
       (fullPath === '/api/v1/auth/login' ||
        fullPath === '/api/v1/auth/register' ||
        fullPath.startsWith('/api/v1/auth/legal/'))) {
-    console.log('[auth-mw] Public auth path, allowing:', fullPath);
     return next();
   }
 
-  console.log('[auth-mw] No auth - path:', fullPath);
+  // Ingestão externa de logs (n8n/Evolution/scripts): autenticada por
+  // X-Log-Token dentro do próprio handler, não por sessão de navegador.
+  if (req.method === 'POST' && fullPath.startsWith('/api/v1/logs/ingest')) {
+    return next();
+  }
+
   res.status(401).json({ success: false, error: 'Sessão expirada ou não autenticada.' });
 });
 
@@ -296,25 +331,6 @@ app.get('/api/health', (req, res) => {
 
 app.use('/api/v1/auth', (req, res, next) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
-  console.log('[auth-legal-mw] Path:', req.originalUrl, 'req.user:', req.user ? { role: req.user.role } : 'undefined');
-  next();
-});
-
-// Add debug middleware to trace req.user - MUST be before routes
-app.use('/api/v1', (req, res, next) => {
-  console.log('[debug-mw] After auth, req.user:', req.user ? { role: req.user.role, id: req.user.id } : 'undefined', 'path:', req.originalUrl);
-  next();
-});
-
-// Test middleware
-app.use('/api/v1', (req, res, next) => {
-  console.log('[test-mw] Running for:', req.originalUrl);
-  next();
-});
-
-// Test middleware 2
-app.use('/api/v1', (req, res, next) => {
-  console.log('[test-mw-2] Running for:', req.originalUrl, 'req.user:', req.user ? { role: req.user.role } : 'undefined');
   next();
 });
 
@@ -352,6 +368,11 @@ app.post('/api/v1/auth/login', async (req, res) => {
       userAgent,
       detalhes: { remainingSeconds: bfCheck.remainingSeconds, reason: bfCheck.reason }
     });
+    logger.writeLog('warn', 'auth', 'Login bloqueado temporariamente por excesso de tentativas', {
+      ip: logger.maskIp(ip),
+      motivo: bfCheck.reason || 'brute_force',
+      retry_after_s: bfCheck.remainingSeconds
+    }).catch(() => {});
     res.setHeader('Retry-After', String(bfCheck.remainingSeconds));
     return res.status(429).json({
       success: false,
@@ -377,6 +398,7 @@ app.post('/api/v1/auth/login', async (req, res) => {
 
     if (!user || !passwordMatch || user.status !== 'ativo') {
       auth.recordBruteForceFailure(ip, cleanId);
+      const motivo = !user ? 'usuario_nao_encontrado' : (user.status !== 'ativo' ? 'usuario_inativo' : 'senha_incorreta');
       await auth.recordAudit(pool, {
         userId: user ? user.id : null,
         identificador: cleanId,
@@ -384,8 +406,12 @@ app.post('/api/v1/auth/login', async (req, res) => {
         sucesso: false,
         ip,
         userAgent,
-        detalhes: { motivo: !user ? 'usuario_nao_encontrado' : (user.status !== 'ativo' ? 'usuario_inativo' : 'senha_incorreta') }
+        detalhes: { motivo }
       });
+      logger.writeLog('warn', 'auth', `Falha de login (${motivo})`, {
+        ip: logger.maskIp(ip),
+        motivo
+      }).catch(() => {});
       return res.status(401).json({ success: false, error: 'E-mail ou senha incorretos.' });
     }
 
@@ -429,6 +455,12 @@ app.post('/api/v1/auth/login', async (req, res) => {
       userAgent,
       detalhes: { remember_me: !!remember_me }
     });
+
+    logger.writeLog('info', 'auth', `Login: ${user.customer_code}`, {
+      role: user.role,
+      ip: logger.maskIp(ip),
+      lembrar: !!remember_me
+    }, user.cliente_id).catch(() => {});
 
     res.json({
       success: true,
@@ -648,6 +680,11 @@ app.post('/api/v1/auth/register', async (req, res) => {
       detalhes: { customer_code: customerCode }
     });
 
+    logger.writeLog('info', 'auth', `Usuário criado: ${customerCode}`, {
+      role: userRes.rows[0].role,
+      ip: logger.maskIp(ip)
+    }).catch(() => {});
+
     res.status(201).json({
       success: true,
       data: {
@@ -676,6 +713,10 @@ app.post('/api/v1/auth/logout', async (req, res) => {
     await pool.query('UPDATE dashboard_sessoes SET revogado_em = NOW() WHERE id_hash = $1', [tokenHash]).catch(() => {});
   }
   auth.clearSessionCookie(req, res);
+  logger.writeLog('info', 'auth', 'Logout', {
+    ip: logger.maskIp(req.ip),
+    role: req.user?.role || null
+  }, req.user?.cliente_id || null).catch(() => {});
   res.json({ success: true, message: 'Sessão encerrada com sucesso.' });
 });
 
@@ -800,7 +841,7 @@ app.put('/api/v1/auth/users/:id', requirePermission('usuarios', 'update'), async
 
       await client.query('COMMIT');
 
-      await writeLog('info', 'auth', `Usuário atualizado: ${id}`, { id, role, ativo });
+      await logger.writeLog('info', 'auth', `Usuário atualizado: ${id}`, { id, role, ativo });
 
       res.json({ success: true, message: 'Usuário atualizado com sucesso' });
     } catch (err) {
@@ -830,7 +871,7 @@ app.delete('/api/v1/auth/users/:id', requirePermission('usuarios', 'delete'), as
 
     await pool.query('DELETE FROM dashboard_usuarios WHERE id = $1', [id]);
 
-    await writeLog('info', 'auth', `Usuário excluído: ${id}`, { id });
+    await logger.writeLog('info', 'auth', `Usuário excluído: ${id}`, { id });
 
     res.json({ success: true, message: 'Usuário excluído com sucesso' });
   } catch (err) {
@@ -842,6 +883,58 @@ app.delete('/api/v1/auth/users/:id', requirePermission('usuarios', 'delete'), as
 // ============================================================================
 // ENDPOINTS DE LOGS DO SISTEMA (com cache + SSE)
 // ============================================================================
+
+// Monta as condições de filtro compartilhadas por listagem, exportação e stats.
+function buildLogConditions(req, query) {
+  const conditions = [];
+  const values = [];
+  let paramIdx = 1;
+
+  // Filtro por tenant (isolamento multi-tenant). Admin pode filtrar por qualquer
+  // cliente; os demais só enxergam o próprio.
+  const targetClienteId = isAdmin(req) ? (query.cliente_id || null) : req.user.cliente_id;
+  if (targetClienteId) {
+    conditions.push(`cliente_id = $${paramIdx++}`);
+    values.push(targetClienteId);
+  }
+
+  if (query.nivel) {
+    conditions.push(`nivel = $${paramIdx++}`);
+    values.push(query.nivel);
+  }
+
+  if (query.origem) {
+    conditions.push(`origem = $${paramIdx++}`);
+    values.push(query.origem);
+  }
+
+  if (query.busca) {
+    conditions.push(`(mensagem ILIKE $${paramIdx} OR contexto::text ILIKE $${paramIdx})`);
+    values.push(`%${query.busca}%`);
+    paramIdx++;
+  }
+
+  if (query.inicio) {
+    conditions.push(`criado_em >= $${paramIdx++}`);
+    values.push(query.inicio);
+  }
+
+  if (query.fim) {
+    conditions.push(`criado_em <= $${paramIdx++}`);
+    values.push(query.fim);
+  }
+
+  return {
+    whereClause: conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '',
+    values,
+    paramIdx
+  };
+}
+
+function csvField(value) {
+  const str = value === null || value === undefined ? '' : String(value);
+  return `"${str.replace(/"/g, '""')}"`;
+}
 
 // GET /api/v1/logs - Lista logs com paginação, filtros e cache
 app.get('/api/v1/logs', requirePermission('logs', 'read'), async (req, res) => {
@@ -864,58 +957,23 @@ app.get('/api/v1/logs', requirePermission('logs', 'read'), async (req, res) => {
     const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10)));
     const offset = (pageNum - 1) * limitNum;
 
-    // Cache instantâneo para últimas 50 (página 1, sem filtros)
-    if (use_cache === 'true' && pageNum === 1 && !nivel && !origem && !busca && !cliente_id && !inicio && !fim) {
-      const cachedData = logCache.slice(0, limitNum);
+    // Cache em memória: atalho apenas para admin, página 1 e sem filtros.
+    // (Para os demais tenants a resposta vem do banco, já filtrada.)
+    if (use_cache === 'true' && isAdmin(req) && pageNum === 1 && !nivel && !origem && !busca && !cliente_id && !inicio && !fim) {
+      const cachedData = logger.getCacheFor({ limit: limitNum, isAdmin: true });
       return res.json({
         success: true,
         data: cachedData,
         cached: true,
-        total: logCache.length,
+        total: cachedData.length,
         page: 1,
-        limit: limitNum
+        limit: limitNum,
+        totalPages: cachedData.length > 0 ? 1 : 0
       });
     }
 
-    // Query no banco com filtros dinâmicos
-    const conditions = [];
-    const values = [];
-    let paramIdx = 1;
-
-    // Filtro por tenant (isolamento multi-tenant)
-    const targetClienteId = isAdmin(req) ? (cliente_id || null) : req.user.cliente_id;
-    if (targetClienteId) {
-      conditions.push(`cliente_id = $${paramIdx++}`);
-      values.push(targetClienteId);
-    }
-
-    if (nivel) {
-      conditions.push(`nivel = $${paramIdx++}`);
-      values.push(nivel);
-    }
-
-    if (origem) {
-      conditions.push(`origem = $${paramIdx++}`);
-      values.push(origem);
-    }
-
-    if (busca) {
-      conditions.push(`(mensagem ILIKE $${paramIdx} OR contexto::text ILIKE $${paramIdx})`);
-      values.push(`%${busca}%`);
-      paramIdx++;
-    }
-
-    if (inicio) {
-      conditions.push(`criado_em >= $${paramIdx++}`);
-      values.push(inicio);
-    }
-
-    if (fim) {
-      conditions.push(`criado_em <= $${paramIdx++}`);
-      values.push(fim);
-    }
-
-    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+    const { whereClause, values, paramIdx } = buildLogConditions(req, req.query);
+    let nextIdx = paramIdx;
 
     // Total count
     const countRes = await pool.query(
@@ -931,7 +989,7 @@ app.get('/api/v1/logs', requirePermission('logs', 'read'), async (req, res) => {
        FROM system_logs
        ${whereClause}
        ORDER BY criado_em DESC
-       LIMIT $${paramIdx++} OFFSET $${paramIdx}`,
+       LIMIT $${nextIdx++} OFFSET $${nextIdx}`,
       values
     );
 
@@ -950,36 +1008,123 @@ app.get('/api/v1/logs', requirePermission('logs', 'read'), async (req, res) => {
   }
 });
 
-// GET /api/v1/logs/stream - Server-Sent Events para tempo real
-app.get('/api/v1/logs/stream', requirePermission('logs', 'read'), (req, res) => {
-  // Headers SSE
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-  res.setHeader('Connection', 'keep-alive');
-  res.setHeader('X-Accel-Buffering', 'no'); // Desabilita buffer nginx
-  res.flushHeaders();
+// GET /api/v1/logs/export - Exportação CSV server-side (respeita filtros)
+app.get('/api/v1/logs/export', requirePermission('logs', 'read'), async (req, res) => {
+  if (!pool) return res.status(503).json({ success: false, error: 'Banco de dados indisponível' });
 
-  // Envia últimas 50 do cache imediatamente (heartbeat + histórico)
-  logCache.slice(0, 50).forEach(entry => {
-    res.write(`data: ${JSON.stringify(entry)}\n\n`);
-  });
+  try {
+    // Admin exporta mais linhas; tenant fica limitado para não travar o processo.
+    const maxLinhas = isAdmin(req) ? 5000 : 1000;
+    const { whereClause, values, paramIdx } = buildLogConditions(req, req.query);
+    values.push(maxLinhas);
 
-  // Registra cliente SSE
-  const clientId = Date.now() + Math.random();
-  sseClients.set(clientId, res);
+    const result = await pool.query(
+      `SELECT criado_em, nivel, origem, mensagem, contexto, cliente_id
+       FROM system_logs
+       ${whereClause}
+       ORDER BY criado_em DESC
+       LIMIT $${paramIdx}`,
+      values
+    );
 
-  // Heartbeat a cada 30s para manter conexão viva
-  const heartbeatInterval = setInterval(() => {
-    res.write(`: heartbeat\n\n`);
-  }, 30000);
+    const arquivo = `logs_anneia_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.csv`;
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${arquivo}"`);
+    res.setHeader('Cache-Control', 'no-store');
 
-  // Cleanup ao fechar
-  req.on('close', () => {
-    clearInterval(heartbeatInterval);
-    sseClients.delete(clientId);
-  });
+    res.write('Timestamp,Nivel,Origem,Mensagem,Contexto,Cliente\n');
+    for (const row of result.rows) {
+      res.write([
+        csvField(row.criado_em instanceof Date ? row.criado_em.toISOString() : row.criado_em),
+        csvField(row.nivel),
+        csvField(row.origem),
+        csvField(row.mensagem),
+        csvField(JSON.stringify(row.contexto || {})),
+        csvField(row.cliente_id)
+      ].join(',') + '\n');
+    }
+    res.end();
+  } catch (err) {
+    console.error('[logs] Erro ao exportar logs:', err.message);
+    if (!res.headersSent) {
+      res.status(500).json({ success: false, error: 'Falha ao exportar logs' });
+    } else {
+      res.end();
+    }
+  }
 });
 
+// DELETE /api/v1/logs/cache - Limpa apenas o cache em memória (não apaga do banco)
+app.delete('/api/v1/logs/cache', requirePermission('logs', 'read'), async (req, res) => {
+  logger.clearCache();
+  await logger.writeLog('info', 'logs', 'Cache em memória da aba de logs limpo', {
+    role: req.user?.role || null,
+    user_id: req.user?.id || null
+  }, req.user?.cliente_id || null);
+  res.json({ success: true, message: 'Cache limpo' });
+});
+
+// POST /api/v1/logs/ingest - Ingestão de eventos externos (n8n, Evolution, scripts)
+// Autenticação por token compartilhado (LOG_INGEST_TOKEN). Desabilitado se o
+// token não estiver configurado — nunca expõe um endpoint de escrita aberto.
+app.post('/api/v1/logs/ingest', async (req, res) => {
+  const tokenEsperado = process.env.LOG_INGEST_TOKEN || '';
+  if (!tokenEsperado) {
+    return res.status(503).json({ success: false, error: 'Ingestão de logs desabilitada (LOG_INGEST_TOKEN ausente).' });
+  }
+
+  const recebido = String(req.headers['x-log-token'] || '');
+  const bufRecebido = Buffer.from(recebido);
+  const bufEsperado = Buffer.from(tokenEsperado);
+  const tokenOk = bufRecebido.length === bufEsperado.length && crypto.timingSafeEqual(bufRecebido, bufEsperado);
+  if (!tokenOk) {
+    logger.writeLog('warn', 'logs', 'Tentativa de ingestão de log com token inválido', {
+      ip: logger.maskIp(req.ip)
+    }).catch(() => {});
+    return res.status(401).json({ success: false, error: 'Token de ingestão inválido.' });
+  }
+
+  const permitido = await checkTestRateLimitRedis(`logs-ingest:${req.ip}`, 120, 60 * 1000);
+  if (!permitido) {
+    return res.status(429).json({ success: false, error: 'Limite de ingestão atingido. Aguarde.' });
+  }
+
+  const { nivel, origem, mensagem, contexto, cliente_id } = req.body || {};
+  const nivelLimpo = String(nivel || 'info').toLowerCase();
+  const origemLimpa = String(origem || '').trim();
+  const mensagemLimpa = String(mensagem || '').trim();
+
+  if (!['debug', 'info', 'warn', 'error', 'critical'].includes(nivelLimpo)) {
+    return res.status(400).json({ success: false, error: 'Nível inválido.' });
+  }
+  if (!/^[a-zA-Z0-9_.-]{2,100}$/.test(origemLimpa)) {
+    return res.status(400).json({ success: false, error: 'Origem inválida (2-100 chars: letras, números, hífen, underline, ponto).' });
+  }
+  if (!mensagemLimpa) {
+    return res.status(400).json({ success: false, error: 'Mensagem é obrigatória.' });
+  }
+  if (contexto !== undefined && (typeof contexto !== 'object' || Array.isArray(contexto))) {
+    return res.status(400).json({ success: false, error: 'Contexto deve ser um objeto JSON.' });
+  }
+
+  const entry = await logger.writeLog(
+    nivelLimpo,
+    origemLimpa,
+    mensagemLimpa,
+    contexto || {},
+    cliente_id ? String(cliente_id) : null
+  );
+
+  res.status(201).json({ success: true, data: entry });
+});
+
+// GET /api/v1/logs/stream - Server-Sent Events para tempo real
+app.get('/api/v1/logs/stream', requirePermission('logs', 'read'), (req, res) => {
+  logger.streamLogs(req, res, {
+    isAdmin: isAdmin(req),
+    clienteId: req.user?.cliente_id || null
+  });
+});
 // GET /api/v1/logs/stats - Contadores por nível para badges
 app.get('/api/v1/logs/stats', requirePermission('logs', 'read'), async (req, res) => {
   if (!pool) return res.status(503).json({ success: false, error: 'Banco de dados indisponível' });
@@ -991,22 +1136,24 @@ app.get('/api/v1/logs/stats', requirePermission('logs', 'read'), async (req, res
     else if (periodo === '7d') interval = '7 days';
     else if (periodo === '30d') interval = '30 days';
 
-    const targetClienteId = isAdmin(req) ? req.query.cliente_id : req.user.cliente_id;
-    const clienteFilter = targetClienteId ? 'AND cliente_id = $1' : '';
-    const values = targetClienteId ? [targetClienteId] : [];
+    // Mesmos filtros da listagem (tenant, nível, origem, busca, início/fim)
+    const { whereClause, values } = buildLogConditions(req, req.query);
+    const periodoCond = `criado_em >= NOW() - INTERVAL '${interval}'`;
+    const fullWhere = whereClause
+      ? `${whereClause} AND ${periodoCond}`
+      : `WHERE ${periodoCond}`;
 
     const res_query = await pool.query(
       `SELECT nivel, COUNT(*)::int AS count
        FROM system_logs
-       WHERE criado_em >= NOW() - INTERVAL '${interval}'
-       ${clienteFilter}
+       ${fullWhere}
        GROUP BY nivel`,
       values
     );
 
     const stats = { critical: 0, error: 0, warn: 0, info: 0, debug: 0 };
     for (const row of res_query.rows) {
-      if (stats.hasOwnProperty(row.nivel)) {
+      if (Object.prototype.hasOwnProperty.call(stats, row.nivel)) {
         stats[row.nivel] = row.count;
       }
     }
@@ -1052,10 +1199,9 @@ app.post('/api/v1/logs/limpar', requirePermission('logs', 'delete'), async (req,
     const data = result.rows[0].result;
 
     // Limpa cache em memória também
-    const cutoff = new Date(Date.now() - diasNum * 24 * 60 * 60 * 1000);
-    logCache = logCache.filter(e => new Date(e.criado_em) >= cutoff);
+    logger.pruneCache(diasNum);
 
-    await writeLog('info', 'system', `Limpeza de logs executada: ${data.removidos} entradas removidas (retenção ${diasNum} dias)`, { dias: diasNum, removidos: data.removidos });
+    await logger.writeLog('info', 'system', `Limpeza de logs executada: ${data.removidos} entradas removidas (retenção ${diasNum} dias)`, { dias: diasNum, removidos: data.removidos });
 
     res.json({ success: true, data });
   } catch (err) {
@@ -1159,7 +1305,7 @@ app.post('/api/v1/permissoes', requirePermission('usuarios', 'create'), async (r
     permissoesCacheLoaded = false;
     await loadPermissoesCache();
 
-    await writeLog('info', 'auth', `Permissão atualizada: ${role}.${recurso}.${acao} = ${permitido}`, { role, recurso, acao, permitido });
+    await logger.writeLog('info', 'auth', `Permissão atualizada: ${role}.${recurso}.${acao} = ${permitido}`, { role, recurso, acao, permitido });
 
     res.json({ success: true, data: result.rows[0] });
   } catch (err) {
@@ -1180,7 +1326,7 @@ app.delete('/api/v1/permissoes/:id', requirePermission('usuarios', 'delete'), as
     permissoesCacheLoaded = false;
     await loadPermissoesCache();
 
-    await writeLog('info', 'auth', `Permissão removida: ID ${id}`, { id });
+    await logger.writeLog('info', 'auth', `Permissão removida: ID ${id}`, { id });
 
     res.json({ success: true, message: 'Permissão removida' });
   } catch (err) {
@@ -1200,54 +1346,6 @@ function canAccessInstance(req, targetId) {
   if (!req.user.cliente_id || !targetId) return false;
   return String(req.user.cliente_id).trim().toLowerCase() === String(targetId).trim().toLowerCase();
 }
-
-// ============================================================================
-// SISTEMA DE LOGS COM CACHE EM MEMÓRIA + SSE TEMPO REAL
-// ============================================================================
-
-// Cache em memória das últimas 50 entradas (evita sobrecarga do servidor)
-const LOG_CACHE_MAX = 50;
-let logCache = [];  // [{id, nivel, origem, mensagem, contexto, cliente_id, criado_em}]
-const sseClients = new Map();  // clientId -> response object
-
-function addToLogCache(entry) {
-  logCache.unshift(entry);
-  if (logCache.length > LOG_CACHE_MAX) logCache.length = LOG_CACHE_MAX;
-
-  // Broadcast para clientes SSE conectados
-  const data = `data: ${JSON.stringify(entry)}\n\n`;
-  sseClients.forEach((client, clientId) => {
-    client.write(data).catch(() => {
-      sseClients.delete(clientId);
-    });
-  });
-}
-
-// Função auxiliar para registrar log (usada por outros módulos)
-async function writeLog(nivel, origem, mensagem, contexto = {}, clienteId = null) {
-  const entry = {
-    nivel,
-    origem,
-    mensagem,
-    contexto,
-    cliente_id: clienteId,
-    criado_em: new Date().toISOString()
-  };
-
-  // Persiste no banco (async, não bloqueia)
-  if (pool) {
-    pool.query(
-      `INSERT INTO system_logs (nivel, origem, mensagem, contexto, cliente_id) VALUES ($1,$2,$3,$4,$5)`,
-      [nivel, origem, mensagem, JSON.stringify(contexto), clienteId]
-    ).catch(err => console.error('[log] Falha ao persistir:', err.message));
-  }
-
-  // Adiciona ao cache + broadcast SSE
-  addToLogCache({ ...entry, id: Date.now() + Math.random() });
-
-  return entry;
-}
-
 
 // ============================================================================
 // RBAC GRANULAR - Matriz de Permissões por Role/Recurso/Ação
@@ -1492,6 +1590,10 @@ app.post('/api/v1/instances', async (req, res) => {
         settings: defaultSettings
       }
     });
+    logger.writeLog('info', 'instances', `Instância criada: ${cleanId}`, {
+      instancia: cleanId,
+      com_telefone: Boolean(telefone)
+    }, cleanId).catch(() => {});
   } catch (err) {
     console.error('[api] Erro ao criar instância:', err);
     res.status(500).json({ success: false, error: 'Falha interna ao criar instância' });
@@ -1553,6 +1655,11 @@ app.put('/api/v1/instances/:id', async (req, res) => {
       success: true,
       data: updateRes.rows[0]
     });
+    logger.writeLog('info', 'instances', `Cliente atualizado: ${id}`, {
+      instancia: id,
+      ativo: isAtivo,
+      telefone_alterado: newTelDigits && newTelDigits !== currentTelDigits
+    }, id).catch(() => {});
   } catch (err) {
     console.error('[api] Erro ao atualizar cliente:', err);
     res.status(500).json({ success: false, error: 'Falha ao atualizar dados do cliente' });
@@ -1625,6 +1732,11 @@ app.all('/api/v1/instances/:id/connect', async (req, res) => {
         count: evoRes.data?.count || 1
       }
     });
+    logger.writeLog('info', 'instances', `Conexão solicitada: ${id}`, {
+      instancia: id,
+      modo: pairingCode ? 'pairing_code' : 'qrcode',
+      tem_qrcode: Boolean(base64)
+    }, id).catch(() => {});
   } catch (err) {
     console.error('[api] Erro ao conectar instância:', err);
     res.status(500).json({ success: false, error: 'Falha ao solicitar conexão' });
@@ -1728,6 +1840,10 @@ app.post('/api/v1/instances/:id/settings', async (req, res) => {
     }
 
     res.json({ success: true, settings: payload });
+    logger.writeLog('info', 'instances', `Configurações atualizadas: ${id}`, {
+      instancia: id,
+      evolution_ok: evoRes.ok
+    }, id).catch(() => {});
   } catch (err) {
     console.error('[api] Erro ao salvar configurações:', err);
     res.status(500).json({ success: false, error: 'Falha ao salvar configurações' });
@@ -1827,6 +1943,7 @@ app.put('/api/v1/instances/:id/prompt', async (req, res) => {
     );
 
     res.json({ success: true, prompt: r.rows[0] });
+    logger.writeLog('info', 'instances', `Prompt do agente salvo: ${id}`, { instancia: id }, id).catch(() => {});
   } catch (err) {
     // 23503 = foreign_key_violation: cliente não existe em `clientes`
     if (err.code === '23503') {
@@ -1849,6 +1966,11 @@ app.post('/api/v1/instances/:id/restart', async (req, res) => {
     });
 
     res.json({ success: evoRes.ok, data: evoRes.data });
+    logger.writeLog(evoRes.ok ? 'info' : 'warn', 'instances', `Reinício solicitado: ${id}`, {
+      instancia: id,
+      evolution_ok: evoRes.ok,
+      evolution_status: evoRes.status
+    }, id).catch(() => {});
   } catch (err) {
     res.status(500).json({ success: false, error: 'Falha ao reiniciar instância' });
   }
@@ -1873,6 +1995,7 @@ app.delete('/api/v1/instances/:id', async (req, res) => {
     }
 
     res.json({ success: true, message: `Instância ${id} removida com sucesso.` });
+    logger.writeLog('warn', 'instances', `Instância excluída: ${id}`, { instancia: id }).catch(() => {});
   } catch (err) {
     console.error('[api] Erro ao excluir instância:', err);
     res.status(500).json({ success: false, error: 'Falha ao excluir instância' });
@@ -2118,6 +2241,7 @@ app.get('/api/v1/financeiro', async (req, res) => {
 
 // Rate limit Redis-backed para testes de modelo (máx 10 testes por minuto por IP)
 async function checkTestRateLimitRedis(key, maxRequests = 10, windowMs = 60 * 1000) {
+  if (!redisRateLimit) return true; // sem Redis, fail-open (rate limit em memória do processo)
   const now = Date.now();
   const windowStart = now - windowMs;
   const redisKey = `ratelimit:${key}`;
@@ -2257,6 +2381,9 @@ app.post('/api/v1/modelos', async (req, res) => {
       [provClean, modClean, tierClean, pInput, pCached, pOutput, pReasoning, pCacheCreation, isAtivo]
     );
     res.status(201).json({ success: true, data: insertRes.rows[0] });
+    logger.writeLog('info', 'modelos', `Modelo cadastrado: ${provClean}/${modClean}`, {
+      modelo_id: insertRes.rows[0].id, tier: tierClean, ativo: isAtivo
+    }).catch(() => {});
   } catch (err) {
     console.error('[api] Erro ao cadastrar modelo:', err.message);
     res.status(500).json({ success: false, error: 'Falha ao salvar modelo no banco' });
@@ -2309,6 +2436,9 @@ app.put('/api/v1/modelos/:id', async (req, res) => {
       return res.status(404).json({ success: false, error: 'Modelo não encontrado' });
     }
     res.json({ success: true, data: updateRes.rows[0] });
+    logger.writeLog('info', 'modelos', `Modelo atualizado: ${provClean}/${modClean}`, {
+      modelo_id: id, tier: tierClean, ativo: isAtivo
+    }).catch(() => {});
   } catch (err) {
     console.error('[api] Erro ao atualizar modelo:', err.message);
     res.status(500).json({ success: false, error: 'Falha ao atualizar modelo' });
@@ -2350,6 +2480,7 @@ app.delete('/api/v1/modelos/:id', async (req, res) => {
 
     await pool.query('DELETE FROM precos_modelos WHERE id = $1', [id]);
     res.json({ success: true, action: 'removido', message: 'Modelo removido com sucesso' });
+    logger.writeLog('info', 'modelos', `Modelo removido: ${provedor}/${modelo}`, { modelo_id: id }).catch(() => {});
   } catch (err) {
     console.error('[api] Erro ao excluir modelo:', err.message);
     res.status(500).json({ success: false, error: 'Falha ao excluir modelo' });
@@ -2579,6 +2710,9 @@ app.post('/api/v1/prompts-padrao', async (req, res) => {
     );
 
     res.status(201).json({ success: true, data: insertRes.rows[0] });
+    logger.writeLog('info', 'prompts-padrao', `Prompt padrão cadastrado: ${chaveClean}`, {
+      prompt_id: insertRes.rows[0].id, chave: chaveClean
+    }).catch(() => {});
   } catch (err) {
     console.error('[api] Erro ao cadastrar prompt padrão:', err.message);
     res.status(500).json({ success: false, error: 'Falha ao salvar prompt padrão' });
@@ -2659,6 +2793,9 @@ app.put('/api/v1/prompts-padrao/:id', async (req, res) => {
     }
 
     res.json({ success: true, data: updateRes.rows[0] });
+    logger.writeLog('info', 'prompts-padrao', `Prompt padrão atualizado: ${chaveClean}`, {
+      prompt_id: id, chave: chaveClean, ativo: isAtivo
+    }).catch(() => {});
   } catch (err) {
     console.error('[api] Erro ao atualizar prompt padrão:', err.message);
     res.status(500).json({ success: false, error: 'Falha ao atualizar prompt padrão' });
@@ -2694,6 +2831,7 @@ app.delete('/api/v1/prompts-padrao/:id', async (req, res) => {
 
     await pool.query('DELETE FROM prompts_padrao WHERE id = $1', [id]);
     res.json({ success: true, action: 'removido', message: 'Prompt padrão removido com sucesso' });
+    logger.writeLog('info', 'prompts-padrao', `Prompt padrão removido: ${chave}`, { prompt_id: id, chave }).catch(() => {});
   } catch (err) {
     console.error('[api] Erro ao excluir prompt padrão:', err.message);
     res.status(500).json({ success: false, error: 'Falha ao excluir prompt padrão' });
@@ -2893,6 +3031,11 @@ app.post('/api/v1/conhecimento', async (req, res) => {
     `;
     const result = await pool.query(insertQuery, [instance_id.trim(), text.trim(), JSON.stringify(parsedMetadata)]);
     res.status(201).json({ success: true, data: result.rows[0], message: 'Fragmento cadastrado com sucesso' });
+    logger.writeLog('info', 'conhecimento', `Fragmento de conhecimento cadastrado (#${result.rows[0].id})`, {
+      fragmento_id: result.rows[0].id,
+      instancia: instance_id,
+      caracteres: result.rows[0].tamanho_caracteres
+    }, instance_id).catch(() => {});
   } catch (err) {
     console.error('[api] Erro ao cadastrar fragmento de conhecimento:', err.message);
     res.status(500).json({ success: false, error: 'Falha ao salvar fragmento no banco de dados' });
@@ -2917,6 +3060,7 @@ app.delete('/api/v1/conhecimento/:id', async (req, res) => {
       return res.status(404).json({ success: false, error: 'Fragmento não encontrado' });
     }
     res.json({ success: true, message: 'Fragmento removido com sucesso' });
+    logger.writeLog('info', 'conhecimento', `Fragmento de conhecimento removido (#${id})`, { fragmento_id: id }).catch(() => {});
   } catch (err) {
     console.error('[api] Erro ao excluir fragmento de conhecimento:', err.message);
     res.status(500).json({ success: false, error: 'Falha ao remover fragmento' });
@@ -2953,6 +3097,10 @@ app.post('/api/v1/conhecimento/bulk-delete', async (req, res) => {
       removidos: result.rowCount,
       message: `${result.rowCount} fragmento(s) removido(s) com sucesso`
     });
+    logger.writeLog('info', 'conhecimento', `Exclusão em lote: ${result.rowCount} fragmento(s)`, {
+      solicitados: cleanIds.length,
+      removidos: result.rowCount
+    }).catch(() => {});
   } catch (err) {
     console.error('[api] Erro na exclusão em lote de conhecimento:', err.message);
     res.status(500).json({ success: false, error: 'Falha ao excluir fragmentos em lote' });
@@ -2962,13 +3110,53 @@ app.post('/api/v1/conhecimento/bulk-delete', async (req, res) => {
 // Middleware global de tratamento de erros (impede vazamento de stack traces e padroniza JSON)
 app.use((err, req, res, _next) => {
   if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
+    logger.writeLogThrottled(
+      'payload_invalido',
+      60 * 1000,
+      'warn',
+      'server',
+      'Payload JSON malformado ou inválido recebido',
+      { rota: req.path, request_id: req.requestId || null, ip: logger.maskIp(req.ip) }
+    ).catch(() => {});
     return res.status(400).json({ success: false, error: 'Payload JSON malformado ou inválido.' });
   }
   if (err.type === 'entity.too.large') {
+    logger.writeLog('warn', 'server', 'Payload acima do limite (256KB)', {
+      rota: req.path,
+      request_id: req.requestId || null,
+      ip: logger.maskIp(req.ip)
+    }).catch(() => {});
     return res.status(413).json({ success: false, error: 'Payload excede o limite máximo permitido de 256KB.' });
   }
   console.error('[server] Erro não tratado:', err.message);
+  logger.writeLog('error', 'server', `Erro não tratado: ${err.message}`, {
+    rota: req.path,
+    metodo: req.method,
+    status: err.status || 500,
+    request_id: req.requestId || null,
+    stack: err.stack || ''
+  }, req.user?.cliente_id || null).catch(() => {});
   res.status(err.status || 500).json({ success: false, error: 'Erro interno no processamento da requisição.' });
+});
+
+// Falhas fora do ciclo de request também precisam ser visíveis na aba de logs.
+process.on('unhandledRejection', (reason) => {
+  const erro = reason instanceof Error ? reason : new Error(String(reason));
+  console.error('[process] unhandledRejection:', erro.message);
+  logger.writeLog('critical', 'process', `Promise rejeitada sem tratamento: ${erro.message}`, {
+    stack: erro.stack || ''
+  }).catch(() => {});
+});
+
+process.on('uncaughtException', (erro) => {
+  console.error('[process] uncaughtException:', erro.message);
+  // Estado do processo é inseguro para continuar: registra e deixa o
+  // `restart: unless-stopped` do Compose recolocar o container no ar.
+  logger.writeLog('critical', 'process', `Exceção não capturada: ${erro.message}`, {
+    stack: erro.stack || ''
+  }).finally(() => {
+    setTimeout(() => process.exit(1), 500);
+  });
 });
 
 // Inicia servidor HTTP
@@ -2976,5 +3164,14 @@ app.listen(port, '0.0.0.0', async () => {
   console.log(`[dashboard] Painel administrativo ativo na porta ${port}`);
   if (pool) {
     await auth.initAdminUser(pool);
+
+    // Semeia o cache com o histórico do banco: a aba abre populada mesmo após
+    // um restart do container (antes ela mostrava "cache vazio").
+    const aquecidos = await logger.warmup();
+    if (aquecidos > 0) console.log(`[log] Cache aquecido com ${aquecidos} entrada(s) de system_logs.`);
+
+    // Retenção automática (diária) — sem isso a tabela cresce indefinidamente.
+    const retencaoDias = parseInt(process.env.LOG_RETENTION_DAYS || '90', 10);
+    logger.startRetentionJob({ dias: Number.isFinite(retencaoDias) ? retencaoDias : 90 });
   }
 });
