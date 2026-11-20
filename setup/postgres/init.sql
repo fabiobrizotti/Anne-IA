@@ -958,6 +958,10 @@ CREATE TABLE IF NOT EXISTS dashboard_credenciais (
 );
 
 -- 5. Sessões Server-Side Opaque (Tokens rotativos / Revogáveis)
+-- Nota: o Dashboard só atualiza ultimo_uso quando ele está defasado em mais de
+-- 5 minutos (throttle em dashboard/src/server.js). Sem esse throttle, cada
+-- requisição autenticada geraria um UPDATE e, via trigger de auditoria, uma
+-- linha em auditoria_geral por request — amplificação de escrita desnecessária.
 CREATE TABLE IF NOT EXISTS dashboard_sessoes (
   id_hash CHAR(64) PRIMARY KEY,
   user_id UUID NOT NULL REFERENCES dashboard_usuarios(id) ON DELETE CASCADE,

@@ -282,6 +282,11 @@ services:
       DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD}
       NINE_ROUTER_URL: http://9router:${NINE_ROUTER_CONTAINER_PORT}/v1
       NINE_ROUTER_API_KEY: ${NINE_ROUTER_API_KEY:-${NINE_ROUTER_PASSWORD}}
+      # Rate limit distribuído (db 7 é exclusivo do Dashboard; 6 é do n8n)
+      REDIS_URL: redis://:${CHAVE_REDIS_PASSWORD}@redis:${REDIS_CONTAINER_PORT}/7
+      # Observabilidade: retenção de system_logs e ingestão externa de eventos
+      LOG_RETENTION_DAYS: ${LOG_RETENTION_DAYS:-90}
+      LOG_INGEST_TOKEN: ${LOG_INGEST_TOKEN:-}
       CPF_ENC_KEY: ${CPF_ENC_KEY:-}
       CPF_HMAC_KEY: ${CPF_HMAC_KEY:-}
       AUTH_SECRET_KEY: ${AUTH_SECRET_KEY:-}
