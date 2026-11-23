@@ -30,7 +30,6 @@ env_get() {
 NGINX_HOST_PORT="$(env_get NGINX_PORT 80)"
 # Container port for docker exec tests
 NGINX_CONTAINER_PORT="$(env_get NGINX_CONTAINER_PORT 8080)"
-DASHBOARD_PORT="$(env_get DASHBOARD_PORT 41283)"
 N8N_PORT="$(env_get N8N_PORT 34567)"
 PGBOUNCER_CONTAINER_PORT="$(env_get PGBOUNCER_CONTAINER_PORT 6432)"
 
@@ -67,7 +66,7 @@ fi
 echo "--- Rate Limit Login ---"
 login_url="http://127.0.0.1:${NGINX_HOST_PORT}/api/v1/auth/login"
 blocked=0
-for i in {1..7}; do
+for _ in {1..7}; do
   code=$(curl -s -o /dev/null -w '%{http_code}' -m 5 -X POST \
     -H "Content-Type: application/json" \
     -H "Host: ${TAILSCALE_HOSTNAME}" \
@@ -91,7 +90,7 @@ echo "--- Rate Limit API Geral ---"
 api_url="http://127.0.0.1:${NGINX_HOST_PORT}/api/health"
 # Deve permitir burst inicial
 success=0
-for i in {1..5}; do
+for _ in {1..5}; do
   code=$(curl -s -o /dev/null -w '%{http_code}' -m 5 \
     -H "Host: ${TAILSCALE_HOSTNAME}" \
     "${api_url}" 2>/dev/null || true)
@@ -185,7 +184,7 @@ echo "  Reiniciando pgbouncer..."
 docker compose restart pgbouncer >/dev/null 2>&1
 sleep 3
 # Aguarda pgbouncer subir
-for i in {1..10}; do
+for _ in {1..10}; do
   if docker compose exec -T pgbouncer nc -z 127.0.0.1 "${PGBOUNCER_CONTAINER_PORT}" >/dev/null 2>&1; then
     break
   fi
