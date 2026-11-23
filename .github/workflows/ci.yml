@@ -156,14 +156,16 @@ jobs:
           echo "CPF_ENC_KEY=$(node -e 'console.log(require("crypto").randomBytes(32).toString("hex"))')" >> .env
           echo "CPF_HMAC_KEY=$(node -e 'console.log(require("crypto").randomBytes(32).toString("hex"))')" >> .env
 
-      - name: Subir Infraestrutura Mínima para Pentest (Postgres & Dashboard)
+      - name: Subir Infraestrutura Mínima para Pentest (Postgres, PgBouncer & Dashboard)
         run: |
           # Serviço correto: db-evolution (o nome "postgres" não existe no compose)
-          docker compose up -d db-evolution dashboard
-          # Aguarda healthy do banco e o dashboard respondendo na porta do host
+          # PgBouncer é obrigatório: Dashboard conecta via PgBouncer (DATABASE_URL)
+          docker compose up -d db-evolution pgbouncer dashboard
+          # Aguarda healthy do banco, pgbouncer e o dashboard respondendo na porta do host
           # (DASHBOARD_PORT, não a 3000 que é interna do container)
           DASH_PORT="$(grep '^DASHBOARD_PORT=' .env | cut -d= -f2)"
           timeout 180 bash -c 'until docker compose ps db-evolution | grep -q "(healthy)"; do sleep 2; done'
+          timeout 180 bash -c 'until docker compose ps pgbouncer | grep -q "(healthy)"; do sleep 2; done'
           timeout 180 bash -c "until curl -s http://127.0.0.1:${DASH_PORT}/api/health | grep -q 'ok'; do sleep 2; done"
 
       - name: Injetar Fixtures Sintéticas Multi-Tenant
