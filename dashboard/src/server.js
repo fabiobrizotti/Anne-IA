@@ -2,7 +2,9 @@ const express = require('express');
 const { Pool } = require('pg');
 const path = require('path');
 const crypto = require('crypto');
+const Redis = require('ioredis');
 const auth = require('./auth');
+const logger = require('./logger');
 
 const app = express();
 const port = parseInt(process.env.PORT || '3000', 10);
@@ -14,14 +16,15 @@ const NINE_ROUTER_URL = process.env.NINE_ROUTER_URL || 'http://9router:20000/v1'
 const NINE_ROUTER_API_KEY = process.env.NINE_ROUTER_API_KEY || process.env.NINE_ROUTER_PASSWORD || '';
 
 // Pool PostgreSQL (dimensionado para alta concorrência e proteção contra queries lentas)
+// statement_timeout removido — PgBouncer não aceita como parâmetro de startup;
+// o timeout é configurado no nível da role via ALTER ROLE ... SET statement_timeout
 let pool = null;
 if (DATABASE_URL) {
   pool = new Pool({
     connectionString: DATABASE_URL,
     max: 15,
     idleTimeoutMillis: 30000,
-    connectionTimeoutMillis: 5000,
-    statement_timeout: 15000
+    connectionTimeoutMillis: 5000
   });
   pool.on('error', (err) => {
     console.error('[db] Erro inesperado no pool do Postgres:', err.message);
@@ -30,10 +33,50 @@ if (DATABASE_URL) {
   console.error('[db] DATABASE_URL não configurada. Schema deve ser provisionado por setup/postgres/init.sql.');
 }
 
+// Injeta o pool no logger ANTES de qualquer rota poder logar.
+logger.init(pool);
+
+// Redis client para rate limiting distribuído.
+// Sem REDIS_URL o rate limit cai no fallback em memória (fail-open) em vez de
+// tentar uma credencial fixa — evita WRONGPASS/NOAUTH a cada requisição.
+const REDIS_URL = process.env.REDIS_URL || '';
+const redisRateLimit = REDIS_URL
+  ? new Redis(REDIS_URL, {
+    maxRetriesPerRequest: 3,
+    retryStrategy: (times) => Math.min(times * 100, 3000),
+    lazyConnect: true
+  })
+  : null;
+
+if (redisRateLimit) {
+  redisRateLimit.on('error', (err) => {
+    console.error('[redis-rate-limit] Erro:', err.message);
+    logger.writeLogThrottled(
+      'redis_rate_limit',
+      5 * 60 * 1000,
+      'warn',
+      'redis',
+      `Rate limit distribuído indisponível: ${err.message}`,
+      { host: 'redis' }
+    ).catch(() => {});
+  });
+  redisRateLimit.connect().catch(() => {});
+} else {
+  console.warn('[redis-rate-limit] REDIS_URL ausente: usando rate limit em memória.');
+}
+
 // Middlewares de Parsing e Segurança Defensiva
 app.disable('x-powered-by');
-app.set('trust proxy', 'loopback');
+// Trust proxy: se NGINX_TRUST_PROXY_IP definido, usa ele (IP do container Nginx na rede frontend)
+// Caso contrário, mantém 'loopback' (apenas localhost) para compatibilidade com acesso direto
+const trustProxyIp = process.env.NGINX_TRUST_PROXY_IP || 'loopback';
+app.set('trust proxy', trustProxyIp);
 app.use(express.json({ limit: '256kb' }));
+
+// Interceptação de acesso: método, rota declarada, status e latência.
+// Roda no `finish`, quando req.user já foi resolvido pelo middleware de auth.
+app.use(logger.requestLogger());
+
 app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
@@ -45,6 +88,27 @@ app.use((req, res, next) => {
   );
   if (req.secure || req.headers['x-forwarded-proto'] === 'https') {
     res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  }
+  next();
+});
+
+// CORS restrito para origins permitidos (Tailscale + localhost)
+const allowedOrigins = [
+  'http://localhost:3000',
+  'http://localhost:5678',
+  process.env.DASHBOARD_TAILSCALE_URL,
+  process.env.N8N_TAILSCALE_URL,
+  `http://${process.env.TAILSCALE_HOSTNAME}:${process.env.DASHBOARD_PORT}`,
+  `http://${process.env.TAILSCALE_HOSTNAME}:${process.env.N8N_PORT}`,
+  `http://${process.env.TAILSCALE_HOSTNAME}.tailnet:${process.env.DASHBOARD_PORT}`,
+  `http://${process.env.TAILSCALE_HOSTNAME}.tailnet:${process.env.N8N_PORT}`,
+].filter(Boolean);
+
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (origin && allowedOrigins.includes(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
   }
   next();
 });
@@ -71,11 +135,15 @@ async function resolveSessionUser(req) {
     if (res.rowCount === 0) return null;
     const row = res.rows[0];
 
-    // Atualiza sliding window em background
+    // Atualiza sliding window em background.
+    // Throttle de 5 minutos: sem ele, CADA requisição autenticada disparava um
+    // UPDATE em dashboard_sessoes — e o trigger de auditoria gravava uma linha
+    // em auditoria_geral por request (amplificação de escrita desnecessária).
     pool.query(
       `UPDATE dashboard_sessoes
        SET ultimo_uso = NOW(), expira_em = NOW() + INTERVAL '30 minutes'
-       WHERE id_hash = $1`,
+       WHERE id_hash = $1
+         AND ultimo_uso < NOW() - INTERVAL '5 minutes'`,
       [tokenHash]
     ).catch(() => {});
 
@@ -144,12 +212,64 @@ app.get('/login.html', async (req, res, next) => {
 // Arquivos estáticos da interface Vanilla
 app.use(express.static(path.join(__dirname, '../public')));
 
+// ============================================================================
+// MIDDLEWARE DE AUTENTICAÇÃO PARA /api/v1/* (deve vir ANTES dos endpoints)
+// ============================================================================
+
+app.use('/api/v1', async (req, res, next) => {
+  // Autentica TODAS as rotas /api/v1/* (incluindo /auth/*)
+  // O middleware de login/register em /api/v1/auth lida com suas próprias validações
+
+  // req.originalUrl contém o caminho completo incluindo /api/v1
+  const fullPath = req.originalUrl || req.url;
+
+  const user = await resolveSessionUser(req);
+  if (user) {
+    req.user = user;
+    return next();
+  }
+
+  if (verifyBasicAuth(req)) {
+    req.user = { id: 'basic', role: 'admin', nome: 'Admin' };
+    return next();
+  }
+
+  // Permite rotas públicas de auth sem autenticação
+  if (fullPath.startsWith('/api/v1/auth/') &&
+      (fullPath === '/api/v1/auth/login' ||
+       fullPath === '/api/v1/auth/register' ||
+       fullPath.startsWith('/api/v1/auth/legal/'))) {
+    return next();
+  }
+
+  // Ingestão externa de logs (n8n/Evolution/scripts): autenticada por
+  // X-Log-Token dentro do próprio handler, não por sessão de navegador.
+  if (req.method === 'POST' && fullPath.startsWith('/api/v1/logs/ingest')) {
+    return next();
+  }
+
+  res.status(401).json({ success: false, error: 'Sessão expirada ou não autenticada.' });
+});
+
+// Helpers de Autorização RBAC / Isolamento Multi-Tenant
+function isAdmin(req) {
+  return Boolean(req.user && req.user.role === 'admin');
+}
+
+function canAccessInstance(req, targetId) {
+  if (!req.user) return false;
+  if (req.user.role === 'admin') return true;
+  if (!req.user.cliente_id || !targetId) return false;
+  return String(req.user.cliente_id).trim().toLowerCase() === String(targetId).trim().toLowerCase();
+}
+
 // Helper de requisição para a Evolution API
 async function evolutionFetch(endpoint, options = {}) {
   const url = `${EVOLUTION_API_URL}${endpoint}`;
   const headers = {
     'apikey': EVOLUTION_API_KEY,
     'Content-Type': 'application/json',
+    'Origin': process.env.DASHBOARD_TAILSCALE_URL || 'http://anneia-vps:41283',
     ...(options.headers || {})
   };
 
@@ -196,8 +316,17 @@ function normalizePhoneNumber(raw) {
 // -----------------------------------------------------------------------------
 
 // Healthcheck
+// Expõe a revisão em execução para que a atualização da VPS seja verificável
+// de fora: se o `sha` aqui não bate com o HEAD do GitHub, o deploy não aplicou.
+// Sem segredos — apenas versão, hash curto do commit e uptime.
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  res.json({
+    status: 'ok',
+    version: process.env.APP_VERSION || 'unknown',
+    sha: process.env.GIT_SHA || 'unknown',
+    uptime: Math.floor(process.uptime()),
+    timestamp: new Date().toISOString()
+  });
 });
 
 // -----------------------------------------------------------------------------
@@ -243,6 +372,11 @@ app.post('/api/v1/auth/login', async (req, res) => {
       userAgent,
       detalhes: { remainingSeconds: bfCheck.remainingSeconds, reason: bfCheck.reason }
     });
+    logger.writeLog('warn', 'auth', 'Login bloqueado temporariamente por excesso de tentativas', {
+      ip: logger.maskIp(ip),
+      motivo: bfCheck.reason || 'brute_force',
+      retry_after_s: bfCheck.remainingSeconds
+    }).catch(() => {});
     res.setHeader('Retry-After', String(bfCheck.remainingSeconds));
     return res.status(429).json({
       success: false,
@@ -268,6 +402,7 @@ app.post('/api/v1/auth/login', async (req, res) => {
 
     if (!user || !passwordMatch || user.status !== 'ativo') {
       auth.recordBruteForceFailure(ip, cleanId);
+      const motivo = !user ? 'usuario_nao_encontrado' : (user.status !== 'ativo' ? 'usuario_inativo' : 'senha_incorreta');
       await auth.recordAudit(pool, {
         userId: user ? user.id : null,
         identificador: cleanId,
@@ -275,8 +410,12 @@ app.post('/api/v1/auth/login', async (req, res) => {
         sucesso: false,
         ip,
         userAgent,
-        detalhes: { motivo: !user ? 'usuario_nao_encontrado' : (user.status !== 'ativo' ? 'usuario_inativo' : 'senha_incorreta') }
+        detalhes: { motivo }
       });
+      logger.writeLog('warn', 'auth', `Falha de login (${motivo})`, {
+        ip: logger.maskIp(ip),
+        motivo
+      }).catch(() => {});
       return res.status(401).json({ success: false, error: 'E-mail ou senha incorretos.' });
     }
 
@@ -321,6 +460,12 @@ app.post('/api/v1/auth/login', async (req, res) => {
       detalhes: { remember_me: !!remember_me }
     });
 
+    logger.writeLog('info', 'auth', `Login: ${user.customer_code}`, {
+      role: user.role,
+      ip: logger.maskIp(ip),
+      lembrar: !!remember_me
+    }, user.cliente_id).catch(() => {});
+
     res.json({
       success: true,
       data: {
@@ -356,9 +501,31 @@ function checkRegisterRateLimit(ip) {
   return true;
 }
 
-// POST /api/v1/auth/register
+// POST /api/v1/auth/register - Restrito ao usuário mestre do .env
 app.post('/api/v1/auth/register', async (req, res) => {
   if (!pool) return res.status(500).json({ success: false, error: 'Banco de dados não disponível' });
+
+  // Verifica se é o usuário mestre (admin do .env)
+  const masterUsername = process.env.DASHBOARD_USERNAME || 'admin';
+  const masterEmail = process.env.DASHBOARD_EMAIL || 'admin@anne-ia.local';
+  const user = await resolveSessionUser(req);
+
+  const isMaster = user && (user.customer_code?.startsWith('ADM-') || user.email === masterEmail || user.nome?.includes(masterUsername));
+  if (!isMaster && !verifyBasicAuth(req)) {
+    await auth.recordAudit(pool, {
+      identificador: 'unknown',
+      evento: 'REGISTER_DENIED_NOT_MASTER',
+      sucesso: false,
+      ip: req.ip || '',
+      userAgent: req.headers['user-agent'] || '',
+      detalhes: { reason: 'apenas_usuario_mestre' }
+    });
+    return res.status(403).json({
+      success: false,
+      error: 'Apenas o administrador mestre (configurado no .env) pode criar novas contas.'
+    });
+  }
+
   const ip = req.ip || req.socket.remoteAddress || '';
   const userAgent = req.headers['user-agent'] || '';
 
@@ -517,6 +684,11 @@ app.post('/api/v1/auth/register', async (req, res) => {
       detalhes: { customer_code: customerCode }
     });
 
+    logger.writeLog('info', 'auth', `Usuário criado: ${customerCode}`, {
+      role: userRes.rows[0].role,
+      ip: logger.maskIp(ip)
+    }).catch(() => {});
+
     res.status(201).json({
       success: true,
       data: {
@@ -545,6 +717,10 @@ app.post('/api/v1/auth/logout', async (req, res) => {
     await pool.query('UPDATE dashboard_sessoes SET revogado_em = NOW() WHERE id_hash = $1', [tokenHash]).catch(() => {});
   }
   auth.clearSessionCookie(req, res);
+  logger.writeLog('info', 'auth', 'Logout', {
+    ip: logger.maskIp(req.ip),
+    role: req.user?.role || null
+  }, req.user?.cliente_id || null).catch(() => {});
   res.json({ success: true, message: 'Sessão encerrada com sucesso.' });
 });
 
@@ -569,37 +745,598 @@ app.get('/api/v1/auth/me', async (req, res) => {
   res.status(401).json({ success: false, error: 'Não autenticado' });
 });
 
-// Middleware de Proteção das Rotas /api/v1/*
-app.use('/api/v1', async (req, res, next) => {
-  if (req.path.startsWith('/auth/')) return next();
+// Helpers de Autorização RBAC / Isolamento Multi-Tenant
+function isAdmin(req) {
+  return Boolean(req.user && req.user.role === 'admin');
+}
 
-  const user = await resolveSessionUser(req);
-  if (user) {
-    req.user = user;
+function canAccessInstance(req, targetId) {
+  if (!req.user) return false;
+  if (req.user.role === 'admin') return true;
+  if (!req.user.cliente_id || !targetId) return false;
+  return String(req.user.cliente_id).trim().toLowerCase() === String(targetId).trim().toLowerCase();
+}
 
-    // Defesa anti-CSRF para requisições mutantes autenticadas via cookie de sessão
-    const isMutating = ['POST', 'PUT', 'DELETE', 'PATCH'].includes(req.method);
-    if (isMutating) {
-      const origin = req.headers.origin;
-      const host = req.headers.host;
-      const requestedWith = req.headers['x-requested-with'];
-      const hasCustomHeader = requestedWith === 'XMLHttpRequest';
-      const isSameOrigin = origin && host ? origin.endsWith(host) : true;
+// ============================================================================
+// ENDPOINTS DE GESTÃO DE USUÁRIOS (Admin only)
+// ============================================================================
 
-      if (!hasCustomHeader && !isSameOrigin) {
-        return res.status(403).json({ success: false, error: 'Requisição rejeitada por política de segurança anti-CSRF.' });
+// GET /api/v1/auth/users - Lista todos os usuários (admin only)
+app.get('/api/v1/auth/users', (req, res, next) => {
+  console.log('[endpoint-mw] req.user:', req.user ? { role: req.user.role, id: req.user.id } : 'undefined', 'path:', req.originalUrl);
+  next();
+}, requirePermission('usuarios', 'read'), async (req, res) => {
+  if (!isAdmin(req)) return res.status(403).json({ success: false, error: 'Apenas administradores' });
+  if (!pool) return res.status(503).json({ success: false, error: 'Banco de dados indisponível' });
+
+  try {
+    const res_query = await pool.query(
+      `SELECT u.id, u.customer_code, u.status, u.role, u.cliente_id, u.criado_em, u.atualizado_em,
+              COALESCE(i.nome, 'Operador') AS nome, c.email, c.telefone, i.nascimento,
+              (SELECT MAX(ultimo_uso) FROM dashboard_sessoes WHERE user_id = u.id) AS ultimo_acesso
+       FROM dashboard_usuarios u
+       LEFT JOIN dashboard_identidades i ON i.user_id = u.id
+       LEFT JOIN dashboard_contatos c ON c.user_id = u.id
+       ORDER BY u.criado_em DESC`
+    );
+    res.json({ success: true, data: res_query.rows });
+  } catch (err) {
+    console.error('[users] Erro ao listar:', err.message);
+    res.status(500).json({ success: false, error: 'Falha ao carregar usuários' });
+  }
+});
+
+// PUT /api/v1/auth/users/:id - Atualiza usuário (admin only)
+app.put('/api/v1/auth/users/:id', requirePermission('usuarios', 'update'), async (req, res) => {
+  if (!isAdmin(req)) return res.status(403).json({ success: false, error: 'Apenas administradores' });
+  if (!pool) return res.status(503).json({ success: false, error: 'Banco de dados indisponível' });
+
+  try {
+    const id = req.params.id;
+    const { nome, email, telefone, role, cliente_id, ativo, password, data_nascimento } = req.body;
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      // Atualiza dashboard_usuarios
+      await client.query(
+        `UPDATE dashboard_usuarios
+         SET role = COALESCE($1, role),
+             cliente_id = $2,
+             status = $3,
+             atualizado_em = NOW()
+         WHERE id = $4`,
+        [role, cliente_id || null, ativo ? 'ativo' : 'bloqueado', id]
+      );
+
+      // Atualiza dashboard_identidades (nome, nascimento)
+      if (nome || data_nascimento) {
+        await client.query(
+          `UPDATE dashboard_identidades
+           SET nome = COALESCE($1, nome),
+               nascimento = COALESCE($2, nascimento),
+               atualizado_em = NOW()
+           WHERE user_id = $3`,
+          [nome, data_nascimento, id]
+        );
+      }
+
+      // Atualiza dashboard_contatos (email, telefone)
+      if (email || telefone !== undefined) {
+        await client.query(
+          `UPDATE dashboard_contatos
+           SET email = COALESCE($1, email),
+               telefone = COALESCE($2, telefone),
+               atualizado_em = NOW()
+           WHERE user_id = $3`,
+          [email || null, telefone || null, id]
+        );
+      }
+
+      // Atualiza senha se fornecida
+      if (password && password.length >= 8) {
+        const passwordHash = await auth.hashPassword(password);
+        await client.query(
+          `UPDATE dashboard_credenciais SET password_hash = $1, atualizado_em = NOW() WHERE user_id = $2`,
+          [passwordHash, id]
+        );
+      }
+
+      await client.query('COMMIT');
+
+      await logger.writeLog('info', 'auth', `Usuário atualizado: ${id}`, { id, role, ativo });
+
+      res.json({ success: true, message: 'Usuário atualizado com sucesso' });
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.error('[users] Erro ao atualizar:', err.message);
+    res.status(500).json({ success: false, error: 'Falha ao atualizar usuário' });
+  }
+});
+
+// DELETE /api/v1/auth/users/:id - Exclui usuário (admin only)
+app.delete('/api/v1/auth/users/:id', requirePermission('usuarios', 'delete'), async (req, res) => {
+  if (!isAdmin(req)) return res.status(403).json({ success: false, error: 'Apenas administradores' });
+  if (!pool) return res.status(503).json({ success: false, error: 'Banco de dados indisponível' });
+
+  try {
+    const id = req.params.id;
+
+    // Impede auto-exclusão
+    if (req.user && req.user.id === id) {
+      return res.status(400).json({ success: false, error: 'Não é possível excluir a si mesmo' });
+    }
+
+    await pool.query('DELETE FROM dashboard_usuarios WHERE id = $1', [id]);
+
+    await logger.writeLog('info', 'auth', `Usuário excluído: ${id}`, { id });
+
+    res.json({ success: true, message: 'Usuário excluído com sucesso' });
+  } catch (err) {
+    console.error('[users] Erro ao excluir:', err.message);
+    res.status(500).json({ success: false, error: 'Falha ao excluir usuário' });
+  }
+});
+
+// ============================================================================
+// ENDPOINTS DE LOGS DO SISTEMA (com cache + SSE)
+// ============================================================================
+
+// Monta as condições de filtro compartilhadas por listagem, exportação e stats.
+function buildLogConditions(req, query) {
+  const conditions = [];
+  const values = [];
+  let paramIdx = 1;
+
+  // Filtro por tenant (isolamento multi-tenant). Admin pode filtrar por qualquer
+  // cliente; os demais só enxergam o próprio.
+  const targetClienteId = isAdmin(req) ? (query.cliente_id || null) : req.user.cliente_id;
+  if (targetClienteId) {
+    conditions.push(`cliente_id = $${paramIdx++}`);
+    values.push(targetClienteId);
+  }
+
+  if (query.nivel) {
+    conditions.push(`nivel = $${paramIdx++}`);
+    values.push(query.nivel);
+  }
+
+  if (query.origem) {
+    conditions.push(`origem = $${paramIdx++}`);
+    values.push(query.origem);
+  }
+
+  if (query.busca) {
+    conditions.push(`(mensagem ILIKE $${paramIdx} OR contexto::text ILIKE $${paramIdx})`);
+    values.push(`%${query.busca}%`);
+    paramIdx++;
+  }
+
+  if (query.inicio) {
+    conditions.push(`criado_em >= $${paramIdx++}`);
+    values.push(query.inicio);
+  }
+
+  if (query.fim) {
+    conditions.push(`criado_em <= $${paramIdx++}`);
+    values.push(query.fim);
+  }
+
+  return {
+    whereClause: conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '',
+    values,
+    paramIdx
+  };
+}
+
+function csvField(value) {
+  const str = value === null || value === undefined ? '' : String(value);
+  return `"${str.replace(/"/g, '""')}"`;
+}
+
+// GET /api/v1/logs - Lista logs com paginação, filtros e cache
+app.get('/api/v1/logs', requirePermission('logs', 'read'), async (req, res) => {
+  if (!pool) return res.status(503).json({ success: false, error: 'Banco de dados indisponível' });
+
+  try {
+    const {
+      nivel,
+      origem,
+      busca,
+      cliente_id,
+      page = 1,
+      limit = 50,
+      use_cache,
+      inicio,
+      fim
+    } = req.query;
+
+    const pageNum = Math.max(1, parseInt(page, 10));
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10)));
+    const offset = (pageNum - 1) * limitNum;
+
+    // Cache em memória: atalho apenas para admin, página 1 e sem filtros.
+    // (Para os demais tenants a resposta vem do banco, já filtrada.)
+    if (use_cache === 'true' && isAdmin(req) && pageNum === 1 && !nivel && !origem && !busca && !cliente_id && !inicio && !fim) {
+      const cachedData = logger.getCacheFor({ limit: limitNum, isAdmin: true });
+      return res.json({
+        success: true,
+        data: cachedData,
+        cached: true,
+        total: cachedData.length,
+        page: 1,
+        limit: limitNum,
+        totalPages: cachedData.length > 0 ? 1 : 0
+      });
+    }
+
+    const { whereClause, values, paramIdx } = buildLogConditions(req, req.query);
+    let nextIdx = paramIdx;
+
+    // Total count
+    const countRes = await pool.query(
+      `SELECT COUNT(*)::int AS total FROM system_logs ${whereClause}`,
+      values
+    );
+    const total = countRes.rows[0].total;
+
+    // Data query
+    values.push(limitNum, offset);
+    const dataRes = await pool.query(
+      `SELECT id, nivel, origem, mensagem, contexto, cliente_id, criado_em
+       FROM system_logs
+       ${whereClause}
+       ORDER BY criado_em DESC
+       LIMIT $${nextIdx++} OFFSET $${nextIdx}`,
+      values
+    );
+
+    res.json({
+      success: true,
+      data: dataRes.rows,
+      cached: false,
+      total,
+      page: pageNum,
+      limit: limitNum,
+      totalPages: Math.ceil(total / limitNum)
+    });
+  } catch (err) {
+    console.error('[logs] Erro ao listar logs:', err.message);
+    res.status(500).json({ success: false, error: 'Falha ao carregar logs' });
+  }
+});
+
+// GET /api/v1/logs/export - Exportação CSV server-side (respeita filtros)
+app.get('/api/v1/logs/export', requirePermission('logs', 'read'), async (req, res) => {
+  if (!pool) return res.status(503).json({ success: false, error: 'Banco de dados indisponível' });
+
+  try {
+    // Admin exporta mais linhas; tenant fica limitado para não travar o processo.
+    const maxLinhas = isAdmin(req) ? 5000 : 1000;
+    const { whereClause, values, paramIdx } = buildLogConditions(req, req.query);
+    values.push(maxLinhas);
+
+    const result = await pool.query(
+      `SELECT criado_em, nivel, origem, mensagem, contexto, cliente_id
+       FROM system_logs
+       ${whereClause}
+       ORDER BY criado_em DESC
+       LIMIT $${paramIdx}`,
+      values
+    );
+
+    const arquivo = `logs_anneia_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.csv`;
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${arquivo}"`);
+    res.setHeader('Cache-Control', 'no-store');
+
+    res.write('Timestamp,Nivel,Origem,Mensagem,Contexto,Cliente\n');
+    for (const row of result.rows) {
+      res.write([
+        csvField(row.criado_em instanceof Date ? row.criado_em.toISOString() : row.criado_em),
+        csvField(row.nivel),
+        csvField(row.origem),
+        csvField(row.mensagem),
+        csvField(JSON.stringify(row.contexto || {})),
+        csvField(row.cliente_id)
+      ].join(',') + '\n');
+    }
+    res.end();
+  } catch (err) {
+    console.error('[logs] Erro ao exportar logs:', err.message);
+    if (!res.headersSent) {
+      res.status(500).json({ success: false, error: 'Falha ao exportar logs' });
+    } else {
+      res.end();
+    }
+  }
+});
+
+// DELETE /api/v1/logs/cache - Limpa apenas o cache em memória (não apaga do banco)
+app.delete('/api/v1/logs/cache', requirePermission('logs', 'read'), async (req, res) => {
+  logger.clearCache();
+  await logger.writeLog('info', 'logs', 'Cache em memória da aba de logs limpo', {
+    role: req.user?.role || null,
+    user_id: req.user?.id || null
+  }, req.user?.cliente_id || null);
+  res.json({ success: true, message: 'Cache limpo' });
+});
+
+// POST /api/v1/logs/ingest - Ingestão de eventos externos (n8n, Evolution, scripts)
+// Autenticação por token compartilhado (LOG_INGEST_TOKEN). Desabilitado se o
+// token não estiver configurado — nunca expõe um endpoint de escrita aberto.
+app.post('/api/v1/logs/ingest', async (req, res) => {
+  const tokenEsperado = process.env.LOG_INGEST_TOKEN || '';
+  if (!tokenEsperado) {
+    return res.status(503).json({ success: false, error: 'Ingestão de logs desabilitada (LOG_INGEST_TOKEN ausente).' });
+  }
+
+  const recebido = String(req.headers['x-log-token'] || '');
+  const bufRecebido = Buffer.from(recebido);
+  const bufEsperado = Buffer.from(tokenEsperado);
+  const tokenOk = bufRecebido.length === bufEsperado.length && crypto.timingSafeEqual(bufRecebido, bufEsperado);
+  if (!tokenOk) {
+    logger.writeLog('warn', 'logs', 'Tentativa de ingestão de log com token inválido', {
+      ip: logger.maskIp(req.ip)
+    }).catch(() => {});
+    return res.status(401).json({ success: false, error: 'Token de ingestão inválido.' });
+  }
+
+  const permitido = await checkTestRateLimitRedis(`logs-ingest:${req.ip}`, 120, 60 * 1000);
+  if (!permitido) {
+    return res.status(429).json({ success: false, error: 'Limite de ingestão atingido. Aguarde.' });
+  }
+
+  const { nivel, origem, mensagem, contexto, cliente_id } = req.body || {};
+  const nivelLimpo = String(nivel || 'info').toLowerCase();
+  const origemLimpa = String(origem || '').trim();
+  const mensagemLimpa = String(mensagem || '').trim();
+
+  if (!['debug', 'info', 'warn', 'error', 'critical'].includes(nivelLimpo)) {
+    return res.status(400).json({ success: false, error: 'Nível inválido.' });
+  }
+  if (!/^[a-zA-Z0-9_.-]{2,100}$/.test(origemLimpa)) {
+    return res.status(400).json({ success: false, error: 'Origem inválida (2-100 chars: letras, números, hífen, underline, ponto).' });
+  }
+  if (!mensagemLimpa) {
+    return res.status(400).json({ success: false, error: 'Mensagem é obrigatória.' });
+  }
+  if (contexto !== undefined && (typeof contexto !== 'object' || Array.isArray(contexto))) {
+    return res.status(400).json({ success: false, error: 'Contexto deve ser um objeto JSON.' });
+  }
+
+  const entry = await logger.writeLog(
+    nivelLimpo,
+    origemLimpa,
+    mensagemLimpa,
+    contexto || {},
+    cliente_id ? String(cliente_id) : null
+  );
+
+  res.status(201).json({ success: true, data: entry });
+});
+
+// GET /api/v1/logs/stream - Server-Sent Events para tempo real
+app.get('/api/v1/logs/stream', requirePermission('logs', 'read'), (req, res) => {
+  logger.streamLogs(req, res, {
+    isAdmin: isAdmin(req),
+    clienteId: req.user?.cliente_id || null
+  });
+});
+// GET /api/v1/logs/stats - Contadores por nível para badges
+app.get('/api/v1/logs/stats', requirePermission('logs', 'read'), async (req, res) => {
+  if (!pool) return res.status(503).json({ success: false, error: 'Banco de dados indisponível' });
+
+  try {
+    const { periodo = '24h' } = req.query;
+    let interval = '24 hours';
+    if (periodo === '1h') interval = '1 hour';
+    else if (periodo === '7d') interval = '7 days';
+    else if (periodo === '30d') interval = '30 days';
+
+    // Mesmos filtros da listagem (tenant, nível, origem, busca, início/fim)
+    const { whereClause, values } = buildLogConditions(req, req.query);
+    const periodoCond = `criado_em >= NOW() - INTERVAL '${interval}'`;
+    const fullWhere = whereClause
+      ? `${whereClause} AND ${periodoCond}`
+      : `WHERE ${periodoCond}`;
+
+    const res_query = await pool.query(
+      `SELECT nivel, COUNT(*)::int AS count
+       FROM system_logs
+       ${fullWhere}
+       GROUP BY nivel`,
+      values
+    );
+
+    const stats = { critical: 0, error: 0, warn: 0, info: 0, debug: 0 };
+    for (const row of res_query.rows) {
+      if (Object.prototype.hasOwnProperty.call(stats, row.nivel)) {
+        stats[row.nivel] = row.count;
       }
     }
 
-    return next();
+    res.json({ success: true, data: stats, periodo: interval });
+  } catch (err) {
+    console.error('[logs] Erro ao buscar stats:', err.message);
+    res.status(500).json({ success: false, error: 'Falha ao carregar estatísticas' });
+  }
+});
+
+// GET /api/v1/logs/origens - Lista origens únicas para filtro
+app.get('/api/v1/logs/origens', requirePermission('logs', 'read'), async (req, res) => {
+  if (!pool) return res.status(503).json({ success: false, error: 'Banco de dados indisponível' });
+
+  try {
+    const targetClienteId = isAdmin(req) ? req.query.cliente_id : req.user.cliente_id;
+    const clienteFilter = targetClienteId ? 'WHERE cliente_id = $1' : '';
+    const values = targetClienteId ? [targetClienteId] : [];
+
+    const res_query = await pool.query(
+      `SELECT DISTINCT origem FROM system_logs ${clienteFilter} ORDER BY origem`,
+      values
+    );
+
+    res.json({ success: true, data: res_query.rows.map(r => r.origem) });
+  } catch (err) {
+    console.error('[logs] Erro ao buscar origens:', err.message);
+    res.status(500).json({ success: false, error: 'Falha ao carregar origens' });
+  }
+});
+
+// POST /api/v1/logs/limpar - Limpeza manual de logs antigos (admin only)
+app.post('/api/v1/logs/limpar', requirePermission('logs', 'delete'), async (req, res) => {
+  if (!isAdmin(req)) return res.status(403).json({ success: false, error: 'Apenas administradores podem limpar logs' });
+  if (!pool) return res.status(503).json({ success: false, error: 'Banco de dados indisponível' });
+
+  try {
+    const { dias = 90 } = req.body;
+    const diasNum = Math.max(1, parseInt(dias, 10));
+
+    const result = await pool.query('SELECT fn_limpar_logs_antigos($1) AS result', [diasNum]);
+    const data = result.rows[0].result;
+
+    // Limpa cache em memória também
+    logger.pruneCache(diasNum);
+
+    await logger.writeLog('info', 'system', `Limpeza de logs executada: ${data.removidos} entradas removidas (retenção ${diasNum} dias)`, { dias: diasNum, removidos: data.removidos });
+
+    res.json({ success: true, data });
+  } catch (err) {
+    console.error('[logs] Erro ao limpar logs:', err.message);
+    res.status(500).json({ success: false, error: 'Falha ao limpar logs' });
+  }
+});
+
+// ============================================================================
+// ENDPOINTS DE PERMISSÕES (RBAC)
+// ============================================================================
+
+// GET /api/v1/permissoes/matrix - Matriz de permissões efetivas do usuário
+app.get('/api/v1/permissoes/matrix', async (req, res) => {
+  const user = await resolveSessionUser(req);
+  if (!user && !verifyBasicAuth(req)) {
+    return res.status(401).json({ success: false, error: 'Não autenticado' });
   }
 
-  if (verifyBasicAuth(req)) {
-    req.user = { id: 'basic', role: 'admin', nome: 'Admin' };
-    return next();
+  const effectiveUser = user || { role: 'admin', id: 'basic' };
+
+  // Se admin, retorna todas as permissões possíveis
+  if (effectiveUser.role === 'admin') {
+    const recursos = ['instances', 'financeiro', 'modelos', 'conhecimento', 'logs', 'usuarios', 'settings'];
+    const acoes = ['create', 'read', 'update', 'delete', 'execute'];
+    const matrix = {};
+    for (const recurso of recursos) {
+      matrix[recurso] = {};
+      for (const acao of acoes) {
+        matrix[recurso][acao] = true;
+      }
+    }
+    return res.json({ success: true, data: matrix, role: 'admin', isAdmin: true });
   }
 
-  res.status(401).json({ success: false, error: 'Sessão expirada ou não autenticada.' });
+  // Para outros roles, consulta cache/banco
+  if (!permissoesCacheLoaded) {
+    await loadPermissoesCache();
+  }
+
+  const roleMap = permissoesCache.get(effectiveUser.role) || new Map();
+  const recursos = ['instances', 'financeiro', 'modelos', 'conhecimento', 'logs', 'usuarios', 'settings'];
+  const acoes = ['create', 'read', 'update', 'delete', 'execute'];
+  const matrix = {};
+
+  for (const recurso of recursos) {
+    matrix[recurso] = {};
+    const recursoPerms = roleMap.get(recurso) || new Set();
+    for (const acao of acoes) {
+      matrix[recurso][acao] = recursoPerms.has(acao);
+    }
+  }
+
+  res.json({ success: true, data: matrix, role: effectiveUser.role, isAdmin: false });
+});
+
+// GET /api/v1/permissoes/list - Lista todas as permissões cadastradas (admin only)
+app.get('/api/v1/permissoes/list', requirePermission('usuarios', 'read'), async (req, res) => {
+  if (!pool) return res.status(503).json({ success: false, error: 'Banco de dados indisponível' });
+
+  try {
+    const res_query = await pool.query(
+      'SELECT id, role, recurso, acao, permitido FROM dashboard_permissoes ORDER BY role, recurso, acao'
+    );
+    res.json({ success: true, data: res_query.rows });
+  } catch (err) {
+    console.error('[permissoes] Erro ao listar:', err.message);
+    res.status(500).json({ success: false, error: 'Falha ao carregar permissões' });
+  }
+});
+
+// POST /api/v1/permissoes - Cria/atualiza permissão (admin only)
+app.post('/api/v1/permissoes', requirePermission('usuarios', 'create'), async (req, res) => {
+  if (!isAdmin(req)) return res.status(403).json({ success: false, error: 'Apenas administradores' });
+  if (!pool) return res.status(503).json({ success: false, error: 'Banco de dados indisponível' });
+
+  try {
+    const { role, recurso, acao, permitido = true } = req.body;
+
+    if (!role || !recurso || !acao) {
+      return res.status(400).json({ success: false, error: 'role, recurso e acao são obrigatórios' });
+    }
+
+    if (!['admin', 'operador', 'visualizador'].includes(role)) {
+      return res.status(400).json({ success: false, error: 'Role inválida' });
+    }
+
+    if (!['create', 'read', 'update', 'delete', 'execute'].includes(acao)) {
+      return res.status(400).json({ success: false, error: 'Ação inválida' });
+    }
+
+    const result = await pool.query(
+      `INSERT INTO dashboard_permissoes (role, recurso, acao, permitido)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (role, recurso, acao) DO UPDATE SET permitido = EXCLUDED.permitido
+       RETURNING *`,
+      [role, recurso, acao, permitido]
+    );
+
+    // Invalida cache para recarregar
+    permissoesCacheLoaded = false;
+    await loadPermissoesCache();
+
+    await logger.writeLog('info', 'auth', `Permissão atualizada: ${role}.${recurso}.${acao} = ${permitido}`, { role, recurso, acao, permitido });
+
+    res.json({ success: true, data: result.rows[0] });
+  } catch (err) {
+    console.error('[permissoes] Erro ao salvar:', err.message);
+    res.status(500).json({ success: false, error: 'Falha ao salvar permissão' });
+  }
+});
+
+// DELETE /api/v1/permissoes/:id - Remove permissão (admin only)
+app.delete('/api/v1/permissoes/:id', requirePermission('usuarios', 'delete'), async (req, res) => {
+  if (!isAdmin(req)) return res.status(403).json({ success: false, error: 'Apenas administradores' });
+  if (!pool) return res.status(503).json({ success: false, error: 'Banco de dados indisponível' });
+
+  try {
+    const id = parseInt(req.params.id, 10);
+    await pool.query('DELETE FROM dashboard_permissoes WHERE id = $1', [id]);
+
+    permissoesCacheLoaded = false;
+    await loadPermissoesCache();
+
+    await logger.writeLog('info', 'auth', `Permissão removida: ID ${id}`, { id });
+
+    res.json({ success: true, message: 'Permissão removida' });
+  } catch (err) {
+    console.error('[permissoes] Erro ao remover:', err.message);
+    res.status(500).json({ success: false, error: 'Falha ao remover permissão' });
+  }
 });
 
 // Helpers de Autorização RBAC / Isolamento Multi-Tenant
@@ -613,6 +1350,95 @@ function canAccessInstance(req, targetId) {
   if (!req.user.cliente_id || !targetId) return false;
   return String(req.user.cliente_id).trim().toLowerCase() === String(targetId).trim().toLowerCase();
 }
+
+// ============================================================================
+// RBAC GRANULAR - Matriz de Permissões por Role/Recurso/Ação
+// ============================================================================
+
+// Cache em memória das permissões (recarregado periodicamente)
+let permissoesCache = new Map();  // role -> Map<recurso, Set<acao>>
+let permissoesCacheLoaded = false;
+
+async function loadPermissoesCache() {
+  if (!pool) return;
+  try {
+    const res = await pool.query('SELECT role, recurso, acao, permitido FROM dashboard_permissoes WHERE permitido = true');
+    permissoesCache.clear();
+    for (const row of res.rows) {
+      if (!permissoesCache.has(row.role)) {
+        permissoesCache.set(row.role, new Map());
+      }
+      const roleMap = permissoesCache.get(row.role);
+      if (!roleMap.has(row.recurso)) {
+        roleMap.set(row.recurso, new Set());
+      }
+      roleMap.get(row.recurso).add(row.acao);
+    }
+    permissoesCacheLoaded = true;
+    console.log('[rbac] Cache de permissões carregado:', permissoesCache.size, 'roles');
+  } catch (err) {
+    console.error('[rbac] Erro ao carregar permissões:', err.message);
+  }
+}
+
+// Verifica se usuário tem permissão para recurso/ação
+function canAccessResource(user, recurso, acao) {
+  if (!user) return false;
+  if (user.role === 'admin') return true;  // Admin tem acesso total (wildcard *)
+
+  // Se cache não carregado, tenta carregar (fallback para defaults conservadores)
+  if (!permissoesCacheLoaded) {
+    // Defaults conservadores baseados no seed do init.sql
+    const defaults = {
+      operador: {
+        instances: new Set(['read', 'update', 'execute']),
+        financeiro: new Set(['read']),
+        modelos: new Set(['read']),
+        conhecimento: new Set(['read', 'create', 'update']),
+        logs: new Set(['read'])
+      },
+      visualizador: {
+        instances: new Set(['read']),
+        financeiro: new Set(['read']),
+        modelos: new Set(['read']),
+        conhecimento: new Set(['read']),
+        logs: new Set(['read'])
+      }
+    };
+    const roleDefaults = defaults[user.role];
+    if (!roleDefaults) return false;
+    const recursoPerms = roleDefaults[recurso];
+    return recursoPerms ? recursoPerms.has(acao) : false;
+  }
+
+  const roleMap = permissoesCache.get(user.role);
+  if (!roleMap) return false;
+
+  // Verifica wildcard * para admin (já tratado acima) ou recurso específico
+  const recursoPerms = roleMap.get(recurso) || roleMap.get('*');
+  if (!recursoPerms) return false;
+
+  return recursoPerms.has(acao) || recursoPerms.has('*');
+}
+
+// Middleware factory para proteger rotas com permissão específica
+function requirePermission(recurso, acao) {
+  return (req, res, next) => {
+    if (!canAccessResource(req.user, recurso, acao)) {
+      return res.status(403).json({
+        success: false,
+        error: `Permissão negada: ${recurso}.${acao} (role: ${req.user?.role})`
+      });
+    }
+    next();
+  };
+}
+
+// Carrega permissões na inicialização
+loadPermissoesCache().catch(() => {});
+
+// Recarrega permissões a cada 5 minutos
+setInterval(loadPermissoesCache, 5 * 60 * 1000);
 
 // 1. Listar Instâncias e Clientes
 app.get('/api/v1/instances', async (req, res) => {
@@ -768,6 +1594,10 @@ app.post('/api/v1/instances', async (req, res) => {
         settings: defaultSettings
       }
     });
+    logger.writeLog('info', 'instances', `Instância criada: ${cleanId}`, {
+      instancia: cleanId,
+      com_telefone: Boolean(telefone)
+    }, cleanId).catch(() => {});
   } catch (err) {
     console.error('[api] Erro ao criar instância:', err);
     res.status(500).json({ success: false, error: 'Falha interna ao criar instância' });
@@ -829,6 +1659,11 @@ app.put('/api/v1/instances/:id', async (req, res) => {
       success: true,
       data: updateRes.rows[0]
     });
+    logger.writeLog('info', 'instances', `Cliente atualizado: ${id}`, {
+      instancia: id,
+      ativo: isAtivo,
+      telefone_alterado: newTelDigits && newTelDigits !== currentTelDigits
+    }, id).catch(() => {});
   } catch (err) {
     console.error('[api] Erro ao atualizar cliente:', err);
     res.status(500).json({ success: false, error: 'Falha ao atualizar dados do cliente' });
@@ -901,6 +1736,11 @@ app.all('/api/v1/instances/:id/connect', async (req, res) => {
         count: evoRes.data?.count || 1
       }
     });
+    logger.writeLog('info', 'instances', `Conexão solicitada: ${id}`, {
+      instancia: id,
+      modo: pairingCode ? 'pairing_code' : 'qrcode',
+      tem_qrcode: Boolean(base64)
+    }, id).catch(() => {});
   } catch (err) {
     console.error('[api] Erro ao conectar instância:', err);
     res.status(500).json({ success: false, error: 'Falha ao solicitar conexão' });
@@ -1004,6 +1844,10 @@ app.post('/api/v1/instances/:id/settings', async (req, res) => {
     }
 
     res.json({ success: true, settings: payload });
+    logger.writeLog('info', 'instances', `Configurações atualizadas: ${id}`, {
+      instancia: id,
+      evolution_ok: evoRes.ok
+    }, id).catch(() => {});
   } catch (err) {
     console.error('[api] Erro ao salvar configurações:', err);
     res.status(500).json({ success: false, error: 'Falha ao salvar configurações' });
@@ -1103,6 +1947,7 @@ app.put('/api/v1/instances/:id/prompt', async (req, res) => {
     );
 
     res.json({ success: true, prompt: r.rows[0] });
+    logger.writeLog('info', 'instances', `Prompt do agente salvo: ${id}`, { instancia: id }, id).catch(() => {});
   } catch (err) {
     // 23503 = foreign_key_violation: cliente não existe em `clientes`
     if (err.code === '23503') {
@@ -1125,6 +1970,11 @@ app.post('/api/v1/instances/:id/restart', async (req, res) => {
     });
 
     res.json({ success: evoRes.ok, data: evoRes.data });
+    logger.writeLog(evoRes.ok ? 'info' : 'warn', 'instances', `Reinício solicitado: ${id}`, {
+      instancia: id,
+      evolution_ok: evoRes.ok,
+      evolution_status: evoRes.status
+    }, id).catch(() => {});
   } catch (err) {
     res.status(500).json({ success: false, error: 'Falha ao reiniciar instância' });
   }
@@ -1149,6 +1999,7 @@ app.delete('/api/v1/instances/:id', async (req, res) => {
     }
 
     res.json({ success: true, message: `Instância ${id} removida com sucesso.` });
+    logger.writeLog('warn', 'instances', `Instância excluída: ${id}`, { instancia: id }).catch(() => {});
   } catch (err) {
     console.error('[api] Erro ao excluir instância:', err);
     res.status(500).json({ success: false, error: 'Falha ao excluir instância' });
@@ -1392,35 +2243,28 @@ app.get('/api/v1/financeiro', async (req, res) => {
 // ROTAS DE GESTÃO E TESTE DE MODELOS (/api/v1/modelos)
 // -----------------------------------------------------------------------------
 
-// Rate limit simples em memória para testes de modelo (máx 10 testes por minuto por IP)
-// ponytail: Map em memória com teto de 1000 entradas; migrar para Redis só se dashboard rodar em múltiplas réplicas
-const testRateLimits = new Map();
-const MAX_RATE_LIMIT_ENTRIES = 1000;
-function checkTestRateLimit(ip) {
+// Rate limit Redis-backed para testes de modelo (máx 10 testes por minuto por IP)
+async function checkTestRateLimitRedis(key, maxRequests = 10, windowMs = 60 * 1000) {
+  if (!redisRateLimit) return true; // sem Redis, fail-open (rate limit em memória do processo)
   const now = Date.now();
-  const windowMs = 60 * 1000;
-  const maxRequests = 10;
+  const windowStart = now - windowMs;
+  const redisKey = `ratelimit:${key}`;
 
-  if (testRateLimits.size >= MAX_RATE_LIMIT_ENTRIES && !testRateLimits.has(ip)) {
-    for (const [k, v] of testRateLimits.entries()) {
-      if (now > v.resetAt) testRateLimits.delete(k);
-    }
-    if (testRateLimits.size >= MAX_RATE_LIMIT_ENTRIES) {
-      const oldestKey = testRateLimits.keys().next().value;
-      if (oldestKey !== undefined) testRateLimits.delete(oldestKey);
-    }
+  try {
+    const multi = redisRateLimit.multi();
+    multi.zremrangebyscore(redisKey, 0, windowStart);
+    multi.zcard(redisKey);
+    multi.zadd(redisKey, now, `${now}-${Math.random()}`);
+    multi.expire(redisKey, Math.ceil(windowMs / 1000) + 1);
+    const results = await multi.exec();
+
+    const currentCount = results[1][1];
+    return currentCount < maxRequests;
+  } catch (err) {
+    console.error('[rate-limit] Erro ao verificar rate limit Redis:', err.message);
+    // Fail-open: permitir requisição se Redis indisponível
+    return true;
   }
-
-  const record = testRateLimits.get(ip) || { count: 0, resetAt: now + windowMs };
-
-  if (now > record.resetAt) {
-    record.count = 1;
-    record.resetAt = now + windowMs;
-  } else {
-    record.count += 1;
-  }
-  testRateLimits.set(ip, record);
-  return record.count <= maxRequests;
 }
 
 // GET /api/v1/9router/status - Diagnóstico e lista de modelos do 9Router
@@ -1541,6 +2385,9 @@ app.post('/api/v1/modelos', async (req, res) => {
       [provClean, modClean, tierClean, pInput, pCached, pOutput, pReasoning, pCacheCreation, isAtivo]
     );
     res.status(201).json({ success: true, data: insertRes.rows[0] });
+    logger.writeLog('info', 'modelos', `Modelo cadastrado: ${provClean}/${modClean}`, {
+      modelo_id: insertRes.rows[0].id, tier: tierClean, ativo: isAtivo
+    }).catch(() => {});
   } catch (err) {
     console.error('[api] Erro ao cadastrar modelo:', err.message);
     res.status(500).json({ success: false, error: 'Falha ao salvar modelo no banco' });
@@ -1593,6 +2440,9 @@ app.put('/api/v1/modelos/:id', async (req, res) => {
       return res.status(404).json({ success: false, error: 'Modelo não encontrado' });
     }
     res.json({ success: true, data: updateRes.rows[0] });
+    logger.writeLog('info', 'modelos', `Modelo atualizado: ${provClean}/${modClean}`, {
+      modelo_id: id, tier: tierClean, ativo: isAtivo
+    }).catch(() => {});
   } catch (err) {
     console.error('[api] Erro ao atualizar modelo:', err.message);
     res.status(500).json({ success: false, error: 'Falha ao atualizar modelo' });
@@ -1634,6 +2484,7 @@ app.delete('/api/v1/modelos/:id', async (req, res) => {
 
     await pool.query('DELETE FROM precos_modelos WHERE id = $1', [id]);
     res.json({ success: true, action: 'removido', message: 'Modelo removido com sucesso' });
+    logger.writeLog('info', 'modelos', `Modelo removido: ${provedor}/${modelo}`, { modelo_id: id }).catch(() => {});
   } catch (err) {
     console.error('[api] Erro ao excluir modelo:', err.message);
     res.status(500).json({ success: false, error: 'Falha ao excluir modelo' });
@@ -1650,7 +2501,8 @@ app.post('/api/v1/modelos/:id/testar', async (req, res) => {
   if (!id || id <= 0) return res.status(400).json({ success: false, error: 'ID inválido' });
 
   const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'local';
-  if (!checkTestRateLimit(clientIp)) {
+  const rateLimitOk = await checkTestRateLimitRedis(clientIp);
+  if (!rateLimitOk) {
     return res.status(429).json({ success: false, error: 'Limite de testes atingido (máx 10 por minuto). Aguarde.' });
   }
 
@@ -1862,6 +2714,9 @@ app.post('/api/v1/prompts-padrao', async (req, res) => {
     );
 
     res.status(201).json({ success: true, data: insertRes.rows[0] });
+    logger.writeLog('info', 'prompts-padrao', `Prompt padrão cadastrado: ${chaveClean}`, {
+      prompt_id: insertRes.rows[0].id, chave: chaveClean
+    }).catch(() => {});
   } catch (err) {
     console.error('[api] Erro ao cadastrar prompt padrão:', err.message);
     res.status(500).json({ success: false, error: 'Falha ao salvar prompt padrão' });
@@ -1942,6 +2797,9 @@ app.put('/api/v1/prompts-padrao/:id', async (req, res) => {
     }
 
     res.json({ success: true, data: updateRes.rows[0] });
+    logger.writeLog('info', 'prompts-padrao', `Prompt padrão atualizado: ${chaveClean}`, {
+      prompt_id: id, chave: chaveClean, ativo: isAtivo
+    }).catch(() => {});
   } catch (err) {
     console.error('[api] Erro ao atualizar prompt padrão:', err.message);
     res.status(500).json({ success: false, error: 'Falha ao atualizar prompt padrão' });
@@ -1977,6 +2835,7 @@ app.delete('/api/v1/prompts-padrao/:id', async (req, res) => {
 
     await pool.query('DELETE FROM prompts_padrao WHERE id = $1', [id]);
     res.json({ success: true, action: 'removido', message: 'Prompt padrão removido com sucesso' });
+    logger.writeLog('info', 'prompts-padrao', `Prompt padrão removido: ${chave}`, { prompt_id: id, chave }).catch(() => {});
   } catch (err) {
     console.error('[api] Erro ao excluir prompt padrão:', err.message);
     res.status(500).json({ success: false, error: 'Falha ao excluir prompt padrão' });
@@ -2176,6 +3035,11 @@ app.post('/api/v1/conhecimento', async (req, res) => {
     `;
     const result = await pool.query(insertQuery, [instance_id.trim(), text.trim(), JSON.stringify(parsedMetadata)]);
     res.status(201).json({ success: true, data: result.rows[0], message: 'Fragmento cadastrado com sucesso' });
+    logger.writeLog('info', 'conhecimento', `Fragmento de conhecimento cadastrado (#${result.rows[0].id})`, {
+      fragmento_id: result.rows[0].id,
+      instancia: instance_id,
+      caracteres: result.rows[0].tamanho_caracteres
+    }, instance_id).catch(() => {});
   } catch (err) {
     console.error('[api] Erro ao cadastrar fragmento de conhecimento:', err.message);
     res.status(500).json({ success: false, error: 'Falha ao salvar fragmento no banco de dados' });
@@ -2200,6 +3064,7 @@ app.delete('/api/v1/conhecimento/:id', async (req, res) => {
       return res.status(404).json({ success: false, error: 'Fragmento não encontrado' });
     }
     res.json({ success: true, message: 'Fragmento removido com sucesso' });
+    logger.writeLog('info', 'conhecimento', `Fragmento de conhecimento removido (#${id})`, { fragmento_id: id }).catch(() => {});
   } catch (err) {
     console.error('[api] Erro ao excluir fragmento de conhecimento:', err.message);
     res.status(500).json({ success: false, error: 'Falha ao remover fragmento' });
@@ -2236,6 +3101,10 @@ app.post('/api/v1/conhecimento/bulk-delete', async (req, res) => {
       removidos: result.rowCount,
       message: `${result.rowCount} fragmento(s) removido(s) com sucesso`
     });
+    logger.writeLog('info', 'conhecimento', `Exclusão em lote: ${result.rowCount} fragmento(s)`, {
+      solicitados: cleanIds.length,
+      removidos: result.rowCount
+    }).catch(() => {});
   } catch (err) {
     console.error('[api] Erro na exclusão em lote de conhecimento:', err.message);
     res.status(500).json({ success: false, error: 'Falha ao excluir fragmentos em lote' });
@@ -2245,13 +3114,53 @@ app.post('/api/v1/conhecimento/bulk-delete', async (req, res) => {
 // Middleware global de tratamento de erros (impede vazamento de stack traces e padroniza JSON)
 app.use((err, req, res, _next) => {
   if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
+    logger.writeLogThrottled(
+      'payload_invalido',
+      60 * 1000,
+      'warn',
+      'server',
+      'Payload JSON malformado ou inválido recebido',
+      { rota: req.path, request_id: req.requestId || null, ip: logger.maskIp(req.ip) }
+    ).catch(() => {});
     return res.status(400).json({ success: false, error: 'Payload JSON malformado ou inválido.' });
   }
   if (err.type === 'entity.too.large') {
+    logger.writeLog('warn', 'server', 'Payload acima do limite (256KB)', {
+      rota: req.path,
+      request_id: req.requestId || null,
+      ip: logger.maskIp(req.ip)
+    }).catch(() => {});
     return res.status(413).json({ success: false, error: 'Payload excede o limite máximo permitido de 256KB.' });
   }
   console.error('[server] Erro não tratado:', err.message);
+  logger.writeLog('error', 'server', `Erro não tratado: ${err.message}`, {
+    rota: req.path,
+    metodo: req.method,
+    status: err.status || 500,
+    request_id: req.requestId || null,
+    stack: err.stack || ''
+  }, req.user?.cliente_id || null).catch(() => {});
   res.status(err.status || 500).json({ success: false, error: 'Erro interno no processamento da requisição.' });
+});
+
+// Falhas fora do ciclo de request também precisam ser visíveis na aba de logs.
+process.on('unhandledRejection', (reason) => {
+  const erro = reason instanceof Error ? reason : new Error(String(reason));
+  console.error('[process] unhandledRejection:', erro.message);
+  logger.writeLog('critical', 'process', `Promise rejeitada sem tratamento: ${erro.message}`, {
+    stack: erro.stack || ''
+  }).catch(() => {});
+});
+
+process.on('uncaughtException', (erro) => {
+  console.error('[process] uncaughtException:', erro.message);
+  // Estado do processo é inseguro para continuar: registra e deixa o
+  // `restart: unless-stopped` do Compose recolocar o container no ar.
+  logger.writeLog('critical', 'process', `Exceção não capturada: ${erro.message}`, {
+    stack: erro.stack || ''
+  }).finally(() => {
+    setTimeout(() => process.exit(1), 500);
+  });
 });
 
 // Inicia servidor HTTP
@@ -2259,5 +3168,14 @@ app.listen(port, '0.0.0.0', async () => {
   console.log(`[dashboard] Painel administrativo ativo na porta ${port}`);
   if (pool) {
     await auth.initAdminUser(pool);
+
+    // Semeia o cache com o histórico do banco: a aba abre populada mesmo após
+    // um restart do container (antes ela mostrava "cache vazio").
+    const aquecidos = await logger.warmup();
+    if (aquecidos > 0) console.log(`[log] Cache aquecido com ${aquecidos} entrada(s) de system_logs.`);
+
+    // Retenção automática (diária) — sem isso a tabela cresce indefinidamente.
+    const retencaoDias = parseInt(process.env.LOG_RETENTION_DAYS || '90', 10);
+    logger.startRetentionJob({ dias: Number.isFinite(retencaoDias) ? retencaoDias : 90 });
   }
 });

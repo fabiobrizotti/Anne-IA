@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# ANNE-IA — SINCRONIZAÇÃO CONDICIONAL DO .env (HELPER DOS HOOKS GIT)
+# ==============================================================================
+# Executa scripts/sync-env.sh SOMENTE se .env.example mudou entre a revisão
+# informada (padrão: ORIG_HEAD) e HEAD. Usado por:
+#   - .githooks/post-merge     (git pull / git merge)
+#   - .githooks/post-rewrite   (git rebase)
+#
+# Uso: .githooks/sync-env-if-changed [REV]
+# ==============================================================================
+
+set -euo pipefail
+
+PREV="${1:-ORIG_HEAD}"
+PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+
+changed_files() {
+  git diff-tree -r --name-only --no-commit-id "${PREV}" HEAD 2>/dev/null || true
+}
+
+if changed_files | grep -qx '\.env\.example'; then
+  echo ""
+  echo "==================================================================="
+  echo "  [hook] .env.example mudou em ${PREV}..HEAD"
+  echo "  Sincronizando .env (valores e senhas locais preservados)..."
+  echo "==================================================================="
+  if [[ -x "${PROJECT_ROOT}/scripts/sync-env.sh" ]]; then
+    "${PROJECT_ROOT}/scripts/sync-env.sh"
+  else
+    echo "  [aviso] scripts/sync-env.sh ausente ou sem permissão — rode manualmente"
+  fi
+fi
+
+exit 0

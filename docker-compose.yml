@@ -3,17 +3,23 @@ services:
     image: n8nio/n8n:${N8N_VERSION}
     restart: unless-stopped
     ports:
-      - "${N8N_PORT}:${N8N_PORT}"
+      - "${N8N_HOST_BIND}:${N8N_PORT}:${N8N_PORT}"
     env_file:
       - .env
     environment:
       NODE_OPTIONS: ${N8N_NODE_OPTIONS}
+      EXECUTIONS_MODE: ${EXECUTIONS_MODE}
+      QUEUE_BULL_REDIS_HOST: redis-n8n-queue
+      QUEUE_BULL_REDIS_PORT: ${REDIS_N8N_QUEUE_CONTAINER_PORT}
+      QUEUE_BULL_REDIS_PASSWORD: ${REDIS_N8N_QUEUE_PASSWORD}
+      QUEUE_BULL_REDIS_DB: 0
+      QUEUE_HEALTH_CHECK_ACTIVE: "true"
     volumes:
       - ./data/n8n:/home/node/.n8n
       - ./files:/home/node/.n8n-files
       - ./workflows:/workflows:rw
     networks:
-      - public_net
+      - frontend
       - data_net
     healthcheck:
       test: ["CMD-SHELL", "node -e \"const http = require('http'); const req = http.request({ host: 'localhost', port: process.env.N8N_PORT, path: '/healthz', timeout: 2000 }, (res) => { process.exit(res.statusCode === 200 ? 0 : 1); }); req.on('error', () => { process.exit(1); }); req.end();\""]
@@ -21,6 +27,38 @@ services:
       timeout: 5s
       retries: 5
       start_period: 60s   # o 1º boot roda migrations no database.sqlite (pode passar de 50s)
+
+  n8n-worker:
+    image: n8nio/n8n:${N8N_VERSION}
+    container_name: n8n-worker
+    restart: unless-stopped
+    command: worker --concurrency=${N8N_WORKER_CONCURRENCY}
+    env_file:
+      - .env
+    environment:
+      NODE_OPTIONS: ${N8N_NODE_OPTIONS}
+      EXECUTIONS_MODE: ${EXECUTIONS_MODE}
+      QUEUE_BULL_REDIS_HOST: redis-n8n-queue
+      QUEUE_BULL_REDIS_PORT: ${REDIS_N8N_QUEUE_CONTAINER_PORT}
+      QUEUE_BULL_REDIS_PASSWORD: ${REDIS_N8N_QUEUE_PASSWORD}
+      QUEUE_BULL_REDIS_DB: 0
+    volumes:
+      - ./data/n8n:/home/node/.n8n
+      - ./files:/home/node/.n8n-files
+    networks:
+      - frontend
+      - data_net
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z -w 2 redis-n8n-queue 6379 && printf 'AUTH %s\r\nPING\r\n' \"${REDIS_N8N_QUEUE_PASSWORD}\" | nc -w 2 redis-n8n-queue 6379 | grep -q '+PONG'"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
   
 # Importador Automatizado direto do GitHub (com suporte a subpastas)
 # Idempotente: antes de importar, remove os workflows já existentes no
@@ -113,6 +151,7 @@ services:
     restart: unless-stopped
     hostname: rabbitmq-anne
     ports:
+      - "${RABBITMQ_HOST_BIND}:${RABBITMQ_PORT}:${RABBITMQ_PORT}"
       - "${RABBITMQ_HOST_BIND}:${RABBITMQ_MANAGEMENT_PORT}:${RABBITMQ_MANAGEMENT_CONTAINER_PORT}"
     env_file:
       - .env
@@ -122,7 +161,7 @@ services:
       - ./setup/rabbitmq:/setup-rabbitmq:ro
       - ./setup/rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
     networks:
-      - public_net
+      - frontend
       - data_net
     healthcheck:
       test: ["CMD-SHELL", "rabbitmq-diagnostics -q check_running && rabbitmq-diagnostics -q check_local_alarms"]
@@ -135,17 +174,31 @@ services:
     image: evoapicloud/evolution-api:${EVOLUTION_API_VERSION}
     container_name: evolution-api
     restart: unless-stopped
-    ports:
-      - "${EVOLUTION_HOST_BIND}:${EVOLUTION_PORT}:${SERVER_PORT}"
     env_file:
       - .env
+    environment:
+      # URLs Tailscale construídas dinamicamente (mudam junto com TAILSCALE_HOSTNAME)
+      DASHBOARD_TAILSCALE_URL: http://${TAILSCALE_HOSTNAME}:${DASHBOARD_PORT}
+      N8N_TAILSCALE_URL: http://${TAILSCALE_HOSTNAME}:${N8N_PORT}
+      PGADMIN_TAILSCALE_URL: http://${TAILSCALE_HOSTNAME}:${PGADMIN_PORT}
+      NINE_ROUTER_TAILSCALE_URL: http://${TAILSCALE_HOSTNAME}:${NINE_ROUTER_PORT}
+      # PgBouncer para conexão Postgres (Prisma requer ?pgbouncer=true)
+      # Evolution API usa banco 'evolution' com user 'evolution' e senha do POSTGRES_PASSWORD
+      DATABASE_CONNECTION_URI: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@pgbouncer:${PGBOUNCER_CONTAINER_PORT}/evolution?pgbouncer=true
     volumes:
       - ./data/evolution-api:/evolution/instances
     depends_on:
       - db-evolution
+      - pgbouncer
     networks:
       - public_net
       - data_net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider --header='Origin: http://localhost:3000' http://127.0.0.1:8080/manager/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
   db-evolution:
     image: pgvector/pgvector:${PGVECTOR_VERSION}
@@ -162,11 +215,11 @@ services:
       - data_net
       - public_net
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
-      interval: 5s
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB} && psql -U ${POSTGRES_USER} -d anneia -c 'SELECT 1 FROM clientes LIMIT 1' > /dev/null 2>&1"]
+      interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 10s
+      start_period: 15s
 
   redis:
     image: redis:${REDIS_VERSION}
@@ -189,11 +242,38 @@ services:
     networks:
       - data_net
     healthcheck:
-      test: ["CMD-SHELL", "redis-cli -a \"${REDIS_PASSWORD}\" ping | grep PONG"]
-      interval: 5s
-      timeout: 3s
+      test: ["CMD-SHELL", "redis-cli -a \"${REDIS_PASSWORD}\" ping | grep PONG && redis-cli -a \"${REDIS_PASSWORD}\" INFO memory | grep -q 'used_memory_human:'"]
+      interval: 10s
+      timeout: 5s
       retries: 5
-      start_period: 5s
+      start_period: 10s
+
+  redis-n8n-queue:
+    image: redis:${REDIS_VERSION}
+    container_name: redis-n8n-queue
+    restart: unless-stopped
+    command: >
+      redis-server
+      --requirepass ${REDIS_N8N_QUEUE_PASSWORD}
+      --maxmemory ${REDIS_N8N_QUEUE_MAXMEMORY}
+      --maxmemory-policy ${REDIS_N8N_QUEUE_MAXMEMORY_POLICY}
+      --appendonly yes
+      --appendfsync everysec
+      --save 900 1
+      --save 300 10
+      --save 60 10000
+    ports:
+      - "${REDIS_N8N_QUEUE_HOST_BIND}:${REDIS_N8N_QUEUE_PORT}:${REDIS_N8N_QUEUE_CONTAINER_PORT}"
+    volumes:
+      - ./data/redis-n8n-queue:/data
+    networks:
+      - data_net
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"${REDIS_N8N_QUEUE_PASSWORD}\" ping | grep PONG && redis-cli -a \"${REDIS_N8N_QUEUE_PASSWORD}\" INFO memory | grep -q 'used_memory_human:'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   9router:
     image: decolua/9router:${NINE_ROUTER_VERSION}
@@ -209,14 +289,14 @@ services:
     volumes:
       - ./data/9router:/app/data
     networks:
-      - public_net
+      - frontend
       - data_net
     healthcheck:
-      test: ["CMD-SHELL", "node -e \"const http = require('http'); const req = http.request({ host: '127.0.0.1', port: process.env.PORT, path: '/', timeout: 2000 }, (res) => { process.exit(res.statusCode < 500 ? 0 : 1); }); req.on('error', () => { process.exit(1); }); req.end();\""]
-      interval: 10s
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:${NINE_ROUTER_CONTAINER_PORT}/api/health && wget -q --spider http://127.0.0.1:${NINE_ROUTER_CONTAINER_PORT}/v1/models || exit 1"]
+      interval: 15s
       timeout: 5s
       retries: 5
-      start_period: 15s
+      start_period: 20s
 
   pgadmin:
     image: dpage/pgadmin4:${PGADMIN_VERSION}
@@ -234,6 +314,7 @@ services:
       - ./data/pgadmin:/var/lib/pgadmin
       - ./setup/pgadmin/servers.json:/pgadmin4/servers.json:ro
     networks:
+      - frontend
       - data_net
     depends_on:
       db-evolution:
@@ -243,6 +324,12 @@ services:
     build:
       context: ./dashboard
       dockerfile: Dockerfile
+      args:
+        # Revisão/versão injetadas no build e expostas em /api/health.
+        # `docker compose build` interpola do shell antes do .env, então o
+        # update.sh exporta GIT_SHA=$(git rev-parse --short HEAD) no build.
+        GIT_SHA: ${GIT_SHA:-unknown}
+        APP_VERSION: ${DASHBOARD_VERSION:-unknown}
     image: anne-ia/dashboard:${DASHBOARD_VERSION}
     container_name: dashboard
     restart: unless-stopped
@@ -254,22 +341,42 @@ services:
       PORT: ${DASHBOARD_CONTAINER_PORT}
       EVOLUTION_API_URL: http://evolution-api:${SERVER_PORT}
       EVOLUTION_API_KEY: ${AUTHENTICATION_API_KEY}
-      DATABASE_URL: postgresql://${POSTGRES_USER}:${CHAVE_POSTGRES_PASSWORD}@db-evolution:${POSTGRES_CONTAINER_PORT}/anneia
+      DATABASE_URL: postgresql://pgbouncer_app:${CHAVE_PGBOUNCER_PASSWORD}@pgbouncer:${PGBOUNCER_CONTAINER_PORT}/anneia
+      # Revisão em execução (gravada no .env pelo update.sh). Em runtime, para que
+      # /api/health sempre reflita o HEAD aplicado — inclusive em updates que só
+      # tocaram documentação e por isso não reconstroem a imagem.
+      GIT_SHA: ${GIT_SHA:-unknown}
+      APP_VERSION: ${DASHBOARD_VERSION:-unknown}
       DASHBOARD_AUTH_ENABLED: ${DASHBOARD_AUTH_ENABLED}
       DASHBOARD_USERNAME: ${DASHBOARD_USERNAME}
       DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD}
       NINE_ROUTER_URL: http://9router:${NINE_ROUTER_CONTAINER_PORT}/v1
       NINE_ROUTER_API_KEY: ${NINE_ROUTER_API_KEY:-${NINE_ROUTER_PASSWORD}}
+      # Rate limit distribuído (db 7 é exclusivo do Dashboard; 6 é do n8n)
+      REDIS_URL: redis://:${CHAVE_REDIS_PASSWORD}@redis:${REDIS_CONTAINER_PORT}/7
+      # Observabilidade: retenção de system_logs e ingestão externa de eventos
+      LOG_RETENTION_DAYS: ${LOG_RETENTION_DAYS:-90}
+      LOG_INGEST_TOKEN: ${LOG_INGEST_TOKEN:-}
       CPF_ENC_KEY: ${CPF_ENC_KEY:-}
       CPF_HMAC_KEY: ${CPF_HMAC_KEY:-}
       AUTH_SECRET_KEY: ${AUTH_SECRET_KEY:-}
+      # URLs Tailscale construídas dinamicamente (mudam junto com TAILSCALE_HOSTNAME)
+      DASHBOARD_TAILSCALE_URL: http://${TAILSCALE_HOSTNAME}:${DASHBOARD_PORT}
+      N8N_TAILSCALE_URL: http://${TAILSCALE_HOSTNAME}:${N8N_PORT}
+      PGADMIN_TAILSCALE_URL: http://${TAILSCALE_HOSTNAME}:${PGADMIN_PORT}
+      NINE_ROUTER_TAILSCALE_URL: http://${TAILSCALE_HOSTNAME}:${NINE_ROUTER_PORT}
+      # Trust proxy IP para Nginx (quando ativo) — IP do container nginx na rede frontend
+      # Se não definido, usa 'loopback' (compatibilidade acesso direto)
+      NGINX_TRUST_PROXY_IP: ${NGINX_TRUST_PROXY_IP:-loopback}
     networks:
-      - public_net
+      - frontend
       - data_net
     depends_on:
       evolution-api:
         condition: service_started
       db-evolution:
+        condition: service_healthy
+      pgbouncer:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:${DASHBOARD_CONTAINER_PORT}/api/health || exit 1"]
@@ -278,8 +385,135 @@ services:
       retries: 3
       start_period: 5s
 
+  # ============================================================================
+  # PGBOUNCER — CONNECTION POOLER PARA POSTGRESQL
+  # ============================================================================
+  # Rede: data_net apenas (não exposto no host público)
+  # Porta host: 127.0.0.1:6432 (via PGBOUNCER_HOST_BIND:PGBOUNCER_PORT)
+  # Pools: anneia (transaction), anneia_session (session)
+  # ============================================================================
+  pgbouncer:
+    image: pgbouncer/pgbouncer:1.23
+    container_name: pgbouncer
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # Custom entrypoint variables
+      POSTGRES_HOST: db-evolution
+      POSTGRES_PORT: ${POSTGRES_CONTAINER_PORT}
+      PGBOUNCER_PASSWORD: ${PGBOUNCER_PASSWORD}
+      PGBOUNCER_ADMIN_PASSWORD: ${PGBOUNCER_ADMIN_PASSWORD}
+      PGBOUNCER_LISTEN_ADDR: 0.0.0.0
+      PGBOUNCER_CONTAINER_PORT: ${PGBOUNCER_CONTAINER_PORT}
+      # For evolution database - passed to entrypoint to add to template
+      EVOLUTION_DB_HOST: db-evolution
+      EVOLUTION_DB_PORT: ${POSTGRES_CONTAINER_PORT}
+      EVOLUTION_DB_USER: evolution
+      EVOLUTION_DB_PASSWORD: ${POSTGRES_PASSWORD}
+      EVOLUTION_DB_NAME: evolution
+      EVOLUTION_DB_POOL_MODE: transaction
+      EVOLUTION_DB_POOL_SIZE: "10"
+    ports:
+      - "${PGBOUNCER_HOST_BIND}:${PGBOUNCER_PORT}:${PGBOUNCER_CONTAINER_PORT}"
+    volumes:
+      - ./setup/pgbouncer:/etc/pgbouncer:ro
+    entrypoint: /etc/pgbouncer/entrypoint.sh
+    networks:
+      - data_net
+    depends_on:
+      db-evolution:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 6432"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
+    mem_limit: 128m
+    tmpfs:
+      - /tmp
+      - /var/run/postgresql
+      - /run/pgbouncer:mode=1777
+
+  # ============================================================================
+  # NGINX — REVERSE PROXY HTTP (SEM TLS — TAILSCALE WIREGUARD)
+  # ============================================================================
+  # Rede: frontend (bridge) para alcançar serviços HTTP
+  # Porta host: ${TAILSCALE_IP}:80 (bind no IP Tailscale da VPS)
+  # Porta container: 8080
+  # NÃO entra na data_net — isolamento de camada de dados
+  # ============================================================================
+  nginx:
+    image: nginxinc/nginx-unprivileged:1.27-alpine
+    container_name: nginx
+    restart: unless-stopped
+    user: "0:0"  # Run entrypoint as root to create directories, then drop to nginx user
+    env_file:
+      - .env
+    environment:
+      TAILSCALE_HOSTNAME: ${TAILSCALE_HOSTNAME}
+      NGINX_CONTAINER_PORT: ${NGINX_CONTAINER_PORT}
+      N8N_PORT: ${N8N_PORT}
+      NGINX_RATE_LIMIT_LOGIN: ${NGINX_RATE_LIMIT_LOGIN}
+      NGINX_RATE_LIMIT_API: ${NGINX_RATE_LIMIT_API}
+      NGINX_RATE_LIMIT_BURST_LOGIN: ${NGINX_RATE_LIMIT_BURST_LOGIN}
+      NGINX_RATE_LIMIT_BURST_API: ${NGINX_RATE_LIMIT_BURST_API}
+      NGINX_CLIENT_MAX_BODY_SIZE: ${NGINX_CLIENT_MAX_BODY_SIZE}
+      NGINX_CLIENT_MAX_BODY_SIZE_CONHECIMENTO: ${NGINX_CLIENT_MAX_BODY_SIZE_CONHECIMENTO}
+    ports:
+      - "${NGINX_HOST_BIND}:${NGINX_PORT}:${NGINX_CONTAINER_PORT}"
+    volumes:
+      - ./setup/nginx:/etc/nginx:ro
+    entrypoint: /etc/nginx/entrypoint.sh
+    networks:
+      - frontend
+    depends_on:
+      dashboard:
+        condition: service_healthy
+      n8n:
+        condition: service_healthy
+      pgadmin:
+        condition: service_started
+      9router:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider --header='Host: ${TAILSCALE_HOSTNAME}' http://127.0.0.1:8080/nginx-health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+    mem_limit: 64m
+    read_only: true
+    tmpfs:
+      - /var/log/nginx
+      - /run/nginx
+      - /tmp/nginx
+      - /tmp/nginx/client_temp
+      - /tmp/nginx/proxy_temp
+      - /tmp/nginx/fastcgi_temp
+      - /tmp/nginx/uwsgi_temp
+      - /tmp/nginx/scgi_temp
+
 networks:
   public_net:
     driver: bridge
   data_net:
+    driver: bridge
+    internal: true
+  frontend:
     driver: bridge

@@ -22,6 +22,70 @@ CREATE EXTENSION IF NOT EXISTS pg_trgm;
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
+-- 1.1. AUDITORIA UNIFICADA — INFRAESTRUTURA (obrigatoriamente ANTES dos triggers)
+-- Motivo: o PostgreSQL exige que a função referenciada em `CREATE TRIGGER ...
+-- EXECUTE FUNCTION` já exista. Como os triggers statement-level ficam junto das
+-- suas tabelas (topo do arquivo), a tabela `auditoria_geral` e a função
+-- `fn_auditoria_statement()` são declaradas aqui. Sem FK, a ordem é segura.
+CREATE TABLE IF NOT EXISTS auditoria_geral (
+  id BIGSERIAL PRIMARY KEY,
+  tabela VARCHAR(60) NOT NULL,
+  operacao CHAR(1) NOT NULL CHECK (operacao IN ('I','U','D')),
+  usuario_db TEXT NOT NULL DEFAULT CURRENT_USER,
+  app_user_id UUID,           -- ID do usuário da aplicação (se disponível)
+  cliente_id VARCHAR(100),    -- Tenant isolado
+  dados_antigos JSONB,        -- Para UPDATE/DELETE
+  dados_novos JSONB,          -- Para INSERT/UPDATE
+  query_original TEXT,        -- Query que disparou (para forense)
+  criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_auditoria_tabela_criado ON auditoria_geral (tabela, criado_em DESC);
+CREATE INDEX IF NOT EXISTS idx_auditoria_cliente_criado ON auditoria_geral (cliente_id, criado_em DESC);
+CREATE INDEX IF NOT EXISTS idx_auditoria_app_user ON auditoria_geral (app_user_id, criado_em DESC);
+
+-- Função genérica de auditoria (statement-level usa transition tables)
+CREATE OR REPLACE FUNCTION fn_auditoria_statement()
+RETURNS TRIGGER AS $$
+DECLARE
+  v_cliente_id VARCHAR(100);
+  v_app_user_id UUID;
+BEGIN
+  -- Tenta extrair cliente_id e app_user_id do contexto da sessão
+  BEGIN
+    v_cliente_id := current_setting('app.cliente_id', true);
+  EXCEPTION WHEN OTHERS THEN
+    v_cliente_id := NULL;
+  END;
+
+  BEGIN
+    v_app_user_id := current_setting('app.user_id', true)::UUID;
+  EXCEPTION WHEN OTHERS THEN
+    v_app_user_id := NULL;
+  END;
+
+  IF (TG_OP = 'INSERT') THEN
+    INSERT INTO auditoria_geral (tabela, operacao, usuario_db, app_user_id, cliente_id, dados_novos, query_original)
+    SELECT TG_TABLE_NAME, 'I', CURRENT_USER, v_app_user_id, v_cliente_id, to_jsonb(new_table), current_query()
+    FROM new_table;
+  ELSIF (TG_OP = 'UPDATE') THEN
+    -- Pareamento posicional (sem depender de PK): nem todas as tabelas auditadas
+    -- têm coluna `id` (produtos.id_produto, movimentacoes_estoque.id_movimentacao,
+    -- dashboard_contatos/sessoes/credenciais/identidades). Um JOIN por `id`
+    -- quebraria o UPDATE da aplicação com "column old_table.id does not exist".
+    INSERT INTO auditoria_geral (tabela, operacao, usuario_db, app_user_id, cliente_id, dados_antigos, dados_novos, query_original)
+    SELECT TG_TABLE_NAME, 'U', CURRENT_USER, v_app_user_id, v_cliente_id, to_jsonb(x.antigo), to_jsonb(y.novo), current_query()
+    FROM (SELECT row_number() OVER () AS rn, t AS antigo FROM old_table t) x
+    JOIN (SELECT row_number() OVER () AS rn, t AS novo   FROM new_table t) y USING (rn);
+  ELSIF (TG_OP = 'DELETE') THEN
+    INSERT INTO auditoria_geral (tabela, operacao, usuario_db, app_user_id, cliente_id, dados_antigos, query_original)
+    SELECT TG_TABLE_NAME, 'D', CURRENT_USER, v_app_user_id, v_cliente_id, to_jsonb(old_table), current_query()
+    FROM old_table;
+  END IF;
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
 -- 2. Cria a Tabela de Produtos (Idempotente)
 CREATE TABLE IF NOT EXISTS produtos (
   id_produto SERIAL PRIMARY KEY,
@@ -755,6 +819,91 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- ============================================================================
+-- LOGS DO SISTEMA UNIFICADOS (Centralizado para Dashboard Tempo Real)
+-- ============================================================================
+
+-- Tabela de logs do sistema (unificada para aplicação, erros, eventos)
+CREATE TABLE IF NOT EXISTS system_logs (
+  id BIGSERIAL PRIMARY KEY,
+  nivel VARCHAR(10) NOT NULL CHECK (nivel IN ('debug','info','warn','error','critical')),
+  origem VARCHAR(100) NOT NULL,  -- ex: 'api', 'auth', 'n8n', 'evolution', 'worker', 'system'
+  mensagem TEXT NOT NULL,
+  contexto JSONB NOT NULL DEFAULT '{}'::jsonb,  -- request_id, user_id, ip, stack_trace, etc
+  cliente_id VARCHAR(100) REFERENCES clientes(id) ON DELETE SET NULL,
+  criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_system_logs_criado_em ON system_logs (criado_em DESC);
+CREATE INDEX IF NOT EXISTS idx_system_logs_nivel_criado ON system_logs (nivel, criado_em DESC);
+CREATE INDEX IF NOT EXISTS idx_system_logs_origem_criado ON system_logs (origem, criado_em DESC);
+CREATE INDEX IF NOT EXISTS idx_system_logs_cliente_criado ON system_logs (cliente_id, criado_em DESC);
+CREATE INDEX IF NOT EXISTS idx_system_logs_contexto_gin ON system_logs USING gin (contexto);
+
+-- NOTA: `system_logs` NÃO recebe trigger de auditoria — é telemetria operacional
+-- já sujeita a retenção própria (fn_limpar_logs_antigos). Auditá-la dobraria a
+-- escrita justamente na tabela mais quente do sistema, sem ganho de conformidade.
+
+-- Função de limpeza de logs antigos (retenção configurável)
+CREATE OR REPLACE FUNCTION fn_limpar_logs_antigos(p_dias INT DEFAULT 90)
+RETURNS JSONB AS $$
+DECLARE v_deletados BIGINT := 0;
+BEGIN
+  IF p_dias < 1 THEN RAISE EXCEPTION 'Retenção mínima 1 dia'; END IF;
+  DELETE FROM system_logs WHERE criado_em < NOW() - make_interval(days => p_dias);
+  GET DIAGNOSTICS v_deletados = ROW_COUNT;
+  RETURN jsonb_build_object('sucesso', true, 'removidos', v_deletados, 'dias_retencao', p_dias);
+END $$ LANGUAGE plpgsql;
+
+-- ============================================================================
+-- PERMISSÕES GRANULARES POR ROLE/RECURSO (RBAC Dashboard)
+-- ============================================================================
+
+-- Tabela de permissões por role/recurso/ação
+-- `*` é curinga válido (admin herda tudo) e precisa constar no CHECK: sem isso o
+-- seed da linha ('admin','*','*') viola a constraint e aborta a aplicação do
+-- init.sql em bancos novos.
+CREATE TABLE IF NOT EXISTS dashboard_permissoes (
+  id BIGSERIAL PRIMARY KEY,
+  role VARCHAR(20) NOT NULL CHECK (role IN ('admin','operador','visualizador','*')),
+  recurso VARCHAR(100) NOT NULL,  -- ex: 'instances', 'financeiro', 'modelos', 'conhecimento', 'logs', 'usuarios', 'settings', '*'
+  acao VARCHAR(20) NOT NULL CHECK (acao IN ('create','read','update','delete','execute','*')),
+  permitido BOOLEAN NOT NULL DEFAULT true,
+  UNIQUE (role, recurso, acao)
+);
+
+-- Reconciliação de CHECK em bancos já existentes (create table if not exists não altera constraints)
+ALTER TABLE dashboard_permissoes DROP CONSTRAINT IF EXISTS dashboard_permissoes_role_check;
+ALTER TABLE dashboard_permissoes ADD CONSTRAINT dashboard_permissoes_role_check
+  CHECK (role IN ('admin','operador','visualizador','*'));
+ALTER TABLE dashboard_permissoes DROP CONSTRAINT IF EXISTS dashboard_permissoes_acao_check;
+ALTER TABLE dashboard_permissoes ADD CONSTRAINT dashboard_permissoes_acao_check
+  CHECK (acao IN ('create','read','update','delete','execute','*'));
+
+CREATE INDEX IF NOT EXISTS idx_dash_permissoes_role ON dashboard_permissoes (role);
+
+-- Seed idempotente: matriz padrão de permissões
+INSERT INTO dashboard_permissoes (role, recurso, acao, permitido) VALUES
+  ('admin', '*', '*', true),
+  ('operador', 'instances', 'read', true),
+  ('operador', 'instances', 'update', true),
+  ('operador', 'instances', 'execute', true),  -- connect, restart
+  ('operador', 'financeiro', 'read', true),
+  ('operador', 'modelos', 'read', true),
+  ('operador', 'conhecimento', 'read', true),
+  ('operador', 'conhecimento', 'create', true),
+  ('operador', 'conhecimento', 'update', true),
+  ('operador', 'logs', 'read', true),
+  ('visualizador', 'instances', 'read', true),
+  ('visualizador', 'financeiro', 'read', true),
+  ('visualizador', 'modelos', 'read', true),
+  ('visualizador', 'conhecimento', 'read', true),
+  ('visualizador', 'logs', 'read', true)
+ON CONFLICT (role, recurso, acao) DO NOTHING;
+
+-- NOTA: o trigger de auditoria de `dashboard_permissoes` é criado no bloco
+-- único do final do arquivo (evita duplicação e garante a ordem correta).
+
+-- ============================================================================
 -- AUTENTICAÇÃO, CONTROLE DE ACESSO E GOVERNANÇA LGPD (DASHBOARD ANNE-IA)
 -- Normas: OWASP ASVS Lv 2, NIST SP 800-63B, LGPD (Lei 13.709/2018)
 -- ============================================================================
@@ -809,6 +958,10 @@ CREATE TABLE IF NOT EXISTS dashboard_credenciais (
 );
 
 -- 5. Sessões Server-Side Opaque (Tokens rotativos / Revogáveis)
+-- Nota: o Dashboard só atualiza ultimo_uso quando ele está defasado em mais de
+-- 5 minutos (throttle em dashboard/src/server.js). Sem esse throttle, cada
+-- requisição autenticada geraria um UPDATE e, via trigger de auditoria, uma
+-- linha em auditoria_geral por request — amplificação de escrita desnecessária.
 CREATE TABLE IF NOT EXISTS dashboard_sessoes (
   id_hash CHAR(64) PRIMARY KEY,
   user_id UUID NOT NULL REFERENCES dashboard_usuarios(id) ON DELETE CASCADE,
@@ -849,6 +1002,201 @@ CREATE TABLE IF NOT EXISTS dashboard_auditoria_auth (
 );
 CREATE INDEX IF NOT EXISTS idx_dash_auditoria_quando ON dashboard_auditoria_auth(quando DESC);
 CREATE INDEX IF NOT EXISTS idx_dash_auditoria_ip_evento ON dashboard_auditoria_auth(ip, evento, quando DESC);
+
+
+-- ============================================================================
+-- AUDITORIA UNIFICADA — APLICAÇÃO DOS TRIGGERS NAS TABELAS DE NEGÓCIO
+-- ============================================================================
+-- A tabela `auditoria_geral` e a função `fn_auditoria_statement()` são criadas
+-- no topo do arquivo (seção 1.1) por exigência de ordem do PostgreSQL.
+--
+-- IMPORTANTE: transition tables (`REFERENCING OLD/NEW TABLE`) NÃO podem ser
+-- usadas em trigger com mais de um evento ("transition tables cannot be
+-- specified for triggers with more than one event"). Por isso cada tabela
+-- recebe 3 triggers — INSERT, UPDATE e DELETE — reutilizando a mesma função,
+-- que decide o ramo por TG_OP.
+--
+-- Tabelas auditadas: clientes, base_conhecimento, prompt_config, precos_modelos,
+-- uso_tokens, dashboard_usuarios, dashboard_identidades, dashboard_contatos,
+-- dashboard_credenciais, dashboard_sessoes, dashboard_consentimentos,
+-- dashboard_auditoria_auth, lgpd_auditoria, memorypostgreschat,
+-- movimentacoes_estoque, produtos, dashboard_permissoes.
+-- (`system_logs` fica fora: é telemetria com retenção própria — auditá-la
+--  dobraria a escrita na tabela mais quente, sem ganho de conformidade.)
+
+DO $$
+DECLARE
+  t TEXT;
+  tbls TEXT[] := ARRAY[
+    'clientes', 'base_conhecimento', 'prompt_config', 'precos_modelos', 'uso_tokens',
+    'dashboard_usuarios', 'dashboard_identidades', 'dashboard_contatos', 'dashboard_credenciais',
+    'dashboard_sessoes', 'dashboard_consentimentos', 'dashboard_auditoria_auth',
+    'lgpd_auditoria', 'memorypostgreschat', 'movimentacoes_estoque', 'produtos',
+    'dashboard_permissoes'
+  ];
+BEGIN
+  FOREACH t IN ARRAY tbls LOOP
+    -- Limpa nomes legados (versões anteriores tentavam 1 trigger multi-evento)
+    EXECUTE format('DROP TRIGGER IF EXISTS trg_audit_%s ON %s;', t, t);
+
+    EXECUTE format('DROP TRIGGER IF EXISTS trg_audit_%s_ins ON %s;', t, t);
+    EXECUTE format(
+      'CREATE TRIGGER trg_audit_%s_ins AFTER INSERT ON %s
+       REFERENCING NEW TABLE AS new_table
+       FOR EACH STATEMENT EXECUTE FUNCTION fn_auditoria_statement();', t, t);
+
+    EXECUTE format('DROP TRIGGER IF EXISTS trg_audit_%s_upd ON %s;', t, t);
+    EXECUTE format(
+      'CREATE TRIGGER trg_audit_%s_upd AFTER UPDATE ON %s
+       REFERENCING OLD TABLE AS old_table NEW TABLE AS new_table
+       FOR EACH STATEMENT EXECUTE FUNCTION fn_auditoria_statement();', t, t);
+
+    EXECUTE format('DROP TRIGGER IF EXISTS trg_audit_%s_del ON %s;', t, t);
+    EXECUTE format(
+      'CREATE TRIGGER trg_audit_%s_del AFTER DELETE ON %s
+       REFERENCING OLD TABLE AS old_table
+       FOR EACH STATEMENT EXECUTE FUNCTION fn_auditoria_statement();', t, t);
+  END LOOP;
+END $$;
+
+
+-- ============================================================================
+-- PGBOUNCER - ROLES E SCHEMA DE AUTENTICAÇÃO (IDEMPOTENTE)
+-- ============================================================================
+-- Provisiona roles e schema para o PgBouncer connection pooler.
+-- Executado no banco `anneia` (schema de negócio).
+-- As senhas são definidas via variáveis de ambiente injetadas pelo update.sh
+-- ============================================================================
+
+-- 1. Schema dedicado para objetos do PgBouncer
+-- Usa o role 'evolution' que ja existe no container db-evolution
+-- Caso o role postgres nao exista, usa o role evolution como owner
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'postgres') THEN
+    EXECUTE 'CREATE SCHEMA IF NOT EXISTS pgbouncer AUTHORIZATION postgres';
+  ELSE
+    EXECUTE 'CREATE SCHEMA IF NOT EXISTS pgbouncer AUTHORIZATION evolution';
+  END IF;
+END $$;
+
+-- 2. Role de aplicação (usado pelo Dashboard)
+-- A senha será definida via ALTER ROLE pelo update.sh
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'pgbouncer_app') THEN
+    CREATE ROLE pgbouncer_app
+      LOGIN
+      PASSWORD 'changeme'
+      NOINHERIT
+      CONNECTION LIMIT 50;
+    RAISE NOTICE 'Role pgbouncer_app criada';
+  ELSE
+    RAISE NOTICE 'Role pgbouncer_app já existe';
+  END IF;
+END $$;
+
+-- 3. Role admin (para console admin do PgBouncer: SHOW POOLS, SHOW STATS, etc.)
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'pgbouncer_admin') THEN
+    CREATE ROLE pgbouncer_admin
+      LOGIN
+      PASSWORD 'changeme'
+      NOINHERIT
+      CONNECTION LIMIT 5;
+    RAISE NOTICE 'Role pgbouncer_admin criada';
+  ELSE
+    RAISE NOTICE 'Role pgbouncer_admin já existe';
+  END IF;
+END $$;
+
+-- 4. Role para auth_query (opcional, mantida para flexibilidade futura)
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'pgbouncer_auth') THEN
+    CREATE ROLE pgbouncer_auth
+      NOLOGIN
+      NOINHERIT;
+    RAISE NOTICE 'Role pgbouncer_auth criada';
+  END IF;
+END $$;
+
+-- 4. Role para auth_query (opcional, mantida para flexibilidade futura)
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'pgbouncer_auth') THEN
+    CREATE ROLE pgbouncer_auth
+      NOLOGIN
+      NOINHERIT;
+    RAISE NOTICE 'Role pgbouncer_auth criada';
+  END IF;
+END $$;
+
+-- 5. Função get_auth para auth_query (opcional)
+-- Prisma (Evolution API) tem problemas conhecidos com auth_query; usando userlist.txt por enquanto.
+CREATE OR REPLACE FUNCTION pgbouncer.get_auth(p_username TEXT)
+RETURNS TABLE (usename TEXT, passwd TEXT)
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pgbouncer, pg_catalog
+AS $$
+BEGIN
+  IF p_username NOT IN ('pgbouncer_app', 'pgbouncer_admin') THEN
+    RETURN QUERY SELECT NULL::TEXT, NULL::TEXT;
+  END IF;
+
+  RETURN QUERY
+  SELECT rolname::TEXT,
+         rolpassword::TEXT
+  FROM pg_authid
+  WHERE rolname = p_username
+    AND rolcanlogin;
+END;
+$$;
+
+-- 6. Permissões para pgbouncer_auth executar get_auth
+GRANT EXECUTE ON FUNCTION pgbouncer.get_auth(TEXT) TO pgbouncer_auth;
+
+-- 7. Permissões nas tabelas de negócio para pgbouncer_app
+GRANT USAGE ON SCHEMA public TO pgbouncer_app;
+-- Tabelas específicas (idempotente - ignora se não existirem)
+DO $$
+DECLARE
+  t TEXT;
+BEGIN
+  FOR t IN SELECT tablename FROM pg_tables WHERE schemaname = 'public'
+  LOOP
+    EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON %I TO pgbouncer_app', t);
+  END LOOP;
+END $$;
+-- Permissões em SEQUENCES (necessário para colunas BIGSERIAL/SERIAL em INSERTs)
+-- Idempotente: ignora sequences que não existem
+DO $$
+DECLARE
+  s TEXT;
+BEGIN
+  FOR s IN SELECT sequence_name FROM information_schema.sequences WHERE sequence_schema = 'public'
+  LOOP
+    EXECUTE format('GRANT USAGE, SELECT ON SEQUENCE %I TO pgbouncer_app', s);
+  END LOOP;
+END $$;
+-- Default privileges para futuras tabelas/sequences criadas no schema public
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO pgbouncer_app;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO pgbouncer_app;
+
+-- 8. Configurações de proteção no Postgres para roles do PgBouncer
+-- Evita que uma transação travada segure o pool inteiro.
+ALTER ROLE pgbouncer_app SET idle_in_transaction_session_timeout = '30s';
+ALTER ROLE pgbouncer_app SET statement_timeout = '15s';
+ALTER ROLE pgbouncer_admin SET idle_in_transaction_session_timeout = '60s';
+ALTER ROLE pgbouncer_admin SET statement_timeout = '30s';
+
+-- 9. Comentários para documentação
+COMMENT ON ROLE pgbouncer_app IS 'Role de aplicação para PgBouncer (transaction pool)';
+COMMENT ON ROLE pgbouncer_admin IS 'Role admin para console PgBouncer (session pool)';
+COMMENT ON ROLE pgbouncer_auth IS 'Role para auth_query (opcional, não usada com userlist.txt)';
+COMMENT ON FUNCTION pgbouncer.get_auth(TEXT) IS 'Retorna credenciais SCRAM para auth_query do PgBouncer';
 
 
 

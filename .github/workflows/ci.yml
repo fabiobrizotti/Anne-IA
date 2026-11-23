@@ -40,12 +40,16 @@ jobs:
 
       - name: Validação de Scripts Shell (ShellCheck)
         run: |
-          sudo apt-get update && sudo apt-get install -y shellcheck
-          shellcheck scripts/*.sh tests/*.sh
+          # Versão PINADA: o shellcheck do apt (ubuntu-24.04) é 0.9.x e reporta
+          # SC2317 em funções chamadas apenas via `trap`, que a 0.11 não emite.
+          # Usar a mesma versão do ambiente de desenvolvimento evita "passa aqui,
+          # falha no CI".
+          docker run --rm -v "$PWD:/mnt:ro" koalaman/shellcheck:v0.11.0 \
+            scripts/*.sh tests/*.sh
 
       - name: Validação de Sintaxe Python (py_compile)
         run: |
-          python3 -m py_compile $(git ls-files "*.py" 2>/dev/null || true)
+          git ls-files -z "*.py" | xargs -0 -r python3 -m py_compile
 
       - name: Validação de Workflows GitHub Actions (actionlint)
         run: |
@@ -99,17 +103,35 @@ jobs:
           cd dashboard
           npm test
 
+  schema-idempotency:
+    name: schema-idempotency
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout Código Fonte
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Validar Idempotência e Boot Limpo do init.sql
+        run: |
+          # Sobe um Postgres DESCARTÁVEL e prova:
+          #   1. boot limpo (volume vazio) sem ERROR
+          #   2. reaplicação em banco populado sem ERROR e sem perda de dado
+          #   3. 51 triggers de auditoria, seed admin/*/*, DML real
+          # É o mesmo teste que o ./scripts/update.sh depende para reaplicar
+          # o schema com segurança na VPS.
+          chmod +x tests/test_init_sql.sh
+          ./tests/test_init_sql.sh
+
   secret-scan:
     name: secret-scan
     runs-on: ubuntu-24.04
     steps:
-      - name: Checkout Completo do Repositório (fetch-depth: 0)
+      - name: "Checkout Completo do Repositório (fetch-depth: 0)"
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
 
       - name: Escaneamento de Segredos com Gitleaks
-        uses: gitleaks/gitleaks-action@f91b498f3c7809635fae7df07a6a438ee2e89ab0 # v2.3.8
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -127,22 +149,29 @@ jobs:
 
       - name: Gerar Arquivo .env de Teste
         run: |
-          cp .env.example .env
-          ./scripts/generate-passwords.sh
+          # sync-env.sh cria o .env a partir do .env.example, gera as senhas
+          # Base62 e é exatamente o caminho usado em produção (não um atalho).
+          ./scripts/sync-env.sh
           # Chaves de teste para PII LGPD
           echo "CPF_ENC_KEY=$(node -e 'console.log(require("crypto").randomBytes(32).toString("hex"))')" >> .env
           echo "CPF_HMAC_KEY=$(node -e 'console.log(require("crypto").randomBytes(32).toString("hex"))')" >> .env
 
       - name: Subir Infraestrutura Mínima para Pentest (Postgres & Dashboard)
         run: |
-          docker compose up -d postgres dashboard
-          # Aguarda healthy do Postgres e Dashboard
-          timeout 60 bash -c 'until docker compose ps postgres | grep -q "(healthy)"; do sleep 2; done'
-          timeout 60 bash -c 'until curl -s http://127.0.0.1:3000/api/v1/health | grep -q "ok"; do sleep 2; done'
+          # Serviço correto: db-evolution (o nome "postgres" não existe no compose)
+          docker compose up -d db-evolution dashboard
+          # Aguarda healthy do banco e o dashboard respondendo na porta do host
+          # (DASHBOARD_PORT, não a 3000 que é interna do container)
+          DASH_PORT="$(grep '^DASHBOARD_PORT=' .env | cut -d= -f2)"
+          timeout 180 bash -c 'until docker compose ps db-evolution | grep -q "(healthy)"; do sleep 2; done'
+          timeout 180 bash -c "until curl -s http://127.0.0.1:${DASH_PORT}/api/health | grep -q 'ok'; do sleep 2; done"
 
       - name: Injetar Fixtures Sintéticas Multi-Tenant
         run: |
-          docker compose exec -T postgres psql -U "$(grep '^POSTGRES_USER=' .env | cut -d= -f2)" -d "$(grep '^POSTGRES_DB=' .env | cut -d= -f2)" < setup/postgres/fixtures-test.sql
+          # Tabelas de negócio vivem no banco anneia (criado pelo init.sql),
+          # não em POSTGRES_DB (evolution, controlado pelo Prisma da Evolution API)
+          PG_USER="$(grep '^POSTGRES_USER=' .env | cut -d= -f2)"
+          docker compose exec -T db-evolution psql -U "${PG_USER}" -d anneia < setup/postgres/fixtures-test.sql
 
       - name: Executar Bateria DAST / Pentest Automatizado
         run: |

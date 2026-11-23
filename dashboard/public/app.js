@@ -218,7 +218,58 @@
     btnSaveRagDoc: document.getElementById('btn-save-rag-doc'),
 
     // Atalho na Ficha
-    btnFichaViewRag: document.getElementById('btn-ficha-view-rag')
+    btnFichaViewRag: document.getElementById('btn-ficha-view-rag'),
+
+    // ===== NOVOS: Elementos da Aba Logs =====
+    logStatCritical: document.getElementById('log-stat-critical'),
+    logStatError: document.getElementById('log-stat-error'),
+    logStatWarn: document.getElementById('log-stat-warn'),
+    logStatInfo: document.getElementById('log-stat-info'),
+    logStatDebug: document.getElementById('log-stat-debug'),
+    logFilterNivel: document.getElementById('log-filter-nivel'),
+    logFilterOrigem: document.getElementById('log-filter-origem'),
+    logFilterBusca: document.getElementById('log-filter-busca'),
+    logFilterPeriodo: document.getElementById('log-filter-periodo'),
+    logBtnExport: document.getElementById('log-btn-export'),
+    logBtnClearCache: document.getElementById('log-btn-clear-cache'),
+    logBtnPause: document.getElementById('log-btn-pause'),
+    logPauseText: document.getElementById('log-pause-text'),
+    logsTbody: document.getElementById('logs-tbody'),
+    logsPaginationInfo: document.getElementById('logs-pagination-info'),
+    btnLogsPrevPage: document.getElementById('btn-logs-prev-page'),
+    btnLogsNextPage: document.getElementById('btn-logs-next-page'),
+    logsPaginationCurrent: document.getElementById('logs-pagination-current'),
+
+    // ===== NOVOS: Elementos da Aba Usuários =====
+    tabUsuariosBtn: document.getElementById('tab-usuarios-btn'),
+    usersTbody: document.getElementById('users-tbody'),
+    btnNewUser: document.getElementById('btn-new-user'),
+    permissionsMatrix: document.getElementById('permissions-matrix'),
+    myPermissionsDisplay: document.getElementById('my-permissions-display'),
+    modalUser: document.getElementById('modal-user'),
+    formUser: document.getElementById('form-user'),
+    userId: document.getElementById('user-id'),
+    userNome: document.getElementById('user-nome'),
+    userEmail: document.getElementById('user-email'),
+    userCpf: document.getElementById('user-cpf'),
+    userTelefone: document.getElementById('user-telefone'),
+    userRole: document.getElementById('user-role'),
+    userCliente: document.getElementById('user-cliente'),
+    userPassword: document.getElementById('user-password'),
+    userPasswordHint: document.getElementById('user-password-hint'),
+    userDataNascimento: document.getElementById('user-data-nascimento'),
+    userAtivo: document.getElementById('user-ativo'),
+    userAceitouTermos: document.getElementById('user-aceitou-termos'),
+    btnSaveUser: document.getElementById('btn-save-user'),
+
+    // ===== NOVOS: Modal Detalhe Log =====
+    modalLogDetail: document.getElementById('modal-log-detail'),
+    logDetailTitle: document.getElementById('log-detail-title'),
+    logDetailNivelBadge: document.getElementById('log-detail-nivel-badge'),
+    logDetailMeta: document.getElementById('log-detail-meta'),
+    logDetailMensagem: document.getElementById('log-detail-mensagem'),
+    logDetailContexto: document.getElementById('log-detail-contexto'),
+    btnCopyLogContext: document.getElementById('btn-copy-log-context')
   };
 
   let modelsList = [];
@@ -227,6 +278,21 @@
   let knowledgePagination = { page: 1, limit: 25, total: 0, totalPages: 1 };
   let ragSearchDebounceTimer = null;
   let activeIaSubTab = 'subtab-modelos';
+
+  // ===== NOVOS: Estado Logs =====
+  let logEventSource = null;
+  let logStats = { critical: 0, error: 0, warn: 0, info: 0, debug: 0 };
+  let logsPagination = { page: 1, limit: 50, total: 0, totalPages: 1 };
+  let logsPaused = false;
+  let currentLogFilters = { nivel: '', origem: '', busca: '', periodo: '24h' };
+  const renderedLogIds = new Set();   // dedupe entre carga inicial e SSE
+  let pendingLogs = [];               // eventos recebidos enquanto pausado
+  let logRetryDelay = 3000;           // backoff da reconexão SSE
+
+  // ===== NOVOS: Estado Usuários/Permissões =====
+  let usersList = [];
+  let permissionsMatrix = {};
+  let myPermissions = {};
 
   // ---------------------------------------------------------------------------
   // UTILITÁRIOS
@@ -970,27 +1036,6 @@
   // ---------------------------------------------------------------------------
   // NAVEGAÇÃO DE PÁGINAS / ABAS PRINCIPAIS
   // ---------------------------------------------------------------------------
-
-  function switchPageTab(targetTabId) {
-    activePageTab = targetTabId;
-    elements.pageTabs.forEach(btn => {
-      btn.classList.toggle('active', btn.dataset.pageTab === targetTabId);
-    });
-
-    elements.pageContents.forEach(content => {
-      content.classList.toggle('active', content.id === targetTabId);
-    });
-
-    if (targetTabId === 'tab-financeiro') {
-      loadFinanceData();
-    } else if (targetTabId === 'tab-ia' || targetTabId === 'tab-modelos') {
-      if (activeIaSubTab === 'subtab-conhecimento') {
-        loadKnowledge();
-      } else {
-        loadModels();
-      }
-    }
-  }
 
   function switchIaSubTab(subTabId) {
     activeIaSubTab = subTabId;
@@ -2133,6 +2178,14 @@
       } else {
         loadModels();
       }
+    } else if (activePageTab === 'tab-logs') {
+      loadLogs();
+      loadLogStats();
+      loadLogOrigens();
+    } else if (activePageTab === 'tab-usuarios') {
+      loadUsers();
+      loadPermissionsMatrix();
+      loadMyPermissions();
     }
   });
 
@@ -2258,6 +2311,766 @@
         await api('/api/v1/auth/logout', { method: 'POST' });
       } catch (_e) {}
       window.location.href = '/login.html';
+    });
+  }
+
+  // ============================================================================
+  // ABA LOGS DO SISTEMA - Tempo Real com SSE
+  // ============================================================================
+
+  // Converte o filtro de período em `inicio` (ISO) para a API.
+  function buildLogPeriodParams(params) {
+    if (currentLogFilters.periodo && currentLogFilters.periodo !== '24h') {
+      const hours = currentLogFilters.periodo === '1h' ? 1 : (currentLogFilters.periodo === '7d' ? 168 : 720);
+      const inicio = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
+      params.set('inicio', inicio);
+    }
+  }
+
+  function buildLogFilterParams() {
+    const params = new URLSearchParams();
+    if (currentLogFilters.nivel) params.set('nivel', currentLogFilters.nivel);
+    if (currentLogFilters.origem) params.set('origem', currentLogFilters.origem);
+    if (currentLogFilters.busca) params.set('busca', currentLogFilters.busca);
+    buildLogPeriodParams(params);
+    return params;
+  }
+
+  // Sempre lê do banco: o cache em memória do servidor zera a cada restart e
+  // antes deixava a aba "vazia" mesmo havendo histórico.
+  function loadLogs() {
+    if (!elements.logsTbody) return;
+
+    const params = buildLogFilterParams();
+    params.set('page', logsPagination.page);
+    params.set('limit', logsPagination.limit);
+
+    api(`/api/v1/logs?${params.toString()}`)
+      .then(res => {
+        const logs = res.data || [];
+        logsPagination.total = res.total || 0;
+        logsPagination.totalPages = res.totalPages || 1;
+        renderLogs(logs);
+        updateLogsPagination();
+      })
+      .catch(err => {
+        console.error('[logs] Erro ao carregar:', err);
+        if (!logsPaused) {
+          showToast(`Falha ao carregar logs: ${err.message}`, 'error');
+        }
+      });
+  }
+
+  function renderLogs(logs) {
+    if (!elements.logsTbody) return;
+
+    renderedLogIds.clear();
+
+    if (logs.length === 0) {
+      elements.logsTbody.innerHTML = `
+        <tr>
+          <td colspan="5" class="text-center py-8 text-muted">
+            Nenhum log encontrado para os filtros atuais. Novos eventos aparecem aqui em tempo real.
+          </td>
+        </tr>
+      `;
+      return;
+    }
+
+    logs.forEach(log => renderedLogIds.add(String(log.id)));
+
+    elements.logsTbody.innerHTML = logs.map(log => {
+      const nivelClass = `badge-${log.nivel}`;
+      const nivelLabel = log.nivel.toUpperCase();
+      const timestamp = formatDateTime(log.criado_em);
+      const origemEsc = escapeHtml(log.origem);
+      const mensagemEsc = escapeHtml(log.mensagem);
+      const contextoEsc = escapeHtml(JSON.stringify(log.contexto || {}, null, 2));
+
+      return `
+        <tr data-log-id="${log.id}">
+          <td><code>${timestamp}</code></td>
+          <td><span class="badge ${nivelClass}">${nivelLabel}</span></td>
+          <td><span class="badge badge-outline">${origemEsc}</span></td>
+          <td><span class="log-message">${mensagemEsc}</span></td>
+          <td>
+            <button class="btn btn-xs btn-secondary" data-action="log-detail"
+                    data-mensagem="${escapeHtml(log.mensagem)}"
+                    data-contexto='${contextoEsc}'
+                    data-nivel="${log.nivel}"
+                    data-origem="${origemEsc}"
+                    data-timestamp="${log.criado_em}">Ver</button>
+          </td>
+        </tr>
+      `;
+    }).join('');
+  }
+
+  function updateLogsPagination() {
+    if (elements.logsPaginationInfo) {
+      elements.logsPaginationInfo.textContent = `Mostrando ${logsPagination.page} de ${logsPagination.totalPages} páginas (${logsPagination.total} total)`;
+    }
+    if (elements.logsPaginationCurrent) {
+      elements.logsPaginationCurrent.textContent = `Pág ${logsPagination.page} de ${Math.max(1, logsPagination.totalPages)}`;
+    }
+    if (elements.btnLogsPrevPage) {
+      elements.btnLogsPrevPage.disabled = logsPagination.page <= 1;
+    }
+    if (elements.btnLogsNextPage) {
+      elements.btnLogsNextPage.disabled = logsPagination.page >= logsPagination.totalPages;
+    }
+  }
+
+  function loadLogStats() {
+    const params = buildLogFilterParams();
+    params.set('periodo', currentLogFilters.periodo || '24h');
+    api(`/api/v1/logs/stats?${params.toString()}`)
+      .then(res => {
+        if (res.success && res.data) {
+          logStats = res.data;
+          updateLogStatsUI();
+        }
+      })
+      .catch(err => console.warn('[logs] Erro ao carregar stats:', err.message));
+  }
+
+  function updateLogStatsUI() {
+    if (elements.logStatCritical) elements.logStatCritical.textContent = logStats.critical || 0;
+    if (elements.logStatError) elements.logStatError.textContent = logStats.error || 0;
+    if (elements.logStatWarn) elements.logStatWarn.textContent = logStats.warn || 0;
+    if (elements.logStatInfo) elements.logStatInfo.textContent = logStats.info || 0;
+    if (elements.logStatDebug) elements.logStatDebug.textContent = logStats.debug || 0;
+  }
+
+  function loadLogOrigens() {
+    api('/api/v1/logs/origens')
+      .then(res => {
+        if (res.success && res.data && elements.logFilterOrigem) {
+          const currentVal = elements.logFilterOrigem.value;
+          elements.logFilterOrigem.innerHTML = '<option value="">Todas as origens</option>' +
+            res.data.map(o => `<option value="${escapeHtml(o)}">${escapeHtml(o)}</option>`).join('');
+          elements.logFilterOrigem.value = currentVal;
+        }
+      })
+      .catch(err => console.warn('[logs] Erro ao carregar origens:', err.message));
+  }
+
+  function connectLogStream() {
+    if (logEventSource) {
+      logEventSource.close();
+    }
+
+    logEventSource = new EventSource('/api/v1/logs/stream');
+
+    logEventSource.onopen = () => {
+      logRetryDelay = 3000; // reconexão bem-sucedida: reseta o backoff
+    };
+
+    logEventSource.onmessage = (e) => {
+      let entry;
+      try {
+        entry = JSON.parse(e.data);
+      } catch (_e) {
+        return; // heartbeat/linha de comentário
+      }
+      if (!entry || !entry.nivel) return;
+
+      // Pausado: bufferiza em vez de descartar (nada se perde ao retomar)
+      if (logsPaused) {
+        pendingLogs.push(entry);
+        if (pendingLogs.length > 200) pendingLogs.shift();
+        return;
+      }
+
+      prependLogRow(entry);
+      updateLogStat(entry.nivel);
+    };
+
+    logEventSource.onerror = () => {
+      if (logEventSource) logEventSource.close();
+      logEventSource = null;
+      const delay = Math.min(logRetryDelay, 30000);
+      logRetryDelay = Math.min(logRetryDelay * 2, 30000);
+      console.warn(`[logs] SSE caiu, reconectando em ${Math.round(delay / 1000)}s...`);
+      setTimeout(() => {
+        if (activePageTab === 'tab-logs') connectLogStream();
+      }, delay);
+    };
+  }
+
+  function prependLogRow(entry) {
+    if (!elements.logsTbody) return;
+
+    // Dedupe: o servidor reenvia as últimas 50 no handshake do SSE e a listagem
+    // inicial já trouxe parte delas.
+    const id = String(entry.id);
+    if (renderedLogIds.has(id)) return;
+    renderedLogIds.add(id);
+
+    // Se está na página 1 e sem filtros, adiciona no topo
+    if (logsPagination.page === 1 && !currentLogFilters.nivel && !currentLogFilters.origem && !currentLogFilters.busca) {
+      const nivelClass = `badge-${entry.nivel}`;
+      const nivelLabel = entry.nivel.toUpperCase();
+      const timestamp = formatDateTime(entry.criado_em);
+      const origemEsc = escapeHtml(entry.origem);
+      const mensagemEsc = escapeHtml(entry.mensagem);
+      const contextoEsc = escapeHtml(JSON.stringify(entry.contexto || {}, null, 2));
+
+      const row = document.createElement('tr');
+      row.dataset.logId = entry.id;
+      row.innerHTML = `
+        <td><code>${timestamp}</code></td>
+        <td><span class="badge ${nivelClass}">${nivelLabel}</span></td>
+        <td><span class="badge badge-outline">${origemEsc}</span></td>
+        <td><span class="log-message">${mensagemEsc}</span></td>
+        <td>
+          <button class="btn btn-xs btn-secondary" data-action="log-detail"
+                  data-mensagem="${escapeHtml(entry.mensagem)}"
+                  data-contexto='${contextoEsc}'
+                  data-nivel="${entry.nivel}"
+                  data-origem="${origemEsc}"
+                  data-timestamp="${entry.criado_em}">Ver</button>
+        </td>
+      `;
+
+      elements.logsTbody.insertBefore(row, elements.logsTbody.firstChild);
+
+      // Limita a 100 linhas no DOM
+      while (elements.logsTbody.children.length > 100) {
+        elements.logsTbody.lastChild.remove();
+      }
+    }
+  }
+
+  function updateLogStat(nivel) {
+    if (logStats[nivel] !== undefined) {
+      logStats[nivel]++;
+      updateLogStatsUI();
+    }
+  }
+
+  function openLogDetailModal(btn) {
+    const mensagem = btn.dataset.mensagem || '';
+    const contexto = btn.dataset.contexto || '{}';
+    const nivel = btn.dataset.nivel || 'info';
+    const origem = btn.dataset.origem || '';
+    const timestamp = btn.dataset.timestamp || '';
+
+    if (elements.logDetailTitle) elements.logDetailTitle.textContent = 'Detalhes do Log';
+    if (elements.logDetailNivelBadge) {
+      elements.logDetailNivelBadge.textContent = nivel.toUpperCase();
+      elements.logDetailNivelBadge.className = `badge badge-${nivel}`;
+    }
+    if (elements.logDetailMeta) elements.logDetailMeta.textContent = `Origem: ${origem} | Timestamp: ${formatDateTime(timestamp)}`;
+    if (elements.logDetailMensagem) elements.logDetailMensagem.textContent = mensagem;
+    if (elements.logDetailContexto) elements.logDetailContexto.textContent = contexto;
+
+    openModal(elements.modalLogDetail);
+  }
+
+  // Exportação server-side: respeita os filtros e não é truncada em 100 linhas
+  // (antes o front pedia limit=1000 e a API cortava silenciosamente em 100).
+  async function exportLogs() {
+    try {
+      const params = buildLogFilterParams();
+      const res = await fetch(`/api/v1/logs/export?${params.toString()}`, {
+        headers: { 'X-Requested-With': 'XMLHttpRequest' }
+      });
+
+      if (res.status === 401) {
+        window.location.href = '/login.html';
+        return;
+      }
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || 'Falha ao exportar logs');
+      }
+
+      const blob = await res.blob();
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = `logs_anneia_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(link.href);
+      showToast('Logs exportados com sucesso!');
+    } catch (err) {
+      showToast(`Erro ao exportar: ${err.message}`, 'error');
+    }
+  }
+
+  // Event Listeners Logs
+  if (elements.logFilterNivel) {
+    elements.logFilterNivel.addEventListener('change', () => {
+      currentLogFilters.nivel = elements.logFilterNivel.value;
+      logsPagination.page = 1;
+      loadLogs();
+    });
+  }
+  if (elements.logFilterOrigem) {
+    elements.logFilterOrigem.addEventListener('change', () => {
+      currentLogFilters.origem = elements.logFilterOrigem.value;
+      logsPagination.page = 1;
+      loadLogs();
+    });
+  }
+  if (elements.logFilterBusca) {
+    let buscaDebounce = null;
+    elements.logFilterBusca.addEventListener('input', () => {
+      clearTimeout(buscaDebounce);
+      buscaDebounce = setTimeout(() => {
+        currentLogFilters.busca = elements.logFilterBusca.value.trim();
+        logsPagination.page = 1;
+        loadLogs();
+      }, 300);
+    });
+  }
+  if (elements.logFilterPeriodo) {
+    elements.logFilterPeriodo.addEventListener('change', () => {
+      currentLogFilters.periodo = elements.logFilterPeriodo.value;
+      logsPagination.page = 1;
+      loadLogs();
+      loadLogStats();
+    });
+  }
+  if (elements.logBtnExport) {
+    elements.logBtnExport.addEventListener('click', exportLogs);
+  }
+  if (elements.logBtnClearCache) {
+    elements.logBtnClearCache.addEventListener('click', async () => {
+      try {
+        await api('/api/v1/logs/cache', { method: 'DELETE' });
+        loadLogs();
+        showToast('Cache do servidor limpo');
+      } catch (err) {
+        showToast(`Erro ao limpar cache: ${err.message}`, 'error');
+      }
+    });
+  }
+  if (elements.logBtnPause) {
+    elements.logBtnPause.addEventListener('click', () => {
+      logsPaused = !logsPaused;
+      elements.logPauseText.textContent = logsPaused ? 'Retomar' : 'Pausar';
+      elements.logBtnPause.classList.toggle('btn-warning', logsPaused);
+
+      if (!logsPaused && pendingLogs.length > 0) {
+        // Descarrega o buffer preservando a ordem (mais antigo -> mais novo)
+        pendingLogs.forEach(entry => {
+          prependLogRow(entry);
+          updateLogStat(entry.nivel);
+        });
+        pendingLogs = [];
+      }
+
+      showToast(logsPaused ? 'Streaming pausado' : 'Streaming retomado');
+    });
+  }
+  if (elements.btnLogsPrevPage) {
+    elements.btnLogsPrevPage.addEventListener('click', () => {
+      if (logsPagination.page > 1) {
+        logsPagination.page--;
+        loadLogs();
+      }
+    });
+  }
+  if (elements.btnLogsNextPage) {
+    elements.btnLogsNextPage.addEventListener('click', () => {
+      if (logsPagination.page < logsPagination.totalPages) {
+        logsPagination.page++;
+        loadLogs();
+      }
+    });
+  }
+
+  // Delegação para botões de detalhe do log
+  if (elements.logsTbody) {
+    elements.logsTbody.addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-action="log-detail"]');
+      if (btn) openLogDetailModal(btn);
+    });
+  }
+
+  // Copiar contexto do modal de log
+  if (elements.btnCopyLogContext) {
+    elements.btnCopyLogContext.addEventListener('click', () => {
+      const texto = elements.logDetailContexto?.textContent || '';
+      if (texto) {
+        navigator.clipboard.writeText(texto)
+          .then(() => showToast('Contexto copiado!'))
+          .catch(() => showToast('Erro ao copiar', 'error'));
+      }
+    });
+  }
+
+  // ============================================================================
+  // ABA USUÁRIOS E PERMISSÕES (Admin only)
+  // ============================================================================
+
+  async function loadUsers() {
+    if (!elements.usersTbody) return;
+
+    try {
+      const res = await api('/api/v1/auth/users'); // endpoint a criar no backend
+      usersList = res.data || [];
+      renderUsers();
+    } catch (err) {
+      console.error('[users] Erro ao carregar:', err);
+      elements.usersTbody.innerHTML = `
+        <tr>
+          <td colspan="7" class="text-center py-8 text-danger">
+            Falha ao carregar usuários: ${escapeHtml(err.message)}
+          </td>
+        </tr>
+      `;
+    }
+  }
+
+  function renderUsers() {
+    if (!elements.usersTbody) return;
+
+    if (usersList.length === 0) {
+      elements.usersTbody.innerHTML = `
+        <tr>
+          <td colspan="7" class="text-center py-8 text-muted">Nenhum usuário cadastrado.</td>
+        </tr>
+      `;
+      return;
+    }
+
+    elements.usersTbody.innerHTML = usersList.map(u => {
+      const roleBadge = u.role === 'admin' ? 'badge-primary' : (u.role === 'operador' ? 'badge-info' : 'badge-secondary');
+      const statusBadge = u.status === 'ativo' ? 'badge-open' : (u.status === 'bloqueado' ? 'badge-close' : 'badge-warning');
+      const statusLabel = u.status === 'ativo' ? 'Ativo' : (u.status === 'bloqueado' ? 'Bloqueado' : u.status);
+
+      return `
+        <tr>
+          <td>${escapeHtml(u.nome || '-')}</td>
+          <td>${escapeHtml(u.email || '-')}</td>
+          <td><span class="badge ${roleBadge}">${u.role}</span></td>
+          <td><span class="badge ${statusBadge}">${statusLabel}</span></td>
+          <td>${u.cliente_id ? `<code>${escapeHtml(u.cliente_id)}</code>` : '<span class="text-muted">Global</span>'}</td>
+          <td class="text-muted text-xs">${u.ultimo_acesso ? formatDateTime(u.ultimo_acesso) : '-'}</td>
+          <td>
+            <div class="cell-actions">
+              <button class="btn btn-sm btn-secondary" data-action="edit-user" data-id="${u.id}">Editar</button>
+              <button class="btn btn-sm btn-danger" data-action="delete-user" data-id="${u.id}">Excluir</button>
+            </div>
+          </td>
+        </tr>
+      `;
+    }).join('');
+  }
+
+  async function loadPermissionsMatrix() {
+    if (!elements.permissionsMatrix) return;
+
+    try {
+      const res = await api('/api/v1/permissoes/list');
+      const permissoes = res.data || [];
+
+      const recursos = ['instances', 'financeiro', 'modelos', 'conhecimento', 'logs', 'usuarios', 'settings'];
+      const acoes = ['create', 'read', 'update', 'delete', 'execute'];
+      const roles = ['admin', 'operador', 'visualizador'];
+
+      // Build matrix
+      permissionsMatrix = {};
+      for (const role of roles) {
+        permissionsMatrix[role] = {};
+        for (const recurso of recursos) {
+          permissionsMatrix[role][recurso] = {};
+          for (const acao of acoes) {
+            const found = permissoes.find(p => p.role === role && p.recurso === recurso && p.acao === acao);
+            permissionsMatrix[role][recurso][acao] = found ? found.permitido : false;
+          }
+        }
+      }
+
+      renderPermissionsMatrix(recursos, acoes, roles);
+    } catch (err) {
+      console.error('[perms] Erro ao carregar matriz:', err);
+    }
+  }
+
+  function renderPermissionsMatrix(recursos, acoes, roles) {
+    if (!elements.permissionsMatrix) return;
+
+    let html = `
+      <div class="matrix-header">
+        <div class="matrix-cell matrix-corner">Role \ Recurso</div>
+        ${acoes.map(a => `<div class="matrix-cell matrix-action" data-action="${a}">${capitalizeFirst(a)}</div>`).join('')}
+      </div>
+    `;
+
+    for (const role of roles) {
+      for (const recurso of recursos) {
+        html += `
+          <div class="matrix-row" data-role="${role}" data-recurso="${recurso}">
+            <div class="matrix-cell matrix-role">${role === 'admin' ? '🔑 ' : ''}${capitalizeFirst(role)}</div>
+            ${acoes.map(acao => {
+              const permitido = permissionsMatrix[role]?.[recurso]?.[acao] === true;
+              const isAdmin = role === 'admin';
+              return `
+                <div class="matrix-cell matrix-checkbox">
+                  <label class="switch switch-sm">
+                    <input type="checkbox" ${permitido ? 'checked' : ''} ${isAdmin ? 'disabled' : ''}
+                           data-role="${role}" data-recurso="${recurso}" data-acao="${acao}">
+                    <span class="slider"></span>
+                  </label>
+                </div>
+              `;
+            }).join('')}
+          </div>
+        `;
+      }
+    }
+
+    elements.permissionsMatrix.innerHTML = html;
+
+    // Event listeners para checkboxes
+    elements.permissionsMatrix.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+      cb.addEventListener('change', async (e) => {
+        const { role, recurso, acao } = e.target.dataset;
+        const permitido = e.target.checked;
+
+        try {
+          await api('/api/v1/permissoes', {
+            method: 'POST',
+            body: JSON.stringify({ role, recurso, acao, permitido })
+          });
+          showToast(`Permissão ${role}.${recurso}.${acao} = ${permitido}`);
+          loadPermissionsMatrix();
+        } catch (err) {
+          showToast(`Erro: ${err.message}`, 'error');
+          loadPermissionsMatrix(); // Reverte visual
+        }
+      });
+    });
+  }
+
+  function capitalizeFirst(str) {
+    return str.charAt(0).toUpperCase() + str.slice(1);
+  }
+
+  async function loadMyPermissions() {
+    if (!elements.myPermissionsDisplay) return;
+
+    try {
+      const res = await api('/api/v1/permissoes/matrix');
+      if (res.success && res.data) {
+        myPermissions = res.data;
+        renderMyPermissions(res.data, res.role, res.isAdmin);
+      }
+    } catch (err) {
+      console.error('[myperms] Erro:', err);
+    }
+  }
+
+  function renderMyPermissions(matrix, role, isAdmin) {
+    if (!elements.myPermissionsDisplay) return;
+
+    let html = `<div class="permissions-summary">`;
+    html += `<p class="text-sm mb-2"><strong>Role atual:</strong> <span class="badge ${isAdmin ? 'badge-primary' : 'badge-info'}">${role}${isAdmin ? ' (acesso total)' : ''}</span></p>`;
+
+    if (isAdmin) {
+      html += '<p class="text-success">Você tem acesso total a todos os recursos e ações.</p>';
+    } else {
+      html += '<table class="table text-xs"><thead><tr><th>Recurso</th><th>Criar</th><th>Ler</th><th>Atualizar</th><th>Excluir</th><th>Executar</th></tr></thead><tbody>';
+      for (const [recurso, acoes] of Object.entries(matrix)) {
+        html += `<tr>
+          <td><strong>${capitalizeFirst(recurso)}</strong></td>
+          <td>${acoes.create ? '<span class="badge badge-success">✓</span>' : '<span class="badge badge-muted">✗</span>'}</td>
+          <td>${acoes.read ? '<span class="badge badge-success">✓</span>' : '<span class="badge badge-muted">✗</span>'}</td>
+          <td>${acoes.update ? '<span class="badge badge-success">✓</span>' : '<span class="badge badge-muted">✗</span>'}</td>
+          <td>${acoes.delete ? '<span class="badge badge-success">✓</span>' : '<span class="badge badge-muted">✗</span>'}</td>
+          <td>${acoes.execute ? '<span class="badge badge-success">✓</span>' : '<span class="badge badge-muted">✗</span>'}</td>
+        </tr>`;
+      }
+      html += '</tbody></table>';
+    }
+    html += '</div>';
+    elements.myPermissionsDisplay.innerHTML = html;
+  }
+
+  async function openUserModal(userId = null) {
+    elements.formUser.reset();
+    elements.userId.value = '';
+    elements.userPasswordHint.textContent = 'Obrigatório para novo usuário';
+    elements.userPassword.required = true;
+    elements.modalUserTitle.textContent = 'Cadastrar Usuário';
+
+    // Popula dropdown de clientes
+    if (elements.userCliente) {
+      elements.userCliente.innerHTML = '<option value="">Nenhum (acesso global conforme role)</option>';
+      instances.forEach(inst => {
+        const opt = document.createElement('option');
+        opt.value = inst.id;
+        opt.textContent = `${inst.nome || inst.id} (${inst.id})`;
+        elements.userCliente.appendChild(opt);
+      });
+    }
+
+    if (userId) {
+      const user = usersList.find(u => u.id === userId);
+      if (!user) return;
+
+      elements.modalUserTitle.textContent = 'Editar Usuário';
+      elements.userId.value = user.id;
+      elements.userNome.value = user.nome || '';
+      elements.userEmail.value = user.email || '';
+      elements.userRole.value = user.role || 'operador';
+      elements.userCliente.value = user.cliente_id || '';
+      elements.userAtivo.checked = user.status === 'ativo';
+      elements.userTelefone.value = user.telefone || '';
+      elements.userDataNascimento.value = user.nascimento ? user.nascimento.slice(0,10) : '';
+      elements.userPasswordHint.textContent = 'Deixe em branco para não alterar';
+      elements.userPassword.required = false;
+      // CPF não é editável aqui por segurança (mostrar mascarado)
+    }
+
+    openModal(elements.modalUser);
+  }
+
+  async function saveUser(e) {
+    e.preventDefault();
+
+    const id = elements.userId.value;
+    const isEdit = !!id;
+
+    const payload = {
+      nome: elements.userNome.value.trim(),
+      email: elements.userEmail.value.trim().toLowerCase(),
+      cpf: elements.userCpf.value.replace(/\D/g, ''),
+      telefone: elements.userTelefone.value.trim(),
+      role: elements.userRole.value,
+      cliente_id: elements.userCliente.value || null,
+      ativo: elements.userAtivo.checked,
+      data_nascimento: elements.userDataNascimento.value || null,
+      password: elements.userPassword.value,
+      aceitou_termos: elements.userAceitouTermos.checked,
+      aceitou_privacidade: elements.userAceitouTermos.checked
+    };
+
+    // Validações básicas
+    if (!payload.nome || payload.nome.split(/\s+/).length < 2) {
+      return showToast('Nome completo obrigatório', 'error');
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(payload.email)) {
+      return showToast('E-mail inválido', 'error');
+    }
+    if (!auth.validateCpf(payload.cpf)) {
+      return showToast('CPF inválido', 'error');
+    }
+    if (!isEdit && payload.password.length < 8) {
+      return showToast('Senha deve ter no mínimo 8 caracteres', 'error');
+    }
+
+    elements.btnSaveUser.disabled = true;
+    elements.btnSaveUser.textContent = 'Salvando...';
+
+    try {
+      const url = isEdit ? `/api/v1/auth/users/${id}` : '/api/v1/auth/register';
+      const method = isEdit ? 'PUT' : 'POST';
+
+      await api(url, { method, body: JSON.stringify(payload) });
+
+      showToast(isEdit ? 'Usuário atualizado!' : 'Usuário criado!');
+      closeModal(elements.modalUser);
+      loadUsers();
+    } catch (err) {
+      showToast(`Erro: ${err.message}`, 'error');
+    } finally {
+      elements.btnSaveUser.disabled = false;
+      elements.btnSaveUser.textContent = 'Salvar Usuário';
+    }
+  }
+
+  async function deleteUser(id) {
+    if (!confirm('Deseja realmente excluir este usuário?')) return;
+
+    try {
+      await api(`/api/v1/auth/users/${id}`, { method: 'DELETE' });
+      showToast('Usuário excluído');
+      loadUsers();
+    } catch (err) {
+      showToast(`Erro: ${err.message}`, 'error');
+    }
+  }
+
+  // Event Listeners Usuários
+  if (elements.btnNewUser) {
+    elements.btnNewUser.addEventListener('click', () => openUserModal(null));
+  }
+  if (elements.formUser) {
+    elements.formUser.addEventListener('submit', saveUser);
+  }
+  if (elements.usersTbody) {
+    elements.usersTbody.addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-action]');
+      if (!btn) return;
+      const { action, id } = btn.dataset;
+      if (action === 'edit-user') openUserModal(id);
+      else if (action === 'delete-user') deleteUser(id);
+    });
+  }
+
+  // ============================================================================
+  // ATUALIZAÇÃO DA NAVEGAÇÃO DE ABAS
+  // ============================================================================
+
+  // Navegação de abas (inclui logs e usuários)
+  function switchPageTab(targetTabId) {
+    activePageTab = targetTabId;
+    elements.pageTabs.forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.pageTab === targetTabId);
+    });
+    elements.pageContents.forEach(content => {
+      content.classList.toggle('active', content.id === targetTabId);
+    });
+
+    // Mostra/esconde aba de usuários baseada no role
+    if (elements.tabUsuariosBtn) {
+      // Será mostrado apenas para admins via loadMyPermissions
+    }
+
+    if (targetTabId === 'tab-financeiro') {
+      loadFinanceData();
+    } else if (targetTabId === 'tab-ia' || targetTabId === 'tab-modelos') {
+      if (activeIaSubTab === 'subtab-conhecimento') {
+        loadKnowledge(knowledgePagination.page || 1);
+      } else {
+        loadModels();
+      }
+    } else if (targetTabId === 'tab-logs') {
+      loadLogs();
+      loadLogStats();
+      loadLogOrigens();
+      connectLogStream();
+    } else if (targetTabId === 'tab-usuarios') {
+      loadMyPermissions().then(() => {
+        if (myPermissions.isAdmin) {
+          elements.tabUsuariosBtn.style.display = 'inline-flex';
+          loadUsers();
+          loadPermissionsMatrix();
+        } else {
+          elements.tabUsuariosBtn.style.display = 'none';
+          showToast('Acesso restrito a administradores', 'error');
+          switchPageTab('tab-instancias');
+        }
+      });
+    }
+  }
+
+  // Cleanup ao trocar de aba
+  // Adiciona cleanup de SSE ao sair da aba logs
+  const tabsContainer = document.querySelector('.page-nav');
+  if (tabsContainer) {
+    tabsContainer.addEventListener('click', (e) => {
+      const btn = e.target.closest('.page-tab');
+      if (btn && btn.dataset.pageTab !== 'tab-logs' && logEventSource) {
+        logEventSource.close();
+        logEventSource = null;
+      }
     });
   }
 

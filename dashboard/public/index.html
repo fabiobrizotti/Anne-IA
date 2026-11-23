@@ -4,16 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Anne-IA — Gestão de Instâncias</title>
-  <script>
-    (function() {
-      try {
-        var saved = localStorage.getItem('anne_theme');
-        var prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
-        var theme = saved ? saved : (prefersDark ? 'dark' : 'light');
-        document.documentElement.setAttribute('data-theme', theme);
-      } catch (e) {}
-    })();
-  </script>
+  <script src="theme-init.js"></script>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -64,6 +55,14 @@
       <button class="page-tab" data-page-tab="tab-ia">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm0 18a8 8 0 1 1 8-8 8 8 0 0 1-8 8z"/><path d="M12 6v6l4 2"/></svg>
         Inteligência Artificial (IA)
+      </button>
+      <button class="page-tab" data-page-tab="tab-logs">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16"/><path d="M4 12h16"/><path d="M4 17h16"/><line x1="12" y1="2" x2="12" y2="22"/></svg>
+        Logs do Sistema
+      </button>
+      <button class="page-tab" data-page-tab="tab-usuarios" id="tab-usuarios-btn" style="display: none;">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        Usuários e Permissões
       </button>
     </nav>
 
@@ -457,6 +456,162 @@
         </main>
       </div>
     </div>
+  </div>
+
+  <!-- ABA 4: Logs do Sistema -->
+  <div id="tab-logs" class="page-content">
+    <div class="logs-header">
+      <h2>Logs do Sistema em Tempo Real</h2>
+      <div class="logs-stats">
+        <span class="badge badge-critical" id="log-stat-critical" data-label="crítico" title="Eventos críticos nas últimas 24h">0</span>
+        <span class="badge badge-error" id="log-stat-error" data-label="erro" title="Erros nas últimas 24h">0</span>
+        <span class="badge badge-warn" id="log-stat-warn" data-label="aviso" title="Avisos nas últimas 24h">0</span>
+        <span class="badge badge-info" id="log-stat-info" data-label="info" title="Eventos informativos nas últimas 24h">0</span>
+        <span class="badge badge-debug" id="log-stat-debug" data-label="debug" title="Eventos de depuração nas últimas 24h">0</span>
+      </div>
+    </div>
+    <div class="logs-filters">
+      <div class="filter-group">
+        <label for="log-filter-nivel" class="visually-hidden">Filtrar por nível</label>
+        <select id="log-filter-nivel" class="search-field">
+          <option value="">Todos os níveis</option>
+          <option value="critical">Crítico</option>
+          <option value="error">Erro</option>
+          <option value="warn">Aviso</option>
+          <option value="info">Info</option>
+          <option value="debug">Debug</option>
+        </select>
+      </div>
+      <div class="filter-group">
+        <label for="log-filter-origem" class="visually-hidden">Filtrar por origem</label>
+        <select id="log-filter-origem" class="search-field">
+          <option value="">Todas as origens</option>
+        </select>
+      </div>
+      <div class="filter-group">
+        <label for="log-filter-busca" class="visually-hidden">Buscar mensagem</label>
+        <input type="text" id="log-filter-busca" placeholder="Buscar na mensagem..." class="search-field">
+      </div>
+      <div class="filter-group">
+        <label for="log-filter-periodo" class="visually-hidden">Período</label>
+        <select id="log-filter-periodo" class="search-field">
+          <option value="24h">Últimas 24h</option>
+          <option value="1h">Última hora</option>
+          <option value="7d">Últimos 7 dias</option>
+          <option value="30d">Últimos 30 dias</option>
+        </select>
+      </div>
+      <div class="filter-actions">
+        <button id="log-btn-export" class="btn btn-secondary btn-sm" title="Exportar logs filtrados">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          Exportar
+        </button>
+        <button id="log-btn-clear-cache" class="btn btn-secondary btn-sm" title="Limpar cache local (não apaga do banco)">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+          Limpar Cache
+        </button>
+        <button id="log-btn-pause" class="btn btn-secondary btn-sm" title="Pausar/Retomar streaming tempo real">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+          <span id="log-pause-text">Pausar</span>
+        </button>
+      </div>
+    </div>
+    <main class="card table-card">
+      <div class="table-responsive">
+        <table class="table logs-table">
+          <thead>
+            <tr>
+              <th class="col-timestamp">Timestamp</th>
+              <th class="col-nivel">Nível</th>
+              <th class="col-origem">Origem</th>
+              <th>Mensagem</th>
+              <th class="col-contexto">Contexto</th>
+            </tr>
+          </thead>
+          <tbody id="logs-tbody">
+            <tr>
+              <td colspan="5" class="text-center py-8 text-muted">Carregando logs...</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="table-footer-pagination">
+        <span id="logs-pagination-info" class="text-xs text-muted">Mostrando 0 de 0 logs</span>
+        <div class="logs-pagination-controls">
+          <button id="btn-logs-prev-page" class="btn btn-xs btn-secondary" disabled>Anterior</button>
+          <span id="logs-pagination-current" class="text-xs font-mono logs-page-indicator">Pág 1</span>
+          <button id="btn-logs-next-page" class="btn btn-xs btn-secondary" disabled>Próxima</button>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- ABA 5: Usuários e Permissões (Admin only) -->
+  <div id="tab-usuarios" class="page-content">
+    <div class="tab-header">
+      <h2>Gestão de Usuários e Permissões</h2>
+      <p class="subtitle text-sm">Administre usuários do dashboard, roles e matriz de permissões por recurso.</p>
+    </div>
+
+    <!-- Seção: Lista de Usuários -->
+    <main class="card table-card mb-4">
+      <div class="table-header">
+        <h3>Usuários Cadastrados</h3>
+        <button id="btn-new-user" class="btn btn-primary">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          Novo Usuário
+        </button>
+      </div>
+      <div class="table-responsive">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Nome</th>
+              <th>E-mail</th>
+              <th>Role</th>
+              <th>Status</th>
+              <th>Cliente/Vínculo</th>
+              <th>Último Acesso</th>
+              <th class="text-right">Ações</th>
+            </tr>
+          </thead>
+          <tbody id="users-tbody">
+            <tr>
+              <td colspan="7" class="text-center py-8 text-muted">Carregando usuários...</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </main>
+
+    <!-- Seção: Matriz de Permissões -->
+    <main class="card table-card mb-4">
+      <div class="table-header">
+        <h3>Matriz de Permissões por Role</h3>
+        <p class="subtitle text-xs">Configure quais ações cada role pode executar em cada recurso.</p>
+      </div>
+      <div class="permissions-matrix" id="permissions-matrix">
+        <div class="matrix-header">
+          <div class="matrix-cell matrix-corner">Role \ Recurso</div>
+          <div class="matrix-cell matrix-action" data-action="create">Criar</div>
+          <div class="matrix-cell matrix-action" data-action="read">Ler</div>
+          <div class="matrix-cell matrix-action" data-action="update">Atualizar</div>
+          <div class="matrix-cell matrix-action" data-action="delete">Excluir</div>
+          <div class="matrix-cell matrix-action" data-action="execute">Executar</div>
+        </div>
+        <!-- Linhas geradas via JS -->
+      </div>
+    </main>
+
+    <!-- Seção: Permissões do Usuário Atual -->
+    <main class="card table-card">
+      <div class="table-header">
+        <h3>Minhas Permissões Efetivas</h3>
+      </div>
+      <div id="my-permissions-display" class="permissions-display">
+        <p class="text-muted text-sm">Carregando...</p>
+      </div>
+    </main>
   </div>
 
   <!-- Modal: Ficha do Cliente / Instância -->
@@ -1098,6 +1253,122 @@
       </div>
       <div class="modal-footer">
         <button type="button" class="btn btn-secondary" data-close="modal-billing-client">Fechar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Novo/Editar Usuário (Admin only) -->
+  <div id="modal-user" class="modal-backdrop hidden">
+    <div class="modal modal-md">
+      <div class="modal-header">
+        <div>
+          <h3 id="modal-user-title">Cadastrar Usuário</h3>
+          <p class="subtitle text-sm">Crie um novo operador ou visualizador para o dashboard.</p>
+        </div>
+        <button class="btn-close" data-close="modal-user">&times;</button>
+      </div>
+      <form id="form-user">
+        <input type="hidden" id="user-id">
+        <div class="modal-body">
+          <div class="form-row">
+            <div class="form-group flex-1">
+              <label for="user-nome">Nome Completo *</label>
+              <input type="text" id="user-nome" required class="input" placeholder="Ex: João Silva">
+            </div>
+            <div class="form-group flex-1">
+              <label for="user-email">E-mail Corporativo *</label>
+              <input type="email" id="user-email" required class="input" placeholder="joao@empresa.com">
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group flex-1">
+              <label for="user-cpf">CPF *</label>
+              <input type="text" id="user-cpf" required class="input" placeholder="000.000.000-00" maxlength="14">
+            </div>
+            <div class="form-group flex-1">
+              <label for="user-telefone">Telefone</label>
+              <input type="tel" id="user-telefone" class="input" placeholder="(11) 99999-9999">
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group flex-1">
+              <label for="user-role">Role *</label>
+              <select id="user-role" required class="input">
+                <option value="visualizador">Visualizador</option>
+                <option value="operador" selected>Operador</option>
+                <option value="admin">Administrador</option>
+              </select>
+            </div>
+            <div class="form-group flex-1">
+              <label for="user-cliente">Vincular a Cliente (Tenant)</label>
+              <select id="user-cliente" class="input">
+                <option value="">Nenhum (acesso global conforme role)</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-group">
+            <label for="user-password">Senha * (mín. 8 caracteres)</label>
+            <input type="password" id="user-password" class="input" placeholder="Deixe em branco para não alterar (edição)">
+            <small class="field-hint" id="user-password-hint">Obrigatório para novo usuário</small>
+          </div>
+          <div class="form-group">
+            <label for="user-data-nascimento">Data de Nascimento</label>
+            <input type="date" id="user-data-nascimento" class="input">
+          </div>
+          <div class="form-group">
+            <label class="switch-row">
+              <input type="checkbox" id="user-ativo" checked>
+              <span>Usuário ativo</span>
+            </label>
+          </div>
+          <div class="form-group">
+            <label class="switch-row">
+              <input type="checkbox" id="user-aceitou-termos" required>
+              <span>Li e aceito os <a href="#" data-legal="termos_uso">Termos de Uso</a> e <a href="#" data-legal="politica_privacidade">Política de Privacidade</a></span>
+            </label>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-close="modal-user">Cancelar</button>
+          <button type="submit" class="btn btn-primary" id="btn-save-user">Salvar Usuário</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Detalhes de Log (Contexto Expandido) -->
+  <div id="modal-log-detail" class="modal-backdrop hidden">
+    <div class="modal modal-lg">
+      <div class="modal-header">
+        <div>
+          <div class="modal-header-top">
+            <h3 id="log-detail-title">Detalhes do Log</h3>
+            <span id="log-detail-nivel-badge" class="badge">--</span>
+          </div>
+          <p id="log-detail-meta" class="subtitle text-xs">Origem: -- | Timestamp: --</p>
+        </div>
+        <button class="btn-close" data-close="modal-log-detail">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="ficha-readonly-banner mb-3">
+          <div>
+            <span class="ficha-label">Mensagem:</span>
+            <pre id="log-detail-mensagem" class="ficha-code" style="white-space: pre-wrap; font-family: inherit; font-size: 0.875rem;">--</pre>
+          </div>
+        </div>
+        <div class="form-group">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+            <label class="ficha-label">Contexto Completo (JSON):</label>
+            <button type="button" id="btn-copy-log-context" class="btn btn-xs btn-primary">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+              Copiar JSON
+            </button>
+          </div>
+          <pre id="log-detail-contexto" class="prompt-view-code font-mono text-xs" style="max-height: 300px; overflow-y: auto;">{}</pre>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-close="modal-log-detail">Fechar</button>
       </div>
     </div>
   </div>

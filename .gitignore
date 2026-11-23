@@ -56,3 +56,9 @@ vulnerabilities/
 *.sarif
 
 
+
+# Backups e logs operacionais do update.sh (nunca versionar)
+backups/
+logs/
+.update.lock
+.update.lock.d/
