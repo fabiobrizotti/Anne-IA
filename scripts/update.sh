@@ -293,6 +293,23 @@ step "[5/8] Validando docker-compose.yml"
 docker compose config -q || { git reset --hard "${PREV_REV}" >/dev/null 2>&1; die "docker-compose.yml inválido — código revertido para ${PREV_SHORT}"; }
 ok "compose válido"
 
+# Validações extras para Nginx e PgBouncer (se existirem no compose)
+if docker compose config --services | grep -q '^nginx$'; then
+  if docker compose exec -T nginx nginx -t >/dev/null 2>&1; then
+    ok "nginx -t válido"
+  else
+    warn "nginx -t falhou — nginx pode não subir corretamente"
+  fi
+fi
+
+if docker compose config --services | grep -q '^pgbouncer$'; then
+  if docker compose exec -T pgbouncer pg_isready -h 127.0.0.1 -p 6432 >/dev/null 2>&1; then
+    ok "pgbouncer healthcheck ok"
+  else
+    warn "pgbouncer healthcheck falhou — pgbouncer pode não estar pronto"
+  fi
+fi
+
 # ------------------------------------------------------------------------------
 # SCHEMA
 # ------------------------------------------------------------------------------
@@ -310,6 +327,21 @@ else
   ok "init.sql sem mudanças — schema não reaplicado"
 fi
 
+# Atualiza senhas das roles pgbouncer_app e pgbouncer_admin no banco anneia
+# (init.sql cria as roles com senha placeholder; aqui definimos as reais do .env)
+PGBOUNCER_APP_PASSWORD="$(env_get PGBOUNCER_PASSWORD)"
+PGBOUNCER_ADMIN_PASSWORD="$(env_get PGBOUNCER_ADMIN_PASSWORD)"
+if [[ -n "${PGBOUNCER_APP_PASSWORD}" && -n "${PGBOUNCER_ADMIN_PASSWORD}" ]]; then
+  if docker compose exec -T db-evolution psql -U "${PG_USER}" -d anneia -v ON_ERROR_STOP=1 \
+    -c "ALTER ROLE pgbouncer_app PASSWORD '${PGBOUNCER_APP_PASSWORD}'; ALTER ROLE pgbouncer_admin PASSWORD '${PGBOUNCER_ADMIN_PASSWORD}';" >/dev/null 2>&1; then
+    ok "Senhas das roles PgBouncer atualizadas no banco anneia"
+  else
+    warn "Falha ao atualizar senhas das roles PgBouncer (continuando)"
+  fi
+else
+  warn "PGBOUNCER_PASSWORD ou PGBOUNCER_ADMIN_PASSWORD não definidos — roles com senha placeholder"
+fi
+
 # ------------------------------------------------------------------------------
 # APLICAR
 # ------------------------------------------------------------------------------
@@ -325,6 +357,27 @@ fi
 
 docker compose up -d --remove-orphans || die "docker compose up falhou"
 ok "containers aplicados"
+
+# Nginx resolve os upstreams (DNS) apenas no boot: sem este restart, serviços
+# recriados com IP novo ficam em 502 até alguém reiniciar o nginx manualmente.
+docker compose restart nginx >/dev/null 2>&1 || warn "restart nginx falhou"
+
+# Atualiza NGINX_TRUST_PROXY_IP no .env com o IP real do container nginx na rede frontend
+if docker compose config --services | grep -q '^nginx$'; then
+  NGINX_IP=$(docker compose exec -T nginx sh -c 'ip route get 1.1.1.1 | awk "{print \$7}"' 2>/dev/null | tr -d '\r')
+  if [[ -n "${NGINX_IP}" && "${NGINX_IP}" != "1.1.1.1" ]]; then
+    if grep -qE '^NGINX_TRUST_PROXY_IP=' "${ENV_FILE}"; then
+      sed -i "s|^NGINX_TRUST_PROXY_IP=.*|NGINX_TRUST_PROXY_IP=${NGINX_IP}|" "${ENV_FILE}"
+    else
+      printf 'NGINX_TRUST_PROXY_IP=%s\n' "${NGINX_IP}" >> "${ENV_FILE}"
+    fi
+    ok "NGINX_TRUST_PROXY_IP atualizado para ${NGINX_IP} no .env"
+    # Reinicia dashboard para pegar o novo trust proxy
+    docker compose restart dashboard >/dev/null 2>&1 || warn "restart dashboard falhou"
+  else
+    warn "não foi possível obter IP do container nginx"
+  fi
+fi
 
 # ------------------------------------------------------------------------------
 # GATE + ROLLBACK

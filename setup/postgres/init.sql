@@ -1060,5 +1060,144 @@ BEGIN
 END $$;
 
 
+-- ============================================================================
+-- PGBOUNCER - ROLES E SCHEMA DE AUTENTICAÇÃO (IDEMPOTENTE)
+-- ============================================================================
+-- Provisiona roles e schema para o PgBouncer connection pooler.
+-- Executado no banco `anneia` (schema de negócio).
+-- As senhas são definidas via variáveis de ambiente injetadas pelo update.sh
+-- ============================================================================
+
+-- 1. Schema dedicado para objetos do PgBouncer
+-- Usa o role 'evolution' que ja existe no container db-evolution
+-- Caso o role postgres nao exista, usa o role evolution como owner
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'postgres') THEN
+    EXECUTE 'CREATE SCHEMA IF NOT EXISTS pgbouncer AUTHORIZATION postgres';
+  ELSE
+    EXECUTE 'CREATE SCHEMA IF NOT EXISTS pgbouncer AUTHORIZATION evolution';
+  END IF;
+END $$;
+
+-- 2. Role de aplicação (usado pelo Dashboard)
+-- A senha será definida via ALTER ROLE pelo update.sh
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'pgbouncer_app') THEN
+    CREATE ROLE pgbouncer_app
+      LOGIN
+      PASSWORD 'changeme'
+      NOINHERIT
+      CONNECTION LIMIT 50;
+    RAISE NOTICE 'Role pgbouncer_app criada';
+  ELSE
+    RAISE NOTICE 'Role pgbouncer_app já existe';
+  END IF;
+END $$;
+
+-- 3. Role admin (para console admin do PgBouncer: SHOW POOLS, SHOW STATS, etc.)
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'pgbouncer_admin') THEN
+    CREATE ROLE pgbouncer_admin
+      LOGIN
+      PASSWORD 'changeme'
+      NOINHERIT
+      CONNECTION LIMIT 5;
+    RAISE NOTICE 'Role pgbouncer_admin criada';
+  ELSE
+    RAISE NOTICE 'Role pgbouncer_admin já existe';
+  END IF;
+END $$;
+
+-- 4. Role para auth_query (opcional, mantida para flexibilidade futura)
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'pgbouncer_auth') THEN
+    CREATE ROLE pgbouncer_auth
+      NOLOGIN
+      NOINHERIT;
+    RAISE NOTICE 'Role pgbouncer_auth criada';
+  END IF;
+END $$;
+
+-- 4. Role para auth_query (opcional, mantida para flexibilidade futura)
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'pgbouncer_auth') THEN
+    CREATE ROLE pgbouncer_auth
+      NOLOGIN
+      NOINHERIT;
+    RAISE NOTICE 'Role pgbouncer_auth criada';
+  END IF;
+END $$;
+
+-- 5. Função get_auth para auth_query (opcional)
+-- Prisma (Evolution API) tem problemas conhecidos com auth_query; usando userlist.txt por enquanto.
+CREATE OR REPLACE FUNCTION pgbouncer.get_auth(p_username TEXT)
+RETURNS TABLE (usename TEXT, passwd TEXT)
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pgbouncer, pg_catalog
+AS $$
+BEGIN
+  IF p_username NOT IN ('pgbouncer_app', 'pgbouncer_admin') THEN
+    RETURN QUERY SELECT NULL::TEXT, NULL::TEXT;
+  END IF;
+
+  RETURN QUERY
+  SELECT rolname::TEXT,
+         rolpassword::TEXT
+  FROM pg_authid
+  WHERE rolname = p_username
+    AND rolcanlogin;
+END;
+$$;
+
+-- 6. Permissões para pgbouncer_auth executar get_auth
+GRANT EXECUTE ON FUNCTION pgbouncer.get_auth(TEXT) TO pgbouncer_auth;
+
+-- 7. Permissões nas tabelas de negócio para pgbouncer_app
+GRANT USAGE ON SCHEMA public TO pgbouncer_app;
+-- Tabelas específicas (idempotente - ignora se não existirem)
+DO $$
+DECLARE
+  t TEXT;
+BEGIN
+  FOR t IN SELECT tablename FROM pg_tables WHERE schemaname = 'public'
+  LOOP
+    EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON %I TO pgbouncer_app', t);
+  END LOOP;
+END $$;
+-- Permissões em SEQUENCES (necessário para colunas BIGSERIAL/SERIAL em INSERTs)
+-- Idempotente: ignora sequences que não existem
+DO $$
+DECLARE
+  s TEXT;
+BEGIN
+  FOR s IN SELECT sequence_name FROM information_schema.sequences WHERE sequence_schema = 'public'
+  LOOP
+    EXECUTE format('GRANT USAGE, SELECT ON SEQUENCE %I TO pgbouncer_app', s);
+  END LOOP;
+END $$;
+-- Default privileges para futuras tabelas/sequences criadas no schema public
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO pgbouncer_app;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO pgbouncer_app;
+
+-- 8. Configurações de proteção no Postgres para roles do PgBouncer
+-- Evita que uma transação travada segure o pool inteiro.
+ALTER ROLE pgbouncer_app SET idle_in_transaction_session_timeout = '30s';
+ALTER ROLE pgbouncer_app SET statement_timeout = '15s';
+ALTER ROLE pgbouncer_admin SET idle_in_transaction_session_timeout = '60s';
+ALTER ROLE pgbouncer_admin SET statement_timeout = '30s';
+
+-- 9. Comentários para documentação
+COMMENT ON ROLE pgbouncer_app IS 'Role de aplicação para PgBouncer (transaction pool)';
+COMMENT ON ROLE pgbouncer_admin IS 'Role admin para console PgBouncer (session pool)';
+COMMENT ON ROLE pgbouncer_auth IS 'Role para auth_query (opcional, não usada com userlist.txt)';
+COMMENT ON FUNCTION pgbouncer.get_auth(TEXT) IS 'Retorna credenciais SCRAM para auth_query do PgBouncer';
+
+
 
 

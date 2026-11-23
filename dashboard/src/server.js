@@ -16,14 +16,15 @@ const NINE_ROUTER_URL = process.env.NINE_ROUTER_URL || 'http://9router:20000/v1'
 const NINE_ROUTER_API_KEY = process.env.NINE_ROUTER_API_KEY || process.env.NINE_ROUTER_PASSWORD || '';
 
 // Pool PostgreSQL (dimensionado para alta concorrência e proteção contra queries lentas)
+// statement_timeout removido — PgBouncer não aceita como parâmetro de startup;
+// o timeout é configurado no nível da role via ALTER ROLE ... SET statement_timeout
 let pool = null;
 if (DATABASE_URL) {
   pool = new Pool({
     connectionString: DATABASE_URL,
     max: 15,
     idleTimeoutMillis: 30000,
-    connectionTimeoutMillis: 5000,
-    statement_timeout: 15000
+    connectionTimeoutMillis: 5000
   });
   pool.on('error', (err) => {
     console.error('[db] Erro inesperado no pool do Postgres:', err.message);
@@ -66,7 +67,10 @@ if (redisRateLimit) {
 
 // Middlewares de Parsing e Segurança Defensiva
 app.disable('x-powered-by');
-app.set('trust proxy', 'loopback');
+// Trust proxy: se NGINX_TRUST_PROXY_IP definido, usa ele (IP do container Nginx na rede frontend)
+// Caso contrário, mantém 'loopback' (apenas localhost) para compatibilidade com acesso direto
+const trustProxyIp = process.env.NGINX_TRUST_PROXY_IP || 'loopback';
+app.set('trust proxy', trustProxyIp);
 app.use(express.json({ limit: '256kb' }));
 
 // Interceptação de acesso: método, rota declarada, status e latência.

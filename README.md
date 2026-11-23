@@ -109,17 +109,58 @@ docker compose start n8n
 
 ### 2.1 Acesso aos Serviços (Pós-Instalação)
 
-| Serviço | Local (localhost) | Via Tailscale (VPS) | MagicDNS (se habilitado) |
-|---------|-------------------|---------------------|--------------------------|
-| Dashboard | `http://127.0.0.1:41283` | `http://100.x.y.z:41283` | `http://anneia-vps:41283` |
-| n8n | `http://127.0.0.1:34567` | `http://100.x.y.z:34567` | `http://anneia-vps:34567` |
-| pgAdmin | `http://127.0.0.1:52841` | `http://100.x.y.z:52841` | `http://anneia-vps:52841` |
-| 9Router | `http://127.0.0.1:48192` | `http://100.x.y.z:48192` | `http://anneia-vps:48192` |
-| RabbitMQ Mgmt | `http://127.0.0.1:39271` | `http://100.x.y.z:39271` | `http://anneia-vps:39271` |
-| PostgreSQL | `psql -h 127.0.0.1 -p 5432` | `psql -h 100.x.y.z -p 5432` | `psql -h anneia-vps -p 5432` |
-| Redis | `redis-cli -h 127.0.0.1 -p 6379` | `redis-cli -h 100.x.y.z -p 6379` | `redis-cli -h anneia-vps -p 6379` |
+> **Legenda**: Porta Host = porta publicada no `127.0.0.1` (ofuscada, localhost only). Porta Container = porta interna do serviço. Acesso via Tailscale usa a **Porta Host** no IP `100.x.y.z` ou MagicDNS `anneia-vps`.
 
+| Serviço | Porta Host | Porta Container | Local (localhost) | Via Nginx na tailnet (`:80`) |
+|---------|------------|-----------------|-------------------|------------------------------|
+| Dashboard | 41283 | 3000 | `http://127.0.0.1:41283` | `http://anneia-vps/` |
+| n8n | 34567 | 34567 | `http://127.0.0.1:34567` | `http://anneia-vps/n8n/` |
+| pgAdmin | 52841 | 80 | `http://127.0.0.1:52841` | `http://anneia-vps/pgadmin/` |
+| 9Router | 48192 | 20000 | `http://127.0.0.1:48192` | — (app não suporta subpath) |
+| RabbitMQ Mgmt | 39271 | 15672 | `http://127.0.0.1:39271` | `http://anneia-vps/rabbitmq/` |
+| PostgreSQL | 5432 | 5432 | `psql -h 127.0.0.1 -p 5432` | — |
+| PgBouncer | 6432 | 6432 | `psql -h 127.0.0.1 -p 6432` | — |
+| Redis | 6379 | 6379 | `redis-cli -h 127.0.0.1 -p 6379` | — |
+| Redis n8n Queue | 6380 | 6379 | `redis-cli -h 127.0.0.1 -p 6380` | — |
+| Nginx (HTTP) | 80 | 8080 | `http://127.0.0.1:80` | `http://anneia-vps/` |
+
+> **Host header:** o `server_name` do Nginx casa com `TAILSCALE_HOSTNAME`. Testes locais por `127.0.0.1` exigem `-H "Host: ${TAILSCALE_HOSTNAME}"`; hosts desconhecidos são fechados com `444`.
 > **Evolution API:** Não exposta no host. Acesso interno via `http://evolution-api:8080` (usado pelo Dashboard e n8n).
+> **PgBouncer:** Pool de conexões Postgres (transaction mode). Dashboard e Evolution API conectam aqui; pgAdmin/pg_dump direto no Postgres.
+> **Nginx:** Reverse proxy HTTP only (sem TLS — WireGuard do Tailscale já criptografa). Bind no IP Tailscale da VPS.
+
+### 2.2 Reverse Proxy (Nginx) e Connection Pooling (PgBouncer)
+
+**Nginx** (`setup/nginx/nginx.conf.template` + `entrypoint.sh`, imagem `nginx-unprivileged`, roda como UID 101):
+
+| Rota | Upstream | Proteção |
+|------|----------|----------|
+| `/` | `dashboard:3000` | `limit_req` API + `limit_conn` 20 + SSE sem buffer em `/api/v1/logs/stream` |
+| `/api/v1/auth/login`, `/register` | `dashboard:3000` | zona `login` (5r/m, burst 3) anti-brute-force |
+| `/api/v1/conhecimento` | `dashboard:3000` | `client_max_body_size` 2m |
+| `/n8n/` | `n8n:34567` | WebSocket/SSE (`Upgrade`/`Connection`), `limit_conn` 30 |
+| `/pgadmin/` | `pgadmin:80` | `X-Script-Name: /pgadmin` (gera links com o prefixo) |
+| `/rabbitmq/` | `rabbitmq:15672` | casa com `management.path_prefix = /rabbitmq` |
+| `*` (host desconhecido) | — | `return 444` (conexão fechada) |
+
+- **Rate limit / body size** vêm do `.env` (`NGINX_RATE_LIMIT_*`, `NGINX_CLIENT_MAX_BODY_SIZE*`); o entrypoint substitui no template com `sed` (sem `envsubst`).
+- **n8n sob subpath**: `N8N_PATH=/n8n/` e `N8N_WEBHOOK_URL=http://${TAILSCALE_HOSTNAME}/n8n/` (valor interpolado pelo Compose). Consequência: webhooks internos passam a viver em `/n8n/webhook/...`.
+- **Trust proxy**: `NGINX_TRUST_PROXY_IP` é preenchido pelo `scripts/update.sh` com o IP real do container Nginx na rede `frontend` (log de auditoria do Dashboard registra o IP do cliente, não o do proxy).
+- **DNS de upstream**: o Nginx resolve os nomes no boot. Depois de recriar um backend, `docker compose restart nginx` (o `update.sh` já faz isso) — sem isso o serviço recriado fica em `502`.
+- **Testes de fumaça**: `./tests/test_proxy_smoke.sh` valida healthcheck, rate limits, `client_max_body_size`, host desconhecido, n8n, PgBouncer e reconexão do Dashboard após restart do pooler.
+
+**PgBouncer** (`setup/pgbouncer/`, `auth_type=plain` com `userlist.txt` gerado no boot):
+
+| Database (virtual) | Backend | Pool mode | Usuário |
+|--------------------|---------|-----------|---------|
+| `anneia` | `db-evolution:5432/anneia` | `transaction` | `pgbouncer_app` |
+| `anneia_session` | `db-evolution:5432/anneia` | `session` | `pgbouncer_app` |
+| `evolution` | `db-evolution:5432/evolution` | `transaction` | `evolution` |
+
+- `ignore_startup_parameters = extra_float_digits, statement_timeout` — clientes que enviam `statement_timeout` no startup não são rejeitados (o Dashboard define o timeout por query, não no pool).
+- Roles `pgbouncer_app`, `pgbouncer_admin` e `pgbouncer_auth` são criadas por `setup/postgres/init.sql` com senha placeholder; `scripts/update.sh` aplica as senhas reais do `.env` via `ALTER ROLE`.
+- O container roda como UID 70 (`postgres`): `/run/pgbouncer` é `tmpfs` com `mode=1777` — sem isso o entrypoint não consegue escrever `userlist.txt` (erro `Permission denied`, container em restart loop).
+- Evolution API usa `?pgbouncer=true` na URI (obrigatório para o Prisma em transaction mode).
 ## 3. Gestão e Sincronização de Ambiente (.env)
 A infraestrutura utiliza o `.env.example` como fonte única da verdade estrutural (schema).
 
@@ -139,6 +180,8 @@ A infraestrutura utiliza o `.env.example` como fonte única da verdade estrutura
 - `DASHBOARD_PASSWORD`: Senha do painel administrativo de instâncias (usuário: `admin`).
 - `GITHUB_TOKEN`: Formato `ghp_...` ou token pessoal para clonar os workflows no n8n-import.
 - `N8N_INSTANCE_OWNER_EMAIL`: E-mail do owner da instância n8n.
+- `PGBOUNCER_PASSWORD`: Senha do usuário de aplicação do PgBouncer (sincronizada em `CHAVE_PGBOUNCER_PASSWORD`).
+- `PGBOUNCER_ADMIN_PASSWORD`: Senha do usuário admin do PgBouncer (sincronizada em `CHAVE_PGBOUNCER_ADMIN_PASSWORD`).
 
 ## 4. Estrutura de Diretórios
 - `setup/`: Scripts de boot (versionado).
@@ -148,7 +191,7 @@ A infraestrutura utiliza o `.env.example` como fonte única da verdade estrutura
 
 ## 5. Roteamento de IA (9Router)
 O 9Router centraliza provedores de LLM e atua como gateway universal compatível com OpenAI/Anthropic:
-- **Dashboard Web**: `http://localhost:20000` (autentique com `NINE_ROUTER_PASSWORD`).
+- **Dashboard Web**: `http://127.0.0.1:48192` (autentique com `NINE_ROUTER_PASSWORD`). O 9Router não tem suporte a `basePath`, então não é publicado sob subpath no Nginx — para acesso remoto, ajuste `NINE_ROUTER_HOST_BIND` no `.env` para o IP da tailnet.
 
 > **Senha do 9Router — como funciona de verdade**
 > A imagem `decolua/9router` não lê `NINE_ROUTER_PASSWORD`: ela consulta `INITIAL_PASSWORD`
@@ -166,7 +209,7 @@ O 9Router centraliza provedores de LLM e atua como gateway universal compatível
 
 ## 6. Painel Web PostgreSQL (pgAdmin 4)
 O pgAdmin 4 oferece interface gráfica para gerenciar esquemas, tabelas e vetores (pgvector) no PostgreSQL:
-- **Acesso Web**: `http://127.0.0.1:5050` (restrito ao host local para máxima segurança).
+- **Acesso Web**: `http://127.0.0.1:52841` (host local) ou `http://anneia-vps/pgadmin/` via Nginx (o header `X-Script-Name` mantém os links sob o prefixo).
 - **Autenticação**:
   - Usuário: `PGADMIN_DEFAULT_EMAIL` (padrão: `admin@anne.ia`).
   - Senha: `PGADMIN_DEFAULT_PASSWORD` (gerada automaticamente no `.env`).

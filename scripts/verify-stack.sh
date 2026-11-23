@@ -67,7 +67,7 @@ warn() { CHECKS=$((CHECKS + 1)); printf '  \033[33m[aviso]\033[0m %s\n' "$*"; }
 # ------------------------------------------------------------------------------
 # HEALTHCHECK DO DOCKER POR SERVIÇO
 # ------------------------------------------------------------------------------
-SERVICES=(db-evolution redis rabbitmq n8n evolution-api 9router dashboard)
+SERVICES=(db-evolution redis redis-n8n-queue rabbitmq n8n n8n-worker evolution-api 9router dashboard pgbouncer nginx)
 
 service_state() {
   local svc="$1" id
@@ -129,11 +129,39 @@ check_redis() {
   fi
 }
 
+check_redis_n8n_queue() {
+  local pass
+  pass="$(env_get REDIS_N8N_QUEUE_PASSWORD)"
+  if docker compose exec -T redis-n8n-queue redis-cli -a "${pass}" --no-auth-warning ping 2>/dev/null | grep -q PONG; then
+    ok "redis-n8n-queue: PONG (policy: $(docker compose exec -T redis-n8n-queue redis-cli -a "${pass}" --no-auth-warning INFO memory 2>/dev/null | grep maxmemory_policy | cut -d: -f2 | tr -d '\r'))"
+  else
+    fail "redis-n8n-queue: sem resposta ao PING"
+  fi
+}
+
 check_rabbit() {
   if docker compose exec -T rabbitmq rabbitmq-diagnostics -q check_running >/dev/null 2>&1; then
     ok "rabbitmq: check_running ok"
   else
     fail "rabbitmq: check_running falhou"
+  fi
+}
+
+check_pgbouncer() {
+  if docker compose exec -T pgbouncer pg_isready -h 127.0.0.1 -p 6432 >/dev/null 2>&1; then
+    ok "pgbouncer: aceitando conexões em 6432"
+  else
+    fail "pgbouncer: sem resposta ao pg_isready"
+  fi
+}
+
+check_nginx() {
+  local nginx_port
+  nginx_port="$(env_get NGINX_CONTAINER_PORT 8080)"
+  if docker compose exec -T nginx wget -q --spider "http://127.0.0.1:${nginx_port}/nginx-health" >/dev/null 2>&1; then
+    ok "nginx: healthy endpoint responde"
+  else
+    fail "nginx: healthcheck falhou"
   fi
 }
 
@@ -255,7 +283,10 @@ check_services
 echo "--- dados ---"
 check_postgres
 check_redis
+check_redis_n8n_queue
 check_rabbit
+check_pgbouncer
+check_nginx
 echo "--- aplicações ---"
 check_http
 echo "--- revisão em execução ---"
