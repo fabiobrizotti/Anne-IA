@@ -1081,18 +1081,23 @@ BEGIN
 END $$;
 
 -- 2. Role de aplicação (usado pelo Dashboard)
--- A senha será definida via ALTER ROLE pelo update.sh
+-- A senha é lida da variável PGBOUNCER_PASSWORD do .env (Source of Truth).
+-- Idempotente: se o role já existir, altera a senha para o valor da .env.
+-- Se a var env não estiver definida, mantém 'changeme' como fallback.
 DO $$
+DECLARE
+  v_password TEXT := COALESCE(current_setting('PGBOUNCER_PASSWORD', true), 'changeme');
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'pgbouncer_app') THEN
     CREATE ROLE pgbouncer_app
       LOGIN
-      PASSWORD 'changeme'
+      PASSWORD v_password
       NOINHERIT
       CONNECTION LIMIT 50;
-    RAISE NOTICE 'Role pgbouncer_app criada';
+    RAISE NOTICE 'Role pgbouncer_app criada com senha da .env';
   ELSE
-    RAISE NOTICE 'Role pgbouncer_app já existe';
+    ALTER ROLE pgbouncer_app WITH PASSWORD v_password;
+    RAISE NOTICE 'Role pgbouncer_app senha atualizada da .env';
   END IF;
 END $$;
 
