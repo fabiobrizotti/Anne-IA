@@ -79,7 +79,7 @@ http {
     # Main server — bind no IP Tailscale (definido via variável de ambiente)
     server {
         listen ${NGINX_CONTAINER_PORT};
-        server_name ${TAILSCALE_HOSTNAME} localhost;
+        server_name ${TAILSCALE_HOSTNAME} localhost 127.0.0.1;
 
         # Security headers (snippet)
         include /tmp/nginx/snippets/security-headers.conf;
@@ -133,6 +133,8 @@ http {
         }
 
         # n8n — WebSocket/SSE support para editor
+        # N8N_PATH=/n8n/ está configurado no n8n; o proxy deve retirar o prefixo /n8n/
+        # ao encaminhar para o backend (proxy_pass COM barra final).
         location /n8n/ {
             # WebSocket upgrade
             proxy_http_version 1.1;
@@ -142,7 +144,7 @@ http {
             limit_req zone=api burst=${NGINX_RATE_LIMIT_BURST_API} nodelay;
             limit_conn perip 30;
             include /tmp/nginx/snippets/proxy-params.conf;
-            proxy_pass http://n8n_backend;
+            proxy_pass http://n8n_backend/;
         }
 
         # pgAdmin — o header X-Script-Name faz o app gerar links com o prefixo

@@ -50,6 +50,9 @@ env_get() {
   local key="$1" default="${2:-}"
   local val
   val="$(grep -E "^${key}=" "${ENV_FILE}" | head -1 | cut -d= -f2- || true)"
+  # Remove trailing comment and whitespace
+  val="${val%%#*}"
+  val="${val%%[[:space:]]}"
   printf '%s' "${val:-${default}}"
 }
 
@@ -148,17 +151,18 @@ check_rabbit() {
 }
 
 check_pgbouncer() {
-  if docker compose exec -T pgbouncer pg_isready -h 127.0.0.1 -p 6432 >/dev/null 2>&1; then
+  if docker compose exec -T pgbouncer nc -z 127.0.0.1 6432 >/dev/null 2>&1; then
     ok "pgbouncer: aceitando conexões em 6432"
   else
-    fail "pgbouncer: sem resposta ao pg_isready"
+    fail "pgbouncer: sem resposta ao nc"
   fi
 }
 
 check_nginx() {
-  local nginx_port
+  local nginx_port tailscale_hostname
   nginx_port="$(env_get NGINX_CONTAINER_PORT 8080)"
-  if docker compose exec -T nginx wget -q --spider "http://127.0.0.1:${nginx_port}/nginx-health" >/dev/null 2>&1; then
+  tailscale_hostname="$(env_get TAILSCALE_HOSTNAME tcc-server)"
+  if docker compose exec -T nginx wget -q --spider --header="Host: ${tailscale_hostname}" "http://127.0.0.1:${nginx_port}/nginx-health" >/dev/null 2>&1; then
     ok "nginx: healthy endpoint responde"
   else
     fail "nginx: healthcheck falhou"

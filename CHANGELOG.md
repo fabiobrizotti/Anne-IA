@@ -1,5 +1,30 @@
 # CHANGELOG - Anne-IA Dashboard
 
+## [1.2.1] - 2026-11-24
+
+### Fixed — n8n editor tela branca ao acessar via nginx (/n8n/)
+
+O n8n estava configurado com `N8N_PATH=/n8n/`, mas o nginx `proxy_pass` no
+location `/n8n/` **não retirava o prefixo** antes de encaminhar para o backend.
+Isso fazia o n8n receber requisições em `/n8n/n8n/`, `/n8n/n8n/assets/...`,
+resultando em 404 nos assets estáticos (CSS/JS) e tela branca no editor.
+
+- **`setup/nginx/nginx.conf.template`**: `proxy_pass http://n8n_backend/` (com
+  barra final) no `location /n8n/` — strip do prefixo `/n8n/` no encaminhamento.
+- Ajuste secundário: `server_name` incluiu `127.0.0.1` para healthcheck interno.
+
+### Fixed — `verify-stack.sh`: robustez no parsing de `.env` e healthcheck nginx
+
+- `env_get()`: remove comentários trailing (`#...`) e whitespace final do valor.
+- `check_pgbouncer()`: usa `nc -z` (mais leve/portável) em vez de `pg_isready`.
+- `check_nginx()`: envia header `Host: ${TAILSCALE_HOSTNAME}` no healthcheck,
+  compatível com o `server_name` do nginx que bloqueia hosts desconhecidos (444).
+
+### Changed
+- `dashboard/package.json`: versão `1.2.0` → `1.2.1`.
+- `.env.example` + `.env`: `DASHBOARD_VERSION=1.2.0` → `1.2.1`.
+- `README.md`: exemplo de saída `/api/health` atualizado para `1.2.1`.
+
 ## [Unreleased] - 2026-11-19
 
 ### Fixed — a aba "Logs" ficava vazia porque nada era interceptado

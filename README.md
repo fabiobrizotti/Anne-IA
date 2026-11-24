@@ -640,7 +640,7 @@ O `/api/health` devolve a revisão em execução:
 curl -s http://127.0.0.1:${DASHBOARD_PORT:-41283}/api/health | jq
 # {
 #   "status": "ok",
-#   "version": "1.2.0",      <- DASHBOARD_VERSION do .env
+#   "version": "1.2.1",      <- DASHBOARD_VERSION do .env
 #   "sha": "abbdf62",        <- commit aplicado pelo update.sh
 #   "uptime": 42,
 #   "timestamp": "..."
