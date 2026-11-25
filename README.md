@@ -337,7 +337,7 @@ O Dashboard administrativo é uma aplicação web ultra-leve construída em **Va
 
 ### 8.2. Interface e Experiência Neutra
 - **Design Monocromático Neutro**: Visual preto e branco sóbrio (<30MB RAM, zero-build), livre de neons, gradientes coloridos ou elementos decorativos supérfluos.
-- **Tema Claro Padrão & Seletor de Tema**: Inicialização em tema claro (branco) por padrão, seguindo automaticamente as preferências do sistema operacional (`prefers-color-scheme: dark`) caso não haja preferência manual salva, com botão alternador (Sol / Lua) no cabeçalho persistido no `localStorage` e script anti-FOUC no `<head>`.
+- **Tema Adaptativo & Identidade Institucional**: Sem preferência salva, o tema segue o sistema operacional (`prefers-color-scheme`) em tempo real; o botão alternador (Sol / Lua) grava a escolha em `localStorage` (`anne_theme`), aplica `data-theme`/`color-scheme` com script anti-FOUC no `<head>` e sincroniza a preferência entre abas pelo evento `storage`. A faixa de identidade escura e o menu lateral de navegação são permanentes no console; a tela de login usa a mesma faixa, sem sidebar.
 - **Rastreabilidade Temporal**: Indicador global "Atualizado em" no cabeçalho com horário da última sincronização, coluna dedicada na tabela e registros tabulares (`tabular-nums`) de criação e modificação.
 
 ### 8.3. Funcionalidades Principais

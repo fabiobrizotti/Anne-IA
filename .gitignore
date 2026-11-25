@@ -3,6 +3,7 @@
 .claude
 .vscode
 .taste-skill/
+.superpowers/
 docker-compose.override.txt
 docker-compose.override.yml
 .dockerignore
