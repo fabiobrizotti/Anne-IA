@@ -1,6 +1,6 @@
 # CHANGELOG - Anne-IA Dashboard
 
-## [Unreleased] - 2026-11-24
+## [1.2.2] - 2026-11-24
 
 ### Fixed — Evolution API: `500 Not allowed by CORS` ao marcar mensagens como lidas
 
@@ -89,6 +89,13 @@ Medido em container de teste (mesmo upstream, `keepalive 32`, 3 requests):
   `map` (estava duplicado com o template).
 - **`tests/test_proxy_smoke.sh`**: nova checagem estática "keepalive de upstream
   habilitado" (falha se voltar `close` ou faltar `proxy_http_version 1.1`).
+
+### Changed — versão 1.2.2
+
+- `dashboard/package.json` e `dashboard/package-lock.json`: `1.2.1`/`1.2.0` → `1.2.2`
+  (o lockfile estava dessincronizado desde a 1.2.1; dependências intactas).
+- `.env.example` + `.env`: `DASHBOARD_VERSION=1.2.1` → `1.2.2`.
+- `README.md`: exemplo de saída `/api/health` atualizado para `1.2.2`.
 
 ## [1.2.1] - 2026-11-24
 
