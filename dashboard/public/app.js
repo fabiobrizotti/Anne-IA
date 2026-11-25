@@ -16,8 +16,6 @@
   // Elementos do DOM
   const elements = {
     btnThemeToggle: document.getElementById('btn-theme-toggle'),
-    themeIconSun: document.getElementById('theme-icon-sun'),
-    themeIconMoon: document.getElementById('theme-icon-moon'),
     instancesTbody: document.getElementById('instances-tbody'),
     searchInput: document.getElementById('search-input'),
     btnRefresh: document.getElementById('btn-refresh'),
@@ -2189,42 +2187,6 @@
     }
   });
 
-  // ---------------------------------------------------------------------------
-  // GESTÃO DE TEMA (CLARO / ESCURO)
-  // ---------------------------------------------------------------------------
-
-  function syncThemeIcons(theme) {
-    if (!elements.themeIconSun || !elements.themeIconMoon) return;
-    const isDark = theme === 'dark';
-    elements.themeIconSun.classList.toggle('hidden', !isDark);
-    elements.themeIconMoon.classList.toggle('hidden', isDark);
-  }
-
-  function initTheme() {
-    const currentTheme = document.documentElement.getAttribute('data-theme') || 'light';
-    syncThemeIcons(currentTheme);
-
-    if (elements.btnThemeToggle) {
-      elements.btnThemeToggle.addEventListener('click', () => {
-        const activeTheme = document.documentElement.getAttribute('data-theme') || 'light';
-        const nextTheme = activeTheme === 'dark' ? 'light' : 'dark';
-        document.documentElement.setAttribute('data-theme', nextTheme);
-        localStorage.setItem('anne_theme', nextTheme);
-        syncThemeIcons(nextTheme);
-      });
-    }
-
-    if (window.matchMedia) {
-      window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
-        if (!localStorage.getItem('anne_theme')) {
-          const sysTheme = e.matches ? 'dark' : 'light';
-          document.documentElement.setAttribute('data-theme', sysTheme);
-          syncThemeIcons(sysTheme);
-        }
-      });
-    }
-  }
-
   // Delegação de eventos segura contra quebra de contexto sintático (anti-XSS)
   if (elements.instancesTbody) {
     elements.instancesTbody.addEventListener('click', (e) => {
@@ -3075,7 +3037,10 @@
   }
 
   // Inicialização
-  initTheme();
+  if (elements.btnThemeToggle) {
+    elements.btnThemeToggle.addEventListener('click', () => window.AnneTheme.toggle());
+  }
+  window.AnneTheme.syncIcons();
   initAuthUser();
   loadInstances();
 })();
