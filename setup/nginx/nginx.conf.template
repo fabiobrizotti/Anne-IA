@@ -141,6 +141,12 @@ http {
             proxy_set_header Upgrade $http_upgrade;
             proxy_set_header Connection "upgrade";
 
+            # WebSocket/SSE: sem buffer, timeout longo
+            proxy_buffering off;
+            proxy_cache off;
+            proxy_read_timeout 1h;
+            proxy_send_timeout 1h;
+
             limit_req zone=api burst=${NGINX_RATE_LIMIT_BURST_API} nodelay;
             limit_conn perip 30;
             include /tmp/nginx/snippets/proxy-params.conf;
