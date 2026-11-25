@@ -1928,9 +1928,9 @@ input:checked + .slider:before {
 }
 
 .login-header .btn-secondary:hover {
-  background-color: var(--bg-hover);
+  background-color: var(--brand-bar-muted);
   border-color: var(--brand-bar-text);
-  color: var(--text-main);
+  color: var(--brand-bar-bg);
 }
 
 .login-card {

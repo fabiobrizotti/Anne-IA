@@ -258,3 +258,13 @@ test('login > delegates theme to shared module', () => {
   assert.match(js, /AnneTheme\.toggle\(\)/);
   assert.doesNotMatch(js, /localStorage\.setItem\(\s*['"]anne_theme/);
 });
+
+test('login > theme toggle hover stays within the brand bar palette', () => {
+  const css = fs.readFileSync('public/style.css', 'utf8');
+  const match = css.match(/\.login-header \.btn-secondary:hover\s*\{[^}]*\}/s);
+  assert.ok(match, 'bloco .login-header .btn-secondary:hover ausente');
+  assert.match(match[0], /background-color:\s*var\(--brand-bar-muted\)/);
+  assert.match(match[0], /color:\s*var\(--brand-bar-bg\)/);
+  assert.doesNotMatch(match[0], /var\(--bg-hover\)/);
+  assert.doesNotMatch(match[0], /var\(--text-main\)/);
+});
