@@ -62,7 +62,7 @@ html[data-theme="dark"] {
   --border-strong: #52525b;
   --text-main: #fafafa;
   --text-muted: #a1a1aa;
-  --text-subtle: #71717a;
+  --text-subtle: #a1a1aa;
   --primary: #fafafa;
   --primary-hover: #e4e4e7;
   --primary-text: #09090b;
@@ -106,7 +106,7 @@ html[data-theme="dark"] {
     --border-strong: #52525b;
     --text-main: #fafafa;
     --text-muted: #a1a1aa;
-    --text-subtle: #71717a;
+    --text-subtle: #a1a1aa;
     --primary: #fafafa;
     --primary-hover: #e4e4e7;
     --primary-text: #09090b;
@@ -1510,8 +1510,8 @@ input:checked + .slider:before {
 }
 
 .delta-badge.down {
-  color: var(--danger);
-  background-color: var(--danger-bg);
+  color: var(--info);
+  background-color: var(--info-bg);
 }
 
 .chart-card {

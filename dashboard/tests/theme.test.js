@@ -21,6 +21,18 @@ function makeIcon() {
   };
 }
 
+function contrastRatio(foreground, background) {
+  function luminance(hex) {
+    const channels = [1, 3, 5]
+      .map((i) => parseInt(hex.slice(i, i + 2), 16) / 255)
+      .map((c) => (c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4)));
+    return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
+  }
+  const a = luminance(foreground);
+  const b = luminance(background);
+  return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+}
+
 function loadTheme({ stored = null, systemDark = false } = {}) {
   const attributes = Object.create(null);
   const html = {
@@ -57,6 +69,7 @@ function loadTheme({ stored = null, systemDark = false } = {}) {
   };
 
   let storageCallback = null;
+  let storageListeners = 0;
 
   const sandbox = {
     document: {
@@ -71,7 +84,10 @@ function loadTheme({ stored = null, systemDark = false } = {}) {
       return query === '(prefers-color-scheme: dark)' ? mediaQuery : null;
     },
     addEventListener(type, callback) {
-      if (type === 'storage') storageCallback = callback;
+      if (type === 'storage') {
+        storageListeners += 1;
+        storageCallback = callback;
+      }
     }
   };
   sandbox.window = sandbox;
@@ -84,6 +100,7 @@ function loadTheme({ stored = null, systemDark = false } = {}) {
     scheme,
     html,
     storage,
+    storageListeners,
     changeScheme(matches) {
       mediaQuery.matches = matches;
       if (changeCallback) changeCallback({ matches });
@@ -116,8 +133,10 @@ test('theme module > toggle persists the opposite effective scheme', () => {
 });
 
 test('theme module > never clears a stored preference on system change', () => {
-  const { html, storage, changeScheme } = loadTheme({ stored: 'dark', systemDark: false });
+  const { html, storage, changeScheme, onStorage, storageListeners } = loadTheme({ stored: 'dark', systemDark: false });
   changeScheme(true);
+  onStorage({ key: 'anne_theme', newValue: 'dark' });
+  assert.ok(storageListeners >= 1, 'listener de storage deve ser registrado');
   assert.equal(html.getAttribute('data-theme'), 'dark');
   assert.equal(storage.getItem('anne_theme'), 'dark');
 });
@@ -184,12 +203,33 @@ test('style tokens > institutional identity and semantic tokens exist', () => {
   assert.match(css, /\.qrcode-placeholder\s*\{[^}]*color-scheme:\s*only light/s);
   assert.match(css, /--radius:\s*2px/);
   assert.match(css, /\.table td\s*\{[^}]*padding:\s*8px 12px/s);
+  const down = css.match(/\.delta-badge\.down\s*\{[^}]*\}/s);
+  assert.ok(down, 'bloco .delta-badge.down ausente');
+  assert.match(down[0], /color:\s*var\(--info\)/);
+  assert.match(down[0], /background-color:\s*var\(--info-bg\)/);
 });
 
 test('style tokens > no color fallback hardcoded in dashboard markup', () => {
   for (const page of ['public/index.html', 'public/login.html']) {
     const html = fs.readFileSync(page, 'utf8');
     assert.doesNotMatch(html, /var\(--[\w-]+\s*,\s*#[0-9a-fA-F]{3,8}\)/);
+  }
+});
+
+test('style tokens > dark subtle text meets AA contrast', () => {
+  const css = fs.readFileSync('public/style.css', 'utf8');
+  const blocks = [
+    'html\\[data-theme="dark"\\]',
+    '@media \\(prefers-color-scheme: dark\\)\\s*\\{\\s*html:not\\(\\[data-theme\\]\\)'
+  ];
+  for (const selector of blocks) {
+    const match = css.match(new RegExp(`${selector}\\s*\\{[^}]*\\}`, 's'));
+    assert.ok(match, `bloco ${selector} ausente`);
+    const subtle = match[0].match(/--text-subtle:\s*(#[0-9a-fA-F]{6})/);
+    const background = match[0].match(/--bg-main:\s*(#[0-9a-fA-F]{6})/);
+    assert.ok(subtle && background, `tokens de contraste ausentes em ${selector}`);
+    const ratio = contrastRatio(subtle[1], background[1]);
+    assert.ok(ratio >= 4.5, `contraste ${ratio.toFixed(2)}:1 abaixo de AA em ${selector}`);
   }
 });
 
@@ -229,7 +269,7 @@ test('sidebar markup > preserves page-tab contract', () => {
     'tab-instancias', 'tab-financeiro', 'tab-ia', 'tab-logs', 'tab-usuarios',
   ]);
   assert.match(html, /id="tab-usuarios-btn"[^>]*style="display: none;"/);
-  for (const id of ['tab-instancias', 'tab-financeiro', 'tab-ia', 'tab-logs']) {
+  for (const id of ['tab-instancias', 'tab-financeiro', 'tab-ia', 'tab-logs', 'tab-usuarios']) {
     assert.match(html, new RegExp(`id="${id}" class="page-content`));
   }
   for (const id of ['last-sync-time', 'user-badge', 'current-user-name', 'current-user-role', 'btn-theme-toggle', 'btn-refresh', 'btn-new-instance', 'btn-logout']) {
