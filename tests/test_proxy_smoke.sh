@@ -260,6 +260,29 @@ else
   warn "Evolution API NÃO alcança n8n internamente"
 fi
 
+# CORS: o node n8n-nodes-evolution-api chama a Evolution server-side SEM Origin.
+# Se CORS_ORIGIN não contém "*", a v2.3.7 responde 500 "Not allowed by CORS"
+# (o callback faz CORS.ORIGIN.indexOf(undefined) => -1).
+# Roda de dentro do n8n para reproduzir exatamente a chamada do workflow.
+cors_probe=$(docker compose exec -T n8n node -e '
+  (async () => {
+    try {
+      const r = await fetch("http://evolution-api:8080/instance/fetchInstances", {
+        headers: { apikey: process.env.AUTHENTICATION_API_KEY },
+      });
+      const body = await r.text();
+      console.log(r.status, body.includes("Not allowed by CORS") ? "CORS_REJEITADO" : "OK");
+    } catch (err) {
+      console.log("ERRO", err.message);
+    }
+  })();
+' 2>/dev/null || true)
+if [[ "${cors_probe}" == "200 OK" ]]; then
+  ok "Evolution aceita chamada server-side sem Origin (CORS_ORIGIN='*')"
+else
+  fail "Evolution rejeitou chamada sem Origin: ${cors_probe:-sem resposta} (marcar mensagens como lidas quebra com 500)"
+fi
+
 # UIs administrativas via Nginx (subcaminho /rabbitmq e /pgadmin)
 for pair in "rabbitmq:/rabbitmq/" "pgadmin:/pgadmin/"; do
   name="${pair%%:*}"

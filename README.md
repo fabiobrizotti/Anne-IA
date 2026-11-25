@@ -125,7 +125,7 @@ docker compose start n8n
 | Nginx (HTTP) | 80 | 8080 | `http://127.0.0.1:80` | `http://anneia-vps/` |
 
 > **Host header:** o `server_name` do Nginx casa com `TAILSCALE_HOSTNAME`. Testes locais por `127.0.0.1` exigem `-H "Host: ${TAILSCALE_HOSTNAME}"`; hosts desconhecidos são fechados com `444`.
-> **Evolution API:** Não exposta no host. Acesso interno via `http://evolution-api:8080` (usado pelo Dashboard e n8n).
+> **Evolution API:** Não exposta no host. Acesso interno via `http://evolution-api:8080` (usado pelo Dashboard e n8n). Por isso `CORS_ORIGIN=*`: a v2.3.7 rejeita requisição **sem** header `Origin` com `500 Not allowed by CORS`, e chamadas server-side (node `n8n-nodes-evolution-api`, scripts) não enviam `Origin`. A proteção real é o `AUTHENTICATION_API_KEY` + ausência de porta publicada/rota no Nginx — se algum dia expor a API, volte para allow-list e injete `Origin` nos chamadores (o Dashboard já faz em `evolutionFetch()`).
 > **PgBouncer:** Pool de conexões Postgres (transaction mode). Dashboard e Evolution API conectam aqui; pgAdmin/pg_dump direto no Postgres.
 > **Nginx:** Reverse proxy HTTP only (sem TLS — WireGuard do Tailscale já criptografa). Bind no IP Tailscale da VPS.
 

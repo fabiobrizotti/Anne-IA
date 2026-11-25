@@ -2,6 +2,39 @@
 
 ## [Unreleased] - 2026-11-24
 
+### Fixed — Evolution API: `500 Not allowed by CORS` ao marcar mensagens como lidas
+
+O node `n8n-nodes-evolution-api` (operação *read messages*) chama a Evolution
+**server-side**, sem header `Origin`. O callback de CORS da v2.3.7 é:
+
+```js
+origin(r, a) {
+  const { ORIGIN: c } = E.get('CORS');
+  return c.includes('*') || c.indexOf(r) !== -1
+    ? a(null, true)
+    : a(new Error('Not allowed by CORS'));
+}
+```
+
+Com allow-list, `r === undefined` ⇒ `indexOf(undefined) === -1` ⇒ erro ⇒
+`500 {"response":{"message":"Not allowed by CORS"}}`. Reprovado ao reproduzir a
+chamada de dentro do n8n: **sem Origin → 500**; com Origin permitido → 404
+(instância inexistente), provando que o CORS era o único bloqueio.
+
+- **`.env` / `.env.example`**: `CORS_ORIGIN` passou de allow-list para `*` (com
+  comentário explicando o motivo e quando reverter). A API **não tem porta
+  publicada nem rota no Nginx** — só containers das redes internas a alcançam e
+  o acesso exige `AUTHENTICATION_API_KEY`; se um dia for exposta, voltar para
+  allow-list **e** injetar `Origin` nos chamadores (o Dashboard já faz isso em
+  `evolutionFetch()`).
+- **`README.md`**: nota na tabela de portas com o motivo do `CORS_ORIGIN=*`.
+- **`tests/test_proxy_smoke.sh`**: nova checagem reproduzindo a chamada
+  server-side de dentro do n8n (sem `Origin`) — falha se o 500 voltar.
+
+Verificado após recriar o `evolution-api`: chamada sem `Origin` → `200` em
+`/instance/fetchInstances`; instância WhatsApp `fabiobrizotti-dev` voltou a
+`open`; suíte de fumaça 100% verde (13 checagens).
+
 ### Fixed — editor do n8n: "Lost connection to the server" / "Problem running workflow"
 
 O handshake WebSocket do editor (`GET /n8n/rest/push?pushRef=...`) era rejeitado
