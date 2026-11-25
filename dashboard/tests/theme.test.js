@@ -215,3 +215,24 @@ test('style tokens > segmented control uses a dedicated contained shadow', () =>
     assert.match(match[0], /--shadow-control:\s*0 1px 3px rgba\(0, 0, 0, 0\.(06|24)\)/);
   }
 });
+
+test('sidebar markup > preserves page-tab contract', () => {
+  const html = fs.readFileSync('public/index.html', 'utf8');
+  assert.match(html, /class="app-shell"/);
+  assert.match(html, /class="sidebar"/);
+  assert.match(html, /class="app-main"/);
+  assert.match(html, /class="brand-bar"/);
+  assert.match(html, /class="sidebar-footer"/);
+  assert.doesNotMatch(html, /class="page-nav"/);
+  const tabs = [...html.matchAll(/data-page-tab="([^"]+)"/g)].map((m) => m[1]);
+  assert.deepEqual(tabs, [
+    'tab-instancias', 'tab-financeiro', 'tab-ia', 'tab-logs', 'tab-usuarios',
+  ]);
+  assert.match(html, /id="tab-usuarios-btn"[^>]*style="display: none;"/);
+  for (const id of ['tab-instancias', 'tab-financeiro', 'tab-ia', 'tab-logs']) {
+    assert.match(html, new RegExp(`id="${id}" class="page-content`));
+  }
+  for (const id of ['last-sync-time', 'user-badge', 'current-user-name', 'current-user-role', 'btn-theme-toggle', 'btn-refresh', 'btn-new-instance', 'btn-logout']) {
+    assert.match(html, new RegExp(`id="${id}"`));
+  }
+});
