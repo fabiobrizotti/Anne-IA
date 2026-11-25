@@ -236,3 +236,9 @@ test('sidebar markup > preserves page-tab contract', () => {
     assert.match(html, new RegExp(`id="${id}"`));
   }
 });
+
+test('sidebar markup > log stream cleanup binds to sidebar navigation', () => {
+  const app = fs.readFileSync('public/app.js', 'utf8');
+  assert.match(app, /document\.querySelector\('\.sidebar-nav'\);\s*if \(tabsContainer\)/);
+  assert.doesNotMatch(app, /\.page-nav/);
+});

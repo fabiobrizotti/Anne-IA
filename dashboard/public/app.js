@@ -3025,7 +3025,7 @@
 
   // Cleanup ao trocar de aba
   // Adiciona cleanup de SSE ao sair da aba logs
-  const tabsContainer = document.querySelector('.page-nav');
+  const tabsContainer = document.querySelector('.sidebar-nav');
   if (tabsContainer) {
     tabsContainer.addEventListener('click', (e) => {
       const btn = e.target.closest('.page-tab');
