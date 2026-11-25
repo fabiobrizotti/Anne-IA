@@ -1620,11 +1620,11 @@
       const provEsc = escapeHtml(m.provedor || '');
       const modEsc = escapeHtml(m.modelo || '');
 
-      let tierBadge = '<span class="badge badge-tier-1">Nível 1</span>';
+      let tierBadge = '<span class="badge badge-tier-1"><span class="visually-hidden">Nível 1</span>T1</span>';
       if (m.tier === 'tier_2') {
-        tierBadge = '<span class="badge badge-tier-2">Nível 2</span>';
+        tierBadge = '<span class="badge badge-tier-2"><span class="visually-hidden">Nível 2</span>T2</span>';
       } else if (m.tier === 'tier_3') {
-        tierBadge = '<span class="badge badge-tier-3">Nível 3</span>';
+        tierBadge = '<span class="badge badge-tier-3"><span class="visually-hidden">Nível 3</span>T3</span>';
       }
 
       return `

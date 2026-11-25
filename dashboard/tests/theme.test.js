@@ -149,3 +149,54 @@ test('theme module > syncs icons without inline scripts in pages', () => {
     assert.match(html, /<meta name="color-scheme" content="light dark">/);
   }
 });
+
+test('style tokens > base color scheme follows the system', () => {
+  const css = fs.readFileSync('public/style.css', 'utf8');
+  assert.match(css, /:root\s*\{[^}]*color-scheme:\s*light dark/s);
+  assert.match(css, /html\[data-theme="light"\]\s*\{[^}]*color-scheme:\s*light/s);
+  assert.match(css, /html\[data-theme="dark"\]\s*\{[^}]*color-scheme:\s*dark/s);
+});
+
+test('style tokens > dark tokens are declared in a single media fallback', () => {
+  const css = fs.readFileSync('public/style.css', 'utf8');
+  assert.equal((css.match(/@media \(prefers-color-scheme: dark\)/g) || []).length, 1);
+  assert.match(css, /@media \(prefers-color-scheme: dark\)\s*\{\s*html:not\(\[data-theme\]\)/);
+});
+
+test('style tokens > no hardcoded colors outside token definitions', () => {
+  const css = fs.readFileSync('public/style.css', 'utf8');
+  let inQr = false;
+  const offenders = css.split('\n').filter((line) => {
+    if (line.includes('.qrcode-placeholder')) inQr = true;
+    else if (inQr && line.includes('}')) inQr = false;
+    const hasColor = /#[0-9a-fA-F]{3,8}\b|rgba?\([^)]*\)/.test(line);
+    return hasColor && !/^\s*--/.test(line) && !inQr;
+  });
+  assert.deepEqual(offenders, []);
+});
+
+test('style tokens > institutional identity and semantic tokens exist', () => {
+  const css = fs.readFileSync('public/style.css', 'utf8');
+  for (const token of ['--brand-bar-bg', '--brand-bar-text', '--brand-bar-muted', '--overlay', '--shadow', '--success', '--success-bg', '--warning', '--info', '--danger', '--danger-bg']) {
+    assert.match(css, new RegExp(`${token}:`));
+  }
+  assert.match(css, /:root\s*\{[^}]*accent-color:\s*var\(--primary\)/s);
+  assert.match(css, /\.qrcode-placeholder\s*\{[^}]*color-scheme:\s*only light/s);
+  assert.match(css, /--radius:\s*2px/);
+  assert.match(css, /\.table td\s*\{[^}]*padding:\s*8px 12px/s);
+});
+
+test('style tokens > no color fallback hardcoded in dashboard markup', () => {
+  for (const page of ['public/index.html', 'public/login.html']) {
+    const html = fs.readFileSync(page, 'utf8');
+    assert.doesNotMatch(html, /var\(--[\w-]+\s*,\s*#[0-9a-fA-F]{3,8}\)/);
+  }
+});
+
+test('style tokens > tier badges use explicit T1/T2/T3 labels', () => {
+  const app = fs.readFileSync('public/app.js', 'utf8');
+  for (const tier of [1, 2, 3]) {
+    const pattern = new RegExp(`badge-tier-${tier}"><span class="visually-hidden">Nível ${tier}</span>T${tier}</span>`);
+    assert.ok(pattern.test(app), `app.js deve renderizar a etiqueta T${tier}`);
+  }
+});
