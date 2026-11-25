@@ -243,6 +243,13 @@ test('sidebar markup > log stream cleanup binds to sidebar navigation', () => {
   assert.doesNotMatch(app, /\.page-nav/);
 });
 
+test('sidebar styles > mobile shell stretches page panels', () => {
+  const css = fs.readFileSync('public/style.css', 'utf8');
+  const media = css.match(/@media \(max-width: 900px\)\s*\{([\s\S]*?)\n\}/);
+  assert.ok(media, 'media query de 900px ausente');
+  assert.match(media[1], /\.app-shell\s*\{[^}]*align-items:\s*stretch/s);
+});
+
 test('login > keeps central card and institutional identity', () => {
   const html = fs.readFileSync('public/login.html', 'utf8');
   assert.match(html, /class="login-body"/);

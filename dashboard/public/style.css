@@ -657,6 +657,7 @@ body {
   /* A barra superior fica no topo e o menu lateral vira faixa rolável abaixo dela. */
   .app-shell {
     flex-direction: column;
+    align-items: stretch;
   }
 
   .app-main {
