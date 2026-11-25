@@ -166,6 +166,44 @@ else
   warn "n8n ${N8N_BASE_PATH}/healthz retornou HTTP ${code} (esperado 200)"
 fi
 
+# 7.1 Handshake WebSocket do editor (regressão: 400 "Invalid Upgrade header").
+# O n8n usa a lib ws, que rejeita o upgrade quando recebe "upgrade: websocket, websocket"
+# (nginx envia o header duplicado se proxy_set_header Upgrade for declarado duas vezes
+# no mesmo location). curl mantém a conexão aberta após o 101, daí o timeout esperado.
+push_code=$(curl -s -o /dev/null -w '%{http_code}' -m 3 \
+  -H "Host: ${TAILSCALE_HOSTNAME}" \
+  -H "Upgrade: websocket" \
+  -H "Connection: Upgrade" \
+  -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" \
+  -H "Sec-WebSocket-Version: 13" \
+  -H "Origin: http://${TAILSCALE_HOSTNAME}" \
+  "http://127.0.0.1:${NGINX_HOST_PORT}${N8N_BASE_PATH}/rest/push?pushRef=smoke" 2>/dev/null || true)
+if [[ "${push_code}" == "101" ]]; then
+  ok "handshake WebSocket ${N8N_BASE_PATH}/rest/push aceito (HTTP 101 Switching Protocols)"
+else
+  fail "handshake ${N8N_BASE_PATH}/rest/push retornou HTTP ${push_code} (esperado 101; verifique proxy_set_header Upgrade duplicado no location)"
+fi
+
+# 7.2 Guarda estática: Upgrade/Connection vêm SÓ do snippet proxy-params.conf.
+# O include não é expandido no arquivo gerado, então o location não deve redeclarar
+# os headers (redeclarar => nginx envia o header duas vezes => ws do n8n responde 400).
+conf_dump="$(mktemp)"
+docker compose exec -T nginx cat /tmp/nginx/nginx.conf > "${conf_dump}" 2>/dev/null || true
+loc_check=$(awk -v pat="location ${N8N_BASE_PATH}/" '
+  inblock == 0 && index($0, pat) > 0 { inblock = 1; next }
+  inblock == 1 && $1 == "}" { inblock = 0; next }
+  inblock == 1 && $1 == "proxy_set_header" && ($2 == "Upgrade" || $2 == "Connection") { count++ }
+  inblock == 1 && $1 == "include" && $2 ~ /proxy-params\.conf/ { has_include = 1 }
+  END { print (count + 0) "," (has_include + 0) }
+' "${conf_dump}")
+rm -f "${conf_dump}"
+snippet_ws=$(grep -cE '^proxy_set_header (Upgrade|Connection)' setup/nginx/snippets/proxy-params.conf || true)
+if [[ "${loc_check}" == "0,1" ]] && [[ "${snippet_ws}" == "2" ]]; then
+  ok "location ${N8N_BASE_PATH}/ herda Upgrade/Connection do snippet, sem redeclarar (sem header duplicado)"
+else
+  fail "location ${N8N_BASE_PATH}/ redeclara Upgrade/Connection ou não inclui o snippet (location:${loc_check}, snippet:${snippet_ws}) — esperado 0,1 e 2"
+fi
+
 # ------------------------------------------------------------------------------
 # 8. PGBOUNCER CONEXÃO
 # ------------------------------------------------------------------------------

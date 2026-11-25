@@ -138,13 +138,14 @@ docker compose start n8n
 | `/` | `dashboard:3000` | `limit_req` API + `limit_conn` 20 + SSE sem buffer em `/api/v1/logs/stream` |
 | `/api/v1/auth/login`, `/register` | `dashboard:3000` | zona `login` (5r/m, burst 3) anti-brute-force |
 | `/api/v1/conhecimento` | `dashboard:3000` | `client_max_body_size` 2m |
-| `/n8n/` | `n8n:34567` | WebSocket/SSE (`Upgrade`/`Connection`), `limit_conn` 30 |
+| `/n8n/` | `n8n:34567` | WebSocket do editor (`/rest/push`), `limit_conn` 30 |
 | `/pgadmin/` | `pgadmin:80` | `X-Script-Name: /pgadmin` (gera links com o prefixo) |
 | `/rabbitmq/` | `rabbitmq:15672` | casa com `management.path_prefix = /rabbitmq` |
 | `*` (host desconhecido) | — | `return 444` (conexão fechada) |
 
 - **Rate limit / body size** vêm do `.env` (`NGINX_RATE_LIMIT_*`, `NGINX_CLIENT_MAX_BODY_SIZE*`); o entrypoint substitui no template com `sed` (sem `envsubst`).
 - **n8n sob subpath**: `N8N_PATH=/n8n/` e `N8N_WEBHOOK_URL=http://${TAILSCALE_HOSTNAME}/n8n/` (valor interpolado pelo Compose). Consequência: webhooks internos passam a viver em `/n8n/webhook/...`.
+- **WebSocket do editor (`/n8n/rest/push`)**: `Upgrade`/`Connection` são definidos **exclusivamente** no snippet `setup/nginx/snippets/proxy-params.conf` (via `$connection_upgrade`). Não redeclare `proxy_set_header Upgrade` dentro do `location /n8n/`: o nginx acumula as diretivas do mesmo nível e envia o header duas vezes (`upgrade: websocket, websocket`); o Node concatena headers repetidos com `", "` e a lib `ws` do n8n rejeita o handshake com **400 "Invalid Upgrade header"** (no editor: *Lost connection to the server*). Diagnóstico: `curl -i -H 'Upgrade: websocket' -H 'Connection: Upgrade' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' -H 'Sec-WebSocket-Version: 13' http://127.0.0.1/n8n/rest/push?pushRef=x` deve responder `101 Switching Protocols`.
 - **Trust proxy**: `NGINX_TRUST_PROXY_IP` é preenchido pelo `scripts/update.sh` com o IP real do container Nginx na rede `frontend` (log de auditoria do Dashboard registra o IP do cliente, não o do proxy).
 - **DNS de upstream**: o Nginx resolve os nomes no boot. Depois de recriar um backend, `docker compose restart nginx` (o `update.sh` já faz isso) — sem isso o serviço recriado fica em `502`.
 - **Testes de fumaça**: `./tests/test_proxy_smoke.sh` valida healthcheck, rate limits, `client_max_body_size`, host desconhecido, n8n, PgBouncer e reconexão do Dashboard após restart do pooler.

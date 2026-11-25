@@ -1,5 +1,41 @@
 # CHANGELOG - Anne-IA Dashboard
 
+## [Unreleased] - 2026-11-24
+
+### Fixed — editor do n8n: "Lost connection to the server" / "Problem running workflow"
+
+O handshake WebSocket do editor (`GET /n8n/rest/push?pushRef=...`) era rejeitado
+pelo **próprio n8n** com `400 Bad Request` (`text/html`, 22 bytes, corpo
+`Invalid Upgrade header`), não pelo nginx.
+
+Causa raiz: `proxy_set_header Upgrade $http_upgrade;` e
+`proxy_set_header Connection ...` estavam declarados **duas vezes no mesmo
+`location /n8n/`** — inline no template (resquício do suporte a WebSocket) e de
+novo no snippet `proxy-params.conf` incluído naquele location. O nginx acumula as
+diretivas do mesmo nível e envia o header **duplicado** (`Upgrade: websocket,
+websocket`). O Node concatena headers repetidos com `", "`, então
+`req.headers.upgrade` vira `"websocket, websocket"` e a lib `ws@8` usada pelo n8n
+rejeita o upgrade em `WebSocketServer.handleUpgrade` com
+`400 "Invalid Upgrade header"` — o editor perde o canal de push e exibe
+"Lost connection to the server" / "Problem running workflow".
+
+Evidência (mesma instância n8n, mesmo path):
+`1 proxy_set_header Upgrade` → `101 Switching Protocols`;
+`2 proxy_set_header Upgrade` → `400` + `Invalid Upgrade header`.
+
+- **`setup/nginx/nginx.conf.template`**: removidos os `proxy_set_header
+  Upgrade`/`Connection` inline do `location /n8n/`; os headers passam a vir
+  exclusivamente do snippet (via `$connection_upgrade`, que só faz upgrade quando
+  o cliente pede). `proxy_http_version 1.1` mantido (obrigatório para upgrade).
+- **`setup/nginx/snippets/proxy-params.conf`**: comentário de alerta explicando
+  por que não se redeclara `Upgrade`/`Connection` em locations que incluem o snippet.
+- **`tests/test_proxy_smoke.sh`**: a seção "n8n via Nginx" só checava `/healthz`
+  (por isso a regressão passou). Agora valida o handshake real de
+  `/n8n/rest/push` (`101`) e falha se o `location /n8n/` voltar a redeclarar
+  `Upgrade`/`Connection` fora do snippet.
+- **`README.md`**: tabela de rotas + nota de troubleshooting com o `curl` de
+  verificação do handshake.
+
 ## [1.2.1] - 2026-11-24
 
 ### Fixed — n8n editor tela branca ao acessar via nginx (/n8n/)

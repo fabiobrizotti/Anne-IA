@@ -136,10 +136,16 @@ http {
         # N8N_PATH=/n8n/ está configurado no n8n; o proxy deve retirar o prefixo /n8n/
         # ao encaminhar para o backend (proxy_pass COM barra final).
         location /n8n/ {
-            # WebSocket upgrade
+            # WebSocket upgrade (handshake de /rest/push).
+            # ATENÇÃO: NÃO declarar proxy_set_header Upgrade/Connection aqui.
+            # O snippet proxy-params.conf (incluído abaixo) já define ambos via
+            # $connection_upgrade. Declarar de novo NO MESMO location faz o nginx
+            # enviar o header duas vezes ("upgrade: websocket, websocket"); o Node
+            # concatena headers repetidos com ", " e a lib ws do n8n rejeita o
+            # handshake com 400 "Invalid Upgrade header" (editor: "Lost connection
+            # to the server" / "Problem running workflow").
+            # proxy_http_version 1.1 é obrigatório para o upgrade.
             proxy_http_version 1.1;
-            proxy_set_header Upgrade $http_upgrade;
-            proxy_set_header Connection "upgrade";
 
             # WebSocket/SSE: sem buffer, timeout longo
             proxy_buffering off;
