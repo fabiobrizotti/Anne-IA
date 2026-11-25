@@ -25,6 +25,7 @@
 
   --overlay: rgba(0, 0, 0, 0.6);
   --shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+  --shadow-control: 0 1px 3px rgba(0, 0, 0, 0.06);
 
   /* Estados semânticos */
   --success: #166534;
@@ -74,6 +75,7 @@ html[data-theme="dark"] {
 
   --overlay: rgba(0, 0, 0, 0.6);
   --shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+  --shadow-control: 0 1px 3px rgba(0, 0, 0, 0.24);
 
   /* Estados semânticos */
   --success: #86efac;
@@ -117,6 +119,7 @@ html[data-theme="dark"] {
 
     --overlay: rgba(0, 0, 0, 0.6);
     --shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+    --shadow-control: 0 1px 3px rgba(0, 0, 0, 0.24);
 
     /* Estados semânticos */
     --success: #86efac;
@@ -1832,7 +1835,7 @@ input:checked + .slider:before {
   background-color: var(--bg-card);
   color: var(--text-main);
   font-weight: 600;
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow-control);
 }
 
 /* Alertas de Autenticação */

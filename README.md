@@ -361,7 +361,7 @@ O Dashboard administrativo é uma aplicação web ultra-leve construída em **Va
    - **Preparação para Gateway & Faturamento**: Coluna de faturamento na tabela de clientes com status e botão de ação para emitir link de pagamento em modal dedicado.
    - Gráfico temporal diário interativo (SVG puro) com alternador de visão em tabela (WCAG acessível).
 5. **Modelos de IA & Gestão de Custos (Aba Modelos de IA)**:
-   - Catálogo de modelos com precificação por 1M tokens (input, output, cache, reasoning) e **classificação por Níveis** (`Nível 1`, `Nível 2`, `Nível 3`).
+   - Catálogo de modelos com precificação por 1M tokens (input, output, cache, reasoning) e **classificação por Níveis** (`T1`, `T2`, `T3`, com rótulos acessíveis `Nível 1`, `Nível 2`, `Nível 3`).
    - Cadastro, edição e desativação segura protegendo integridade de auditoria contábil.
    - Teste de conectividade e inferência direta via 9Router com medição de latência em milissegundos e rate limit defensivo.
 6. **Base de Conhecimento RAG & Vetores pgvector (Sub-aba Base de Conhecimento)**:

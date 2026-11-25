@@ -200,3 +200,18 @@ test('style tokens > tier badges use explicit T1/T2/T3 labels', () => {
     assert.ok(pattern.test(app), `app.js deve renderizar a etiqueta T${tier}`);
   }
 });
+
+test('style tokens > segmented control uses a dedicated contained shadow', () => {
+  const css = fs.readFileSync('public/style.css', 'utf8');
+  assert.match(css, /\.auth-tab-btn\.active\s*\{[^}]*box-shadow:\s*var\(--shadow-control\)/s);
+  const blocks = [
+    ':root',
+    'html\\[data-theme="dark"\\]',
+    '@media \\(prefers-color-scheme: dark\\)\\s*\\{\\s*html:not\\(\\[data-theme\\]\\)'
+  ];
+  for (const selector of blocks) {
+    const match = css.match(new RegExp(`${selector}\\s*\\{[^}]*\\}`, 's'));
+    assert.ok(match, `bloco ${selector} ausente`);
+    assert.match(match[0], /--shadow-control:\s*0 1px 3px rgba\(0, 0, 0, 0\.(06|24)\)/);
+  }
+});
