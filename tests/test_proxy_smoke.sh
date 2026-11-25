@@ -204,6 +204,15 @@ else
   fail "location ${N8N_BASE_PATH}/ redeclara Upgrade/Connection ou não inclui o snippet (location:${loc_check}, snippet:${snippet_ws}) — esperado 0,1 e 2"
 fi
 
+# 7.3 Keepalive de upstream: exige HTTP/1.1 (no snippet) e map sem "close"
+# (Connection vazio => header omitido => o pool `keepalive` dos upstreams é usado).
+if grep -q '^proxy_http_version 1.1;' setup/nginx/snippets/proxy-params.conf \
+  && ! grep -qE "^[[:space:]]*''[[:space:]]+close;" setup/nginx/nginx.conf.template; then
+  ok "keepalive de upstream habilitado (proxy_http_version 1.1 + Connection vazio)"
+else
+  fail "keepalive de upstream desligado: falta 'proxy_http_version 1.1' no snippet ou o map mapeia '' para 'close'"
+fi
+
 # ------------------------------------------------------------------------------
 # 8. PGBOUNCER CONEXÃO
 # ------------------------------------------------------------------------------

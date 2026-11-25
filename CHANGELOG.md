@@ -36,6 +36,27 @@ Evidência (mesma instância n8n, mesmo path):
 - **`README.md`**: tabela de rotas + nota de troubleshooting com o `curl` de
   verificação do handshake.
 
+### Changed — keepalive de upstream restaurado (dívida técnica do proxy)
+
+Os blocos `upstream { keepalive N }` (`dashboard_backend` 32, `n8n_backend` 32,
+pgAdmin/RabbitMQ 16) nunca eram usados: faltava `proxy_http_version 1.1` e o map
+mandava `Connection: close` em toda requisição sem upgrade, então o nginx abria
+uma conexão TCP nova para cada request.
+
+Medido em container de teste (mesmo upstream, `keepalive 32`, 3 requests):
+`Connection: close` → 3 conexões; `Connection` vazio → **1 conexão**.
+
+- **`setup/nginx/nginx.conf.template`**: `map $http_upgrade $connection_upgrade`
+  passou de `'' close` para `'' ''` (header vazio ⇒ nginx omite `Connection` ⇒
+  HTTP/1.1 assume keep-alive).
+- **`setup/nginx/snippets/proxy-params.conf`**: `proxy_http_version 1.1` movido
+  para o snippet (fonte única, vale para todos os locations); removido do
+  `location /n8n/`.
+- **`setup/nginx/snippets/rate-limits.conf`**: removida a segunda definição do
+  `map` (estava duplicado com o template).
+- **`tests/test_proxy_smoke.sh`**: nova checagem estática "keepalive de upstream
+  habilitado" (falha se voltar `close` ou faltar `proxy_http_version 1.1`).
+
 ## [1.2.1] - 2026-11-24
 
 ### Fixed — n8n editor tela branca ao acessar via nginx (/n8n/)
