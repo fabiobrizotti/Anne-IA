@@ -169,6 +169,7 @@ A infraestrutura utiliza o `.env.example` como fonte única da verdade estrutura
 - **Sincronizar variáveis e gerar senhas**: Execute `./scripts/sync-env.sh` (ou `./scripts/generate-passwords.sh`). Ele insere novas variáveis adicionadas ao `.env.example`, preserva todos os valores e senhas locais já configurados, cria backup atômico (`.env.bak`) e gera senhas Base62 (32 caracteres alfanuméricos) para credenciais vazias.
 - **Auditoria de divergências (Diff)**: Execute `./scripts/sync-env.sh --diff` para visualizar chaves ausentes, chaves órfãs e valores customizados localmente vs defaults do `.env.example` (com máscara automática em credenciais).
 - **Automação pós-`git pull`**: Execute `git config core.hooksPath .githooks` uma única vez. Sempre que um `git pull` trouxer alterações no `.env.example`, o `.env` local será sincronizado automaticamente.
+- **Ordem das variáveis**: o parser dotenv do Compose resolve `${VARIAVEL}` na ordem em que as linhas aparecem no `.env`. Variáveis referenciadas por outras (ex.: `TAILSCALE_HOSTNAME`, usada por `N8N_EDITOR_BASE_URL` e `N8N_WEBHOOK_URL`) devem ser definidas **antes** das primeiras referências — caso contrário o Compose emite `The "VARIAVEL" variable is not set. Defaulting to a blank string.` mesmo com a chave preenchida corretamente no arquivo.
 
 ### Variáveis Críticas de Autenticação:
 - `RABBITMQ_DEFAULT_PASS`: Senha admin do RabbitMQ (sincronizada em `CHAVE_RABBITMQ_DEFAULT_PASS`).
