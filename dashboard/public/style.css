@@ -1895,7 +1895,42 @@ input:checked + .slider:before {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding-bottom: 8px;
+  gap: 16px;
+  padding: 20px 24px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.login-header.brand-bar {
+  border-color: var(--brand-bar-bg);
+}
+
+.login-header .brand h1 {
+  color: var(--brand-bar-text);
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: -0.4px;
+}
+
+.login-header .subtitle {
+  color: var(--brand-bar-muted);
+  font-size: 12px;
+}
+
+.login-header .logo-dot {
+  background-color: var(--brand-bar-text);
+}
+
+.login-header .btn-secondary {
+  background-color: transparent;
+  border-color: var(--brand-bar-muted);
+  color: var(--brand-bar-text);
+}
+
+.login-header .btn-secondary:hover {
+  background-color: var(--bg-hover);
+  border-color: var(--brand-bar-text);
+  color: var(--text-main);
 }
 
 .login-card {

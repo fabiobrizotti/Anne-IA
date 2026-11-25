@@ -242,3 +242,19 @@ test('sidebar markup > log stream cleanup binds to sidebar navigation', () => {
   assert.match(app, /document\.querySelector\('\.sidebar-nav'\);\s*if \(tabsContainer\)/);
   assert.doesNotMatch(app, /\.page-nav/);
 });
+
+test('login > keeps central card and institutional identity', () => {
+  const html = fs.readFileSync('public/login.html', 'utf8');
+  assert.match(html, /class="login-body"/);
+  assert.match(html, /class="login-container"/);
+  assert.match(html, /class="login-header brand-bar"/);
+  assert.doesNotMatch(html, /class="sidebar"/);
+  assert.match(html, /id="btn-theme-toggle"/);
+});
+
+test('login > delegates theme to shared module', () => {
+  const js = fs.readFileSync('public/login.js', 'utf8');
+  assert.match(js, /AnneTheme\.syncIcons\(\)/);
+  assert.match(js, /AnneTheme\.toggle\(\)/);
+  assert.doesNotMatch(js, /localStorage\.setItem\(\s*['"]anne_theme/);
+});
