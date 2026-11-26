@@ -70,7 +70,7 @@ warn() { CHECKS=$((CHECKS + 1)); printf '  \033[33m[aviso]\033[0m %s\n' "$*"; }
 # ------------------------------------------------------------------------------
 # HEALTHCHECK DO DOCKER POR SERVIÇO
 # ------------------------------------------------------------------------------
-SERVICES=(db-evolution redis redis-n8n-queue rabbitmq n8n n8n-worker evolution-api 9router dashboard pgbouncer nginx)
+SERVICES=(db-evolution redis redis-n8n-queue rabbitmq n8n n8n-worker evolution-api litellm langfuse-web langfuse-worker clickhouse minio langfuse-redis dashboard pgbouncer nginx)
 
 service_state() {
   local svc="$1" id
@@ -202,14 +202,16 @@ check_evolution_internal() {
 }
 
 check_http() {
-  local dash_port n8n_port nine_port
+  local dash_port n8n_port litellm_port langfuse_port
   dash_port="$(env_get DASHBOARD_PORT 41283)"
   n8n_port="$(env_get N8N_PORT 5678)"
-  nine_port="$(env_get NINE_ROUTER_PORT 48192)"
+  litellm_port="$(env_get LITELLM_PORT 48192)"
+  langfuse_port="$(env_get LANGFUSE_PORT 40193)"
 
   http_ok "dashboard" "http://127.0.0.1:${dash_port}/api/health"
   http_ok "n8n"       "http://127.0.0.1:${n8n_port}/healthz"
-  http_ok "9router"   "http://127.0.0.1:${nine_port}/api/health"
+  http_ok "litellm"   "http://127.0.0.1:${litellm_port}/health/liveliness"
+  http_ok "langfuse"  "http://127.0.0.1:${langfuse_port}/api/public/health"
   check_evolution_internal
 }
 

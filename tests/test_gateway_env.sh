@@ -5,7 +5,8 @@
 # Valida, sem tocar na stack de produção:
 #   1. geração de segredos Base62/hex e ausência de chaves do 9Router;
 #   2. padrões de privacidade/versão (OTel NO_CONTENT, ClickHouse >= 25.12);
-#   3. grants do ClickHouse versionados.
+#   3. grants do ClickHouse versionados;
+#   4. serviços do Compose e ausência de segredos no compose versionado.
 #
 # Uso: ./tests/test_gateway_env.sh
 # ==============================================================================
@@ -18,7 +19,8 @@ GRANTS_SQL="${PROJECT_ROOT}/setup/clickhouse/init.sql"
 TMP_DIR="$(mktemp -d)"
 FAILS=0
 
-cleanup() { rm -rf "${TMP_DIR}"; }
+TMP_COMPOSE_ENV="${PROJECT_ROOT}/.env.test-gateway-tmp"
+cleanup() { rm -rf "${TMP_DIR}" "${TMP_COMPOSE_ENV}"; }
 trap cleanup EXIT
 
 say() { printf '%s\n' "$*"; }
@@ -49,7 +51,7 @@ say "==================================================================="
 
 say "[1/4] Gerando segredos em .env temporário..."
 TMP_ENV="${TMP_DIR}/.env"
-: > "${TMP_ENV}"
+cp "${ENV_EXAMPLE}" "${TMP_ENV}"
 ANNE_SYNCED=1 "${PROJECT_ROOT}/scripts/generate-passwords.sh" "${TMP_ENV}" > "${TMP_DIR}/gen.log" 2>&1 ||
   { bad "generate-passwords.sh falhou"; cat "${TMP_DIR}/gen.log"; exit 1; }
 ok "Gerador executado sem erro (arquivo temporário)"
@@ -79,7 +81,33 @@ FLOOR="$(printf '%s\n%s\n' '25.12' "${CH_VERSION:-0}" | sort -V | head -1)"
 assert_eq "ClickHouse >= 25.12 (atual: ${CH_VERSION:-vazio})" '25.12' "${FLOOR}"
 assert_file_has "Grants de merge control do ClickHouse versionados" 'SYSTEM MERGES' "${GRANTS_SQL}"
 
-say "[4/4] Resultado final..."
+say "[4/5] Configuração do Compose..."
+cat "${TMP_ENV}" > "${TMP_COMPOSE_ENV}"
+docker compose --env-file "${TMP_COMPOSE_ENV}" config --services > "${TMP_DIR}/services.txt" 2> "${TMP_DIR}/compose.err" ||
+  { bad "docker compose config --services falhou"; head -20 "${TMP_DIR}/compose.err"; }
+for svc in litellm langfuse-web langfuse-worker clickhouse minio langfuse-redis; do
+  atual="$({ grep -x "${svc}" "${TMP_DIR}/services.txt" || true; } | head -1)"
+  assert_eq "Serviço ${svc} presente" "${svc}" "${atual}"
+done
+assert_eq "Serviço 9router removido" '' "$({ grep -x '9router' "${TMP_DIR}/services.txt" || true; } | head -1)"
+assert_no_match "Nenhuma referência a 9Router no compose" '9router|NINE_ROUTER' "${PROJECT_ROOT}/docker-compose.yml"
+
+docker compose --env-file "${TMP_COMPOSE_ENV}" config > "${TMP_DIR}/compose.config" 2> "${TMP_DIR}/compose.err" ||
+  { bad "docker compose config falhou"; head -20 "${TMP_DIR}/compose.err"; }
+assert_file_has "LITELLM_URL resolvido no compose" 'LITELLM_URL: http://litellm:4000/v1' "${TMP_DIR}/compose.config"
+assert_file_has "Master key resolvida no compose" "LITELLM_MASTER_KEY: $(get_val LITELLM_MASTER_KEY)" "${TMP_DIR}/compose.config"
+
+# O compose versionado e o resultado interpolado não podem conter segredos literais.
+for var in LITELLM_MASTER_KEY LITELLM_SALT_KEY LITELLM_DB_PASSWORD CLICKHOUSE_PASSWORD LANGFUSE_REDIS_PASSWORD; do
+  secret="$(get_val "${var}")"
+  if [[ -n "${secret}" ]] && grep -qF -- "${secret}" "${PROJECT_ROOT}/docker-compose.yml" 2>/dev/null; then
+    bad "Segredo ${var} vazou no docker-compose.yml"
+  else
+    ok "Segredo ${var} ausente no docker-compose.yml"
+  fi
+done
+
+say "[5/5] Resultado final..."
 if [[ ${FAILS} -eq 0 ]]; then
   printf ' \033[32m%s\033[0m\n' 'SUCESSO — configuração do gateway válida.'
   exit 0
