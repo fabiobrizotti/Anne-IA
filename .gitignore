@@ -17,14 +17,16 @@ docker-compose.override.yml
 # DADOS E VOLUMES (EFÊMEROS - NUNCA VERSIONAR)
 # =============================================================================
 # A pasta setup/ (configuração/infra de init) É VERSIONADA.
-# Volumes de persistência e runtime dos 7 serviços:
+# Volumes de persistência e runtime dos serviços:
 data/
 data/n8n/
 data/rabbitmq/
 data/evolution-api/
 data/redis/
 data/postgresql/
-data/9router/
+data/clickhouse/
+data/minio/
+data/langfuse-redis/
 data/pgadmin/
 
 # Backups / exportações de workflows (não são o fonte dos workflows)

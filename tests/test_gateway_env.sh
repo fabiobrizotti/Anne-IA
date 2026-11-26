@@ -6,7 +6,8 @@
 #   1. geração de segredos Base62/hex e ausência de chaves do 9Router;
 #   2. padrões de privacidade/versão (OTel NO_CONTENT, ClickHouse >= 25.12);
 #   3. grants do ClickHouse versionados;
-#   4. serviços do Compose e ausência de segredos no compose versionado.
+#   4. serviços do Compose e ausência de segredos no compose versionado;
+#   5. documentação operacional (README) alinhada ao gateway e ao Strix.
 #
 # Uso: ./tests/test_gateway_env.sh
 # ==============================================================================
@@ -81,7 +82,7 @@ FLOOR="$(printf '%s\n%s\n' '25.12' "${CH_VERSION:-0}" | sort -V | head -1)"
 assert_eq "ClickHouse >= 25.12 (atual: ${CH_VERSION:-vazio})" '25.12' "${FLOOR}"
 assert_file_has "Grants de merge control do ClickHouse versionados" 'SYSTEM MERGES' "${GRANTS_SQL}"
 
-say "[4/5] Configuração do Compose..."
+say "[4/6] Configuração do Compose..."
 cat "${TMP_ENV}" > "${TMP_COMPOSE_ENV}"
 docker compose --env-file "${TMP_COMPOSE_ENV}" config --services > "${TMP_DIR}/services.txt" 2> "${TMP_DIR}/compose.err" ||
   { bad "docker compose config --services falhou"; head -20 "${TMP_DIR}/compose.err"; }
@@ -107,7 +108,20 @@ for var in LITELLM_MASTER_KEY LITELLM_SALT_KEY LITELLM_DB_PASSWORD CLICKHOUSE_PA
   fi
 done
 
-say "[5/5] Resultado final..."
+say "[5/6] Documentação operacional..."
+README="${PROJECT_ROOT}/README.md"
+assert_file_has "README documenta o gateway para o Strix no host" \
+  'http://127.0.0.1:${LITELLM_PORT}/v1' "${README}"
+# A seção 5 é a do roteamento de IA; 9Router pode aparecer apenas como
+# exceção histórica (valor legado do CHECK ou data/ preservado).
+ia_section="$(sed -n '/^## 5\. /,/^## 6\. /p' "${README}")"
+if grep -qiE '9router|NINE_ROUTER' <<< "${ia_section}"; then
+  bad "Seção 5 ainda cita 9Router como serviço ativo"
+else
+  ok "Seção 5 não cita 9Router como serviço ativo"
+fi
+
+say "[6/6] Resultado final..."
 if [[ ${FAILS} -eq 0 ]]; then
   printf ' \033[32m%s\033[0m\n' 'SUCESSO — configuração do gateway válida.'
   exit 0

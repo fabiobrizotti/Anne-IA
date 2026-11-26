@@ -1,4 +1,4 @@
-# Anne-IA — Stack Docker (n8n, Evolution API, Postgres, Redis, RabbitMQ, pgAdmin, Dashboard)
+# Anne-IA — Stack Docker (n8n, Evolution API, Postgres/pgvector, Redis, RabbitMQ, LiteLLM, Langfuse, pgAdmin, Dashboard)
 
 **Arquitetura Hardened + Tailscale:** Zero exposição à internet pública. Todos os serviços bindam em `127.0.0.1` na VPS. Acesso via Tailscale mesh VPN (IP `100.x.y.z` ou MagicDNS `http://anneia-vps:porta`).
 
@@ -9,7 +9,9 @@ A stack é auto-inicializável a partir de um clone limpo. A pasta `setup/` conc
 | `setup/rabbitmq/rabbitmq.conf` | Limites de memória/disco, paginação, timeout de LLM e carga de definições. |
 | `setup/rabbitmq/definitions.json.template` | Topologia padrão industrial: exchanges diretas, pipeline em 4 etapas com Quorum Queues e DLX/DLQ (senha via `.env`). |
 | `setup/rabbitmq/entrypoint.sh` | Injeta a senha no template e gera o `definitions.json`. |
-| `setup/postgres/init.sql` | **Fonte única (SSOT 100% idempotente)**: schema do negócio, memória LangChain indexada (`memorypostgreschat` com `idx_memorypostgreschat_session` e `criado_em` para retenção LGPD), base RAG isolada multi-tenant (`base_conhecimento` com `instance_id`, índices HNSW vetoriais, B-tree composto de paginação e GIN trigram `pg_trgm`), `clientes` + `Instance` (Evolution API), **alinhamento 1:1** entre `public."Instance"` e `public.clientes` pelo mesmo ID (`clientes.id = Instance.id`), `prompt_config` (persona/role/playbook por cliente), `prompts_padrao` (prompts mestres globais para roteamento e economia de modelos), **ledger contábil e função de custeio** (`precos_modelos`, `uso_tokens`, `fn_registrar_uso_tokens` com idempotência estrita e precificação dinâmica), **autenticação e sessões server-side** (`dashboard_usuarios`, `dashboard_identidades` cifrada via AES-256-GCM com blind index HMAC-SHA-256, `dashboard_contatos`, `dashboard_credenciais` com hash NIST `scrypt`, `dashboard_sessoes`, `dashboard_consentimentos` LGPD e `dashboard_auditoria_auth`), **governança LGPD nativa** (`lgpd_auditoria` com hash SHA-256 via `pgcrypto`, `vw_clientes_mascarado`, `fn_lgpd_anonimizar_titular`, `fn_lgpd_anonimizar_cliente` e `fn_lgpd_expurgo_retencao`), **auditoria unificada statement-level** (`auditoria_geral` com triggers em todas tabelas de negócio). |
+| `setup/litellm/config.yaml` | Modelos `openrouter/<provider>/<model>` e callback `langfuse_otel`; nenhuma chave é gravada no arquivo (provider key e master key vêm do `.env`). |
+| `setup/clickhouse/init.sql` | Grants do usuário `langfuse` no ClickHouse single-container, incluindo `SYSTEM MERGES` exigido pelo Langfuse v4. |
+| `setup/postgres/init.sql` | **Fonte única (SSOT 100% idempotente)**: bancos `litellm` e `langfuse` com roles próprias, schema do negócio, memória LangChain indexada (`memorypostgreschat` com `idx_memorypostgreschat_session` e `criado_em` para retenção LGPD), base RAG isolada multi-tenant (`base_conhecimento` com `instance_id`, índices HNSW vetoriais, B-tree composto de paginação e GIN trigram `pg_trgm`), `clientes` + `Instance` (Evolution API), **alinhamento 1:1** entre `public."Instance"` e `public.clientes` pelo mesmo ID (`clientes.id = Instance.id`), `prompt_config` (persona/role/playbook por cliente), `prompts_padrao` (prompts mestres globais para roteamento e economia de modelos), **ledger contábil e função de custeio** (`precos_modelos`, `uso_tokens`, `fn_registrar_uso_tokens` com idempotência estrita e precificação dinâmica), **autenticação e sessões server-side** (`dashboard_usuarios`, `dashboard_identidades` cifrada via AES-256-GCM com blind index HMAC-SHA-256, `dashboard_contatos`, `dashboard_credenciais` com hash NIST `scrypt`, `dashboard_sessoes`, `dashboard_consentimentos` LGPD e `dashboard_auditoria_auth`), **governança LGPD nativa** (`lgpd_auditoria` com hash SHA-256 via `pgcrypto`, `vw_clientes_mascarado`, `fn_lgpd_anonimizar_titular`, `fn_lgpd_anonimizar_cliente` e `fn_lgpd_expurgo_retencao`), **auditoria unificada statement-level** (`auditoria_geral` com triggers em todas tabelas de negócio). |
 | `setup/pgadmin/servers.json` | Auto-provisionamento da conexão do PostgreSQL no pgAdmin 4. |
 | `setup/n8n/clean-workflows.js` | Limpa workflows antigos no SQLite antes de reimportar (idempotência). |
 | `setup/n8n/sanitize-workflow.js` | Remove rastros da instância de origem para evitar falhas no import. |
@@ -18,7 +20,7 @@ Os workflows do n8n não são versionados aqui. Eles vêm de `fabiobrizotti/n8n_
 
 ## 1. Pré-requisitos
 - Docker Engine com Compose v2 (usuário no grupo `docker`: `sudo usermod -aG docker $USER && newgrp docker`).
-- **Portas ofuscadas (localhost only):** `34567` (n8n), `41283` (Dashboard), `52841` (pgAdmin), `48192` (9Router), `39271` (RabbitMQ Management), `5432` (Postgres), `6379` (Redis), `5672` (RabbitMQ AMQP).
+- **Portas ofuscadas (localhost only):** `34567` (n8n), `41283` (Dashboard), `52841` (pgAdmin), `48192` (LiteLLM), `40193` (Langfuse), `39271` (RabbitMQ Management), `5432` (Postgres), `6379` (Redis), `5672` (RabbitMQ AMQP).
 - **Tailscale** na VPS (host): `curl -fsSL https://tailscale.com/install.sh | sh && sudo tailscale up --authkey=... --hostname=anneia-vps`
 - Conta no GitHub com acesso de leitura (token) ao repositório dos workflows.
 
@@ -54,10 +56,10 @@ git config core.hooksPath .githooks
 # - GITHUB_TOKEN (para n8n-import clonar workflows)
 # - N8N_INSTANCE_OWNER_EMAIL
 # - TAILSCALE_AUTHKEY (opcional, para documentação)
-# (as senhas de banco, redis, rabbitmq e 9router já foram geradas com segurança)
+# (as senhas de banco, redis, rabbitmq, litellm e langfuse já foram geradas com segurança)
 
-# O n8n roda como UID 1000, pgAdmin como UID 5050; 9Router persiste em ./data/9router
-mkdir -p ./data/n8n ./workflows ./data/9router ./data/pgadmin
+# O n8n roda como UID 1000, pgAdmin como UID 5050; ClickHouse/MinIO persistem em data/
+mkdir -p ./data/n8n ./workflows ./data/pgadmin ./data/clickhouse ./data/minio ./data/langfuse-redis
 sudo chown -R 1000:1000 ./data/n8n ./workflows
 sudo chown -R 5050:5050 ./data/pgadmin
 
@@ -83,8 +85,10 @@ copy .env.example .env
 # Docker Desktop resolve permissões de usuário nativamente, basta criar as pastas:
 mkdir data\n8n
 mkdir workflows
-mkdir data\9router
 mkdir data\pgadmin
+mkdir data\clickhouse
+mkdir data\minio
+mkdir data\langfuse-redis
 
 # Sobe a stack rodando os scripts de setup
 docker compose --profile setup up -d
@@ -116,7 +120,8 @@ docker compose start n8n
 | Dashboard | 41283 | 3000 | `http://127.0.0.1:41283` | `http://anneia-vps/` |
 | n8n | 34567 | 34567 | `http://127.0.0.1:34567` | `http://anneia-vps/n8n/` |
 | pgAdmin | 52841 | 80 | `http://127.0.0.1:52841` | `http://anneia-vps/pgadmin/` |
-| 9Router | 48192 | 20000 | `http://127.0.0.1:48192` | — (app não suporta subpath) |
+| LiteLLM | 48192 | 4000 | `http://127.0.0.1:48192/v1` | — (gateway OpenAI-compatible, sem UI) |
+| Langfuse | 40193 | 3000 | `http://127.0.0.1:40193` | — (primeiro login cria o projeto) |
 | RabbitMQ Mgmt | 39271 | 15672 | `http://127.0.0.1:39271` | `http://anneia-vps/rabbitmq/` |
 | PostgreSQL | 5432 | 5432 | `psql -h 127.0.0.1 -p 5432` | — |
 | PgBouncer | 6432 | 6432 | `psql -h 127.0.0.1 -p 6432` | — |
@@ -176,7 +181,9 @@ A infraestrutura utiliza o `.env.example` como fonte única da verdade estrutura
 - `RABBITMQ_DEFAULT_PASS`: Senha admin do RabbitMQ (sincronizada em `CHAVE_RABBITMQ_DEFAULT_PASS`).
 - `POSTGRES_PASSWORD`: Senha do PostgreSQL (sincronizada em `CHAVE_POSTGRES_PASSWORD`).
 - `REDIS_PASSWORD`: Senha do Redis (sincronizada em `CHAVE_REDIS_PASSWORD`).
-- `NINE_ROUTER_PASSWORD`: Senha admin do 9Router (sincronizada em `CHAVE_NINE_ROUTER_PASSWORD`). O compose publica esta variável no container como `INITIAL_PASSWORD`, único nome lido pela imagem.
+- `LITELLM_MASTER_KEY`: Master key do gateway (gerada pelo `scripts/generate-passwords.sh`); o Dashboard recebe `LITELLM_API_KEY` por `.env` e nunca expõe a chave ao navegador.
+- `OPENROUTER_API_KEY`: Credencial do provedor usada pelo LiteLLM; entra apenas no `.env`, nunca no `config.yaml`.
+- `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY`: Chaves do projeto criadas no primeiro login no Langfuse; aponte o LiteLLM para elas e recrie o container após preenchê-las.
 - `N8N_ENCRYPTION_KEY`: Chave para criptografia de credenciais internas do n8n.
 - `AUTHENTICATION_API_KEY`: Chave de autenticação da Evolution API.
 - `PGADMIN_DEFAULT_EMAIL`: E-mail de login no pgAdmin 4.
@@ -189,27 +196,22 @@ A infraestrutura utiliza o `.env.example` como fonte única da verdade estrutura
 
 ## 4. Estrutura de Diretórios
 - `setup/`: Scripts de boot (versionado).
-- `data/`: Bancos e dados — postgres, redis, rabbitmq, n8n, evolution-api, 9router e pgadmin (ignorado via .gitignore).
+- `data/`: Bancos e dados — postgres, redis, rabbitmq, n8n, evolution-api, clickhouse, minio, langfuse-redis e pgadmin (ignorado via .gitignore).
 - `files/`: Exports (ignorado).
 - `workflows/`: Clone local automático dos workflows do n8n (ignorado).
 
-## 5. Roteamento de IA (9Router)
-O 9Router centraliza provedores de LLM e atua como gateway universal compatível com OpenAI/Anthropic:
-- **Dashboard Web**: `http://127.0.0.1:48192` (autentique com `NINE_ROUTER_PASSWORD`). O 9Router não tem suporte a `basePath`, então não é publicado sob subpath no Nginx — para acesso remoto, ajuste `NINE_ROUTER_HOST_BIND` no `.env` para o IP da tailnet.
+## 5. Roteamento de IA (LiteLLM + Langfuse)
 
-> **Senha do 9Router — como funciona de verdade**
-> A imagem `decolua/9router` não lê `NINE_ROUTER_PASSWORD`: ela consulta `INITIAL_PASSWORD`
-> (default `123456`). O bloco `9router` do `docker-compose.yml` publica a variável do projeto
-> sob esse nome via `environment:`, então a senha do `.env` é a senha de login.
->
-> Nesta versão (`NINE_ROUTER_VERSION`), o env permanece autoritativo: trocar
-> `NINE_ROUTER_PASSWORD` no `.env` e rodar `docker compose up -d 9router` já altera a senha,
-> sem necessidade de reset. Se algum dia a versão passar a gravar hash próprio, o sintoma será
-> o login recusar a senha do `.env` com `/api/auth/status` reportando `hasPassword: true` —
-> nesse caso o reset é `docker compose stop 9router && sqlite3 data/9router/db/data.sqlite
-> "DELETE FROM settings WHERE id=1;" && docker compose up -d 9router`.
+O LiteLLM é o gateway OpenAI-compatible usado pelo Dashboard (catálogo e teste de modelos) e pelo Strix (`LLM_API_BASE`). O Agente nativo do n8n **continua** chamando a OpenRouter direto pelo nó `LLM: OpenRouter` — memória Postgres, tools e filas `anne.direct.work`/`costs.telemetry` permanecem intactos; limite de gasto por cliente no Agente segue pendente.
 
-- **Endpoint interno para n8n / LangChain**: `http://9router:20000/v1` (usar credencial OpenAI compatível com a chave de API gerada no dashboard do 9Router).
+- **Endpoint interno (Dashboard)**: `http://litellm:4000/v1` (`LITELLM_URL`). A master key vem de `LITELLM_MASTER_KEY`/`LITELLM_API_KEY` no `.env`; `config.yaml` não contém segredos.
+- **Endpoint no host (Strix/CLI)**: `http://127.0.0.1:${LITELLM_PORT}/v1` (OpenAI-compatible). Use uma chave virtual do LiteLLM em `LLM_API_KEY`/`Authorization: Bearer ...`; a master key fica restrita ao Dashboard dentro do container.
+- **Modelos**: IDs `openrouter/<provider>/<model>` declarados em `setup/litellm/config.yaml`; `OPENROUTER_API_KEY` entra somente pelo `.env`. A chave de teste do Dashboard usa esse mesmo endpoint.
+- **Langfuse v4**: UI em `http://127.0.0.1:${LANGFUSE_PORT}` (web + worker + ClickHouse 25.12 + MinIO + Redis). No primeiro login, crie o projeto e copie `pk-lf-*`/`sk-lf-*` para `LANGFUSE_PUBLIC_KEY`/`LANGFUSE_SECRET_KEY` no `.env`; depois rode `docker compose up -d --force-recreate litellm langfuse-web langfuse-worker` para o gateway passar a publicar spans.
+- **Observabilidade**: preset `langfuse_otel` com `LITELLM_OTEL_V2=true` e `LITELLM_OTEL_LANGFUSE_SPAN_SCOPE=llm_only`. `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=NO_CONTENT` registra modelo, tokens, custo e latência **sem** prompt/resposta; mudar para `SPAN_ONLY` exige avaliação LGPD prévia.
+- **Agente → Langfuse (opcional)**: configurar *Observability → Broadcast* na conta OpenRouter apontando para o Langfuse. É uma decisão externa ao repositório; não há código para isso.
+- **Nginx**: não há rota proxy para LiteLLM/Langfuse; o `depends_on` usa `condition: service_started` apenas para ordem de boot (o health do Langfuse depende do primeiro login).
+- **Versões**: `LITELLM_VERSION=lts` foi escolhido explicitamente, mas é tag móvel — revisar e pinar até **2026-12-02**. Confirmar a tag `MINIO_VERSION` no primeiro pull; se o manifest falhar, pinar uma release disponível.
 
 ## 6. Painel Web PostgreSQL (pgAdmin 4)
 O pgAdmin 4 oferece interface gráfica para gerenciar esquemas, tabelas e vetores (pgvector) no PostgreSQL:
@@ -365,7 +367,7 @@ O Dashboard administrativo é uma aplicação web ultra-leve construída em **Va
 5. **Modelos de IA & Gestão de Custos (Aba Modelos de IA)**:
    - Catálogo de modelos com precificação por 1M tokens (input, output, cache, reasoning) e **classificação por Níveis** (`T1`, `T2`, `T3`, com rótulos acessíveis `Nível 1`, `Nível 2`, `Nível 3`).
    - Cadastro, edição e desativação segura protegendo integridade de auditoria contábil.
-   - Teste de conectividade e inferência direta via 9Router com medição de latência em milissegundos e rate limit defensivo.
+   - Teste de conectividade e inferência direta via LiteLLM com medição de latência em milissegundos e rate limit defensivo.
 6. **Base de Conhecimento RAG & Vetores pgvector (Sub-aba Base de Conhecimento)**:
    - Central de auditoria e inspeção de fragmentos (chunks) textuais, metadados JSONB e embeddings na tabela `base_conhecimento`.
    - Índices de performance industrial: B-tree composto `(instance_id, id DESC)` para paginação multi-tenant instantânea e GIN `pg_trgm` para buscas textuais rápidas.
@@ -401,12 +403,12 @@ O Dashboard administrativo é uma aplicação web ultra-leve construída em **Va
 | `GET` | `/api/v1/instances/:id/prompt` | Busca config de prompts do agente (`prompt_config`: identidade, papel, personalidade, playbook, escalação, system prompt) |
 | `PUT` | `/api/v1/instances/:id/prompt` | Salva config de prompts do agente (upsert idempotente em `prompt_config`) |
 | `GET` | `/api/v1/financeiro` | Retorna métricas brutas de custo e tokens por período (`?periodo=mes_atual`, `?dias=7\|30\|90` ou `?inicio=YYYY-MM-DD&fim=YYYY-MM-DD`) |
-| `GET` | `/api/v1/9router/status` | Retorna diagnóstico de conectividade, endpoint e lista de modelos do 9Router |
+| `GET` | `/api/v1/litellm/status` | Retorna diagnóstico de conectividade (liveness + readiness), endpoint e lista de modelos do LiteLLM |
 | `GET` | `/api/v1/modelos` | Lista catálogo de modelos de IA, status e custos por 1M tokens |
 | `POST` | `/api/v1/modelos` | Cadastra novo modelo com preços de entrada/saída sanitizados |
 | `PUT` | `/api/v1/modelos/:id` | Atualiza parâmetros e vigência de precificação do modelo |
 | `DELETE` | `/api/v1/modelos/:id` | Exclui ou desativa modelo (soft-delete seguro se houver histórico contábil) |
-| `POST` | `/api/v1/modelos/:id/testar` | Dispara teste de ping/inferência no 9Router e afere latência |
+| `POST` | `/api/v1/modelos/:id/testar` | Dispara teste de ping/inferência no LiteLLM e afere latência |
 | `GET` | `/api/v1/prompts-padrao` | Lista prompts padrão globais com filtro opcional por status ativo |
 | `GET` | `/api/v1/prompts-padrao/:id` | Obtém prompt padrão por ID ou chave única (slug n8n) |
 | `POST` | `/api/v1/prompts-padrao` | Cadastra novo prompt padrão com modelo validado contra a tabela de modelos |
@@ -473,6 +475,17 @@ docker exec -i db-evolution psql -v ON_ERROR_STOP=1 -U evolution -d anneia < set
 > **Não precisa fazer isso à mão:** `./scripts/update.sh` reaplica o `init.sql`
 > automaticamente quando ele muda entre revisões (ver §12).
 
+Quando a mudança inclui os bancos `litellm`/`langfuse`, as senhas dos roles vêm do `.env` via `PGOPTIONS` (o SQL usa `current_setting('app.litellm_password')` e `app.langfuse_password`):
+
+```bash
+set -a; . ./.env; set +a
+docker exec -i \
+  -e PGOPTIONS="-c app.litellm_password=${CHAVE_LITELLM_DB_PASSWORD} -c app.langfuse_password=${CHAVE_LANGFUSE_DB_PASSWORD}" \
+  db-evolution psql -v ON_ERROR_STOP=1 -U "${POSTGRES_USER}" -d anneia < setup/postgres/init.sql
+```
+
+> **Exceção histórica:** `'9router_sync'` permanece no `CHECK` de `uso_tokens.origem` somente para leitura de linhas antigas. O fallback ativo em `fn_registrar_uso_tokens()` grava `'litellm'`; não remova o valor antigo sem migrar o histórico contábil.
+
 ### 9.2. Rotinas Nativas de Conformidade LGPD (Lei nº 13.709/2018)
 O banco `anneia` inclui procedimentos armazenados auditáveis com pseudonimização criptográfica SHA-256 (`pgcrypto`):
 - **Direito ao Esquecimento de Titular WhatsApp (Art. 18, VI)**:
@@ -526,6 +539,8 @@ docker compose --profile setup up -d
 ## 10. Pentest Autônomo e Segurança Ofensiva (Strix AI)
 
 A plataforma conta com uma suíte completa de testes ofensivos autônomos integrados ao **Strix** para validação prática de vulnerabilidades (OWASP Top 10:2025 e OWASP API Security Top 10:2023), testes de isolamento multi-tenant (BOLA/IDOR), conformidade LGPD e auditoria de código white-box.
+
+O Strix roda no **host**, então `LLM_API_BASE` aponta para `http://127.0.0.1:${LITELLM_PORT}/v1`. Preencha `LLM_API_KEY` com uma chave virtual do LiteLLM (nunca a master key); o nome `http://litellm:4000/v1` só valeria se o Strix passasse a rodar dentro da `data_net`.
 
 ### 10.1. Execução Rápida via Script CLI
 ```bash
