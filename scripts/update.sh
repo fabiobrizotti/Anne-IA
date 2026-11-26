@@ -327,6 +327,17 @@ else
   ok "init.sql sem mudanças — schema não reaplicado"
 fi
 
+# Bancos restaurados sem rodar o init.sql (ex.: data dir preservado sem as roles)
+# chegam aqui sem pgbouncer_app: o ALTER ROLE falhava e o login do dashboard dava 500.
+role_count="$(docker compose exec -T db-evolution psql -U "${PG_USER}" -d anneia -tAc \
+  "SELECT count(*) FROM pg_roles WHERE rolname IN ('pgbouncer_app', 'pgbouncer_admin')" | tr -d '[:space:]' || true)"
+if [[ "${role_count:-0}" != "2" ]]; then
+  warn "Roles do PgBouncer ausentes — reaplicando setup/postgres/init.sql"
+  docker compose exec -T db-evolution psql -U "${PG_USER}" -d anneia -v ON_ERROR_STOP=1 \
+    < setup/postgres/init.sql > "${LOG_DIR}/schema-roles-${TS}.log" 2>&1 ||
+    die "falha ao provisionar roles; detalhes em logs/schema-roles-${TS}.log"
+fi
+
 # Atualiza senhas das roles pgbouncer_app e pgbouncer_admin no banco anneia
 # (init.sql cria as roles com senha placeholder; aqui definimos as reais do .env)
 PGBOUNCER_APP_PASSWORD="$(env_get PGBOUNCER_PASSWORD)"
