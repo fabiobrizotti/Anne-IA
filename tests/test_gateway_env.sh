@@ -50,7 +50,7 @@ say "==================================================================="
 
 [[ -f "${ENV_EXAMPLE}" ]] || { say "[erro] ${ENV_EXAMPLE} não encontrado"; exit 1; }
 
-say "[1/4] Gerando segredos em .env temporário..."
+say "[1/6] Gerando segredos em .env temporário..."
 TMP_ENV="${TMP_DIR}/.env"
 cp "${ENV_EXAMPLE}" "${TMP_ENV}"
 ANNE_SYNCED=1 "${PROJECT_ROOT}/scripts/generate-passwords.sh" "${TMP_ENV}" > "${TMP_DIR}/gen.log" 2>&1 ||
@@ -70,17 +70,20 @@ do
 done
 assert_match "LANGFUSE_ENCRYPTION_KEY em hex de 32 bytes" '^[0-9a-f]{64}$' "$(get_val LANGFUSE_ENCRYPTION_KEY)"
 
-say "[2/4] Verificando remoção do 9Router..."
+say "[2/6] Verificando remoção do 9Router..."
 assert_no_match "Nenhuma chave NINE_ROUTER_ no .env.example" '^NINE_ROUTER_' "${ENV_EXAMPLE}"
 assert_no_match "Nenhum segredo 9Router no .env gerado" '^NINE_ROUTER_|^CHAVE_NINE_ROUTER_' "${TMP_ENV}"
 
-say "[3/4] Políticas de privacidade e versão..."
+say "[3/6] Políticas de privacidade e versão..."
 assert_file_has "OTel captura de mensagens desligada por padrão" \
   'OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=NO_CONTENT' "${ENV_EXAMPLE}"
 CH_VERSION="$(get_val CLICKHOUSE_VERSION "${ENV_EXAMPLE}")"
 FLOOR="$(printf '%s\n%s\n' '25.12' "${CH_VERSION:-0}" | sort -V | head -1)"
 assert_eq "ClickHouse >= 25.12 (atual: ${CH_VERSION:-vazio})" '25.12' "${FLOOR}"
 assert_file_has "Grants de merge control do ClickHouse versionados" 'SYSTEM MERGES' "${GRANTS_SQL}"
+assert_match "MinIO pinado por digest" '^sha256:[0-9a-f]{64}$' "$(get_val MINIO_VERSION "${ENV_EXAMPLE}")"
+assert_file_has "Registry e digest do MinIO parametrizados no compose" 'image: ${MINIO_IMAGE}@${MINIO_VERSION}' "${PROJECT_ROOT}/docker-compose.yml"
+assert_no_match "Nenhuma referência ao repo removido minio/minio" 'minio/minio' "${ENV_EXAMPLE}"
 
 say "[4/6] Configuração do Compose..."
 cat "${TMP_ENV}" > "${TMP_COMPOSE_ENV}"
@@ -95,6 +98,22 @@ assert_no_match "Nenhuma referência a 9Router no compose" '9router|NINE_ROUTER'
 
 docker compose --env-file "${TMP_COMPOSE_ENV}" config > "${TMP_DIR}/compose.config" 2> "${TMP_DIR}/compose.err" ||
   { bad "docker compose config falhou"; head -20 "${TMP_DIR}/compose.err"; }
+COMPOSE_JSON="$(docker compose --env-file "${TMP_COMPOSE_ENV}" config --format json 2>/dev/null)"
+for svc in litellm langfuse-web; do
+  # data_net é internal: sem public_net o Docker descarta a publicação da porta no host.
+  if python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if "public_net" in d["services"][sys.argv[1]].get("networks",{}) else 1)' "$svc" <<< "${COMPOSE_JSON}"; then
+    ok "Serviço ${svc} publica porta no host via public_net"
+  else
+    bad "Serviço ${svc} sem public_net (porta do host não seria publicada)"
+  fi
+done
+# Langfuse v4 web (Next.js 16) precisa de heap > ~430MB no boot; 768m no cgroup
+# limitava o V8 a 432MB e derrubava o container em loop (OOM).
+if python3 -c 'import json,sys; d=json.load(sys.stdin); m=int(d["services"]["langfuse-web"]["deploy"]["resources"]["limits"]["memory"]); sys.exit(0 if m >= 1536*1024*1024 else 1)' <<< "${COMPOSE_JSON}"; then
+  ok "Langfuse web com memória >= 1536m (evita OOM do V8 no boot)"
+else
+  bad "Langfuse web com memória insuficiente (< 1536m)"
+fi
 assert_file_has "LITELLM_URL resolvido no compose" 'LITELLM_URL: http://litellm:4000/v1' "${TMP_DIR}/compose.config"
 assert_file_has "Master key resolvida no compose" "LITELLM_MASTER_KEY: $(get_val LITELLM_MASTER_KEY)" "${TMP_DIR}/compose.config"
 

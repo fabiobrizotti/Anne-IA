@@ -211,7 +211,7 @@ O LiteLLM é o gateway OpenAI-compatible usado pelo Dashboard (catálogo e teste
 - **Observabilidade**: preset `langfuse_otel` com `LITELLM_OTEL_V2=true` e `LITELLM_OTEL_LANGFUSE_SPAN_SCOPE=llm_only`. `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=NO_CONTENT` registra modelo, tokens, custo e latência **sem** prompt/resposta; mudar para `SPAN_ONLY` exige avaliação LGPD prévia.
 - **Agente → Langfuse (opcional)**: configurar *Observability → Broadcast* na conta OpenRouter apontando para o Langfuse. É uma decisão externa ao repositório; não há código para isso.
 - **Nginx**: não há rota proxy para LiteLLM/Langfuse; o `depends_on` usa `condition: service_started` apenas para ordem de boot (o health do Langfuse depende do primeiro login).
-- **Versões**: `LITELLM_VERSION=lts` foi escolhido explicitamente, mas é tag móvel — revisar e pinar até **2026-12-02**. Confirmar a tag `MINIO_VERSION` no primeiro pull; se o manifest falhar, pinar uma release disponível.
+- **Versões**: `LITELLM_VERSION=lts` foi escolhido explicitamente, mas é tag móvel — revisar e pinar até **2026-12-02**. O repositório `minio/minio` foi removido do Docker Hub; o compose usa a imagem Chainguard oficial do Langfuse (`MINIO_IMAGE`) fixada por digest em `MINIO_VERSION`.
 
 ## 6. Painel Web PostgreSQL (pgAdmin 4)
 O pgAdmin 4 oferece interface gráfica para gerenciar esquemas, tabelas e vetores (pgvector) no PostgreSQL:

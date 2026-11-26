@@ -304,6 +304,8 @@ services:
       - ./setup/litellm/config.yaml:/app/config.yaml:ro
     networks:
       - data_net
+      # data_net é internal; public_net é necessária para publicar a porta no host.
+      - public_net
     depends_on:
       db-evolution:
         condition: service_healthy
@@ -349,15 +351,21 @@ services:
           memory: 1536m
 
   minio:
-    image: minio/minio:${MINIO_VERSION}
+    image: ${MINIO_IMAGE}@${MINIO_VERSION}
     container_name: minio
     restart: unless-stopped
+    # A imagem Chainguard roda como 65532; o volume bind exige o UID do host.
+    user: "${MINIO_UID}:${MINIO_GID}"
     env_file:
       - .env
     environment:
       MINIO_ROOT_USER: ${LANGFUSE_MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${LANGFUSE_MINIO_ROOT_PASSWORD}
-    command: sh -c "mkdir -p /data/langfuse && exec minio server /data"
+      # mc (healthcheck) grava config em $HOME/.mc; /tmp é writable pelo UID do host.
+      HOME: /tmp
+    # Imagem Chainguard tem ENTRYPOINT ["minio"]; precisa de sh explícito.
+    entrypoint: sh
+    command: -c "mkdir -p /data/langfuse && exec minio server --address ':9000' --console-address ':9001' /data"
     volumes:
       - ./data/minio:/data
     networks:
@@ -431,6 +439,8 @@ services:
       LANGFUSE_S3_EVENT_UPLOAD_PREFIX: ${LANGFUSE_S3_EVENT_UPLOAD_PREFIX}
     networks:
       - data_net
+      # data_net é internal; public_net é necessária para publicar a porta no host.
+      - public_net
     depends_on:
       db-evolution:
         condition: service_healthy
@@ -449,7 +459,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 768m
+          memory: 1536m
 
   langfuse-worker:
     image: langfuse/langfuse-worker:${LANGFUSE_VERSION}
