@@ -1707,7 +1707,7 @@ input:checked + .slider:before {
   color: var(--danger);
 }
 
-/* Gateway 9Router Status */
+/* Gateway LiteLLM Status */
 .gateway-status-card {
   padding: 12px 16px;
   background-color: var(--bg-card);

@@ -333,18 +333,18 @@
           </div>
         </section>
 
-        <!-- Banner Informativo de Conectividade do 9Router -->
+        <!-- Banner Informativo de Conectividade do LiteLLM -->
         <div class="card gateway-status-card mb-4">
           <div class="gateway-status-content">
             <div class="gateway-status-badge-group">
               <span class="badge-dot" id="gateway-status-dot"></span>
-              <strong>9Router Gateway:</strong>
-              <code id="gateway-endpoint-display" class="font-mono text-xs">http://9router:20000/v1</code>
+              <strong>LiteLLM Gateway:</strong>
+              <code id="gateway-endpoint-display" class="font-mono text-xs">http://litellm:4000/v1</code>
             </div>
             <div class="gateway-status-info">
               <span id="gateway-status-badge" class="badge badge-connecting">Checando conexão...</span>
               <span id="gateway-models-count" class="text-xs text-muted">0 modelos descobertos</span>
-              <button id="btn-sync-9router" class="btn btn-xs btn-secondary" title="Sincronizar catálogo de modelos do 9Router">
+              <button id="btn-sync-litellm" class="btn btn-xs btn-secondary" title="Sincronizar catálogo de modelos do LiteLLM">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
                 Sincronizar Modelos
               </button>
@@ -357,7 +357,7 @@
           <div class="table-header">
             <div>
               <h2>Catálogo de Modelos e Custos</h2>
-              <p class="subtitle text-xs">Gestão de provedores, parametrização de preços e teste de conectividade via 9Router.</p>
+              <p class="subtitle text-xs">Gestão de provedores, parametrização de preços e teste de conectividade via LiteLLM.</p>
             </div>
             <div class="table-actions-header">
               <input type="text" id="modelos-search-input" placeholder="Buscar modelo ou provedor..." class="search-field">
@@ -1020,9 +1020,9 @@
             </div>
             <div class="form-group flex-1">
               <label for="modelo-nome">Nome / Alias do Modelo *</label>
-              <input type="text" id="modelo-nome" required list="datalist-9router-models" class="input" placeholder="Ex: anneia, deepseek/deepseek-chat" autocomplete="off">
-              <datalist id="datalist-9router-models"></datalist>
-              <small class="field-hint">Identificador exato consumido pelo 9Router (selecione da lista ou digite).</small>
+              <input type="text" id="modelo-nome" required list="datalist-litellm-models" class="input" placeholder="Ex: anneia, deepseek/deepseek-chat" autocomplete="off">
+              <datalist id="datalist-litellm-models"></datalist>
+              <small class="field-hint">Identificador exato consumido pelo LiteLLM (selecione da lista ou digite).</small>
             </div>
           </div>
 
@@ -1080,7 +1080,7 @@
     <div class="modal">
       <div class="modal-header">
         <div>
-          <h3 id="modal-test-title">Teste de Modelo (Ping 9Router)</h3>
+          <h3 id="modal-test-title">Teste de Modelo (Ping LiteLLM)</h3>
           <p id="modal-test-subtitle" class="subtitle text-sm">Disparando inferência de checagem...</p>
         </div>
         <button class="btn-close" data-close="modal-test-model">&times;</button>
@@ -1089,13 +1089,13 @@
       <div class="modal-body">
         <div id="test-loading" class="text-center py-6">
           <div class="spinner mb-3"></div>
-          <p class="text-muted text-sm">Aguardando resposta do gateway 9Router...</p>
+          <p class="text-muted text-sm">Aguardando resposta do gateway LiteLLM...</p>
         </div>
 
         <div id="test-result-box" class="hidden">
           <div class="test-endpoint-info mb-3">
             <span class="text-xs text-muted">Endpoint Consultado:</span>
-            <code id="test-endpoint-url" class="font-mono text-xs">http://9router:20000/v1/chat/completions</code>
+            <code id="test-endpoint-url" class="font-mono text-xs">http://litellm:4000/v1/chat/completions</code>
           </div>
 
           <div class="test-stat-row mb-4">

@@ -12,8 +12,8 @@ const port = parseInt(process.env.PORT || '3000', 10);
 const EVOLUTION_API_URL = process.env.EVOLUTION_API_URL || 'http://evolution-api:8080';
 const EVOLUTION_API_KEY = process.env.EVOLUTION_API_KEY || '';
 const DATABASE_URL = process.env.DATABASE_URL || '';
-const NINE_ROUTER_URL = process.env.NINE_ROUTER_URL || 'http://9router:20000/v1';
-const NINE_ROUTER_API_KEY = process.env.NINE_ROUTER_API_KEY || process.env.NINE_ROUTER_PASSWORD || '';
+const LITELLM_URL = process.env.LITELLM_URL || 'http://litellm:4000/v1';
+const LITELLM_API_KEY = process.env.LITELLM_API_KEY || '';
 
 // Pool PostgreSQL (dimensionado para alta concorrência e proteção contra queries lentas)
 // statement_timeout removido — PgBouncer não aceita como parâmetro de startup;
@@ -2267,29 +2267,29 @@ async function checkTestRateLimitRedis(key, maxRequests = 10, windowMs = 60 * 10
   }
 }
 
-// GET /api/v1/9router/status - Diagnóstico e lista de modelos do 9Router
-app.get('/api/v1/9router/status', async (_req, res) => {
+// GET /api/v1/litellm/status - Diagnóstico e lista de modelos do LiteLLM
+app.get('/api/v1/litellm/status', async (_req, res) => {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 5000);
 
-  // Calcula URL base da API do 9Router (ex: http://9router:20000)
-  const baseUrl = NINE_ROUTER_URL.replace(/\/v1\/?$/, '');
+  // Health do LiteLLM fica na raiz; LITELLM_URL termina em /v1.
+  const baseUrl = LITELLM_URL.replace(/\/v1\/?$/, '');
 
   let isHealthy = false;
   let models = [];
   let errorMsg = null;
 
   try {
-    // 1. Checa health
-    const healthRes = await fetch(`${baseUrl}/api/health`, { signal: controller.signal }).catch(() => null);
-    if (healthRes && healthRes.ok) {
-      const hData = await healthRes.json().catch(() => ({}));
-      isHealthy = hData.ok === true || healthRes.status < 400;
-    }
+    // 1. Checa liveness e readiness (Ambos devem responder 2xx).
+    const [liveliness, readiness] = await Promise.all([
+      fetch(`${baseUrl}/health/liveliness`, { signal: controller.signal }).catch(() => null),
+      fetch(`${baseUrl}/health/readiness`, { signal: controller.signal }).catch(() => null)
+    ]);
+    isHealthy = Boolean(liveliness?.ok && readiness?.ok);
 
     // 2. Consulta modelos
-    const modelsRes = await fetch(`${NINE_ROUTER_URL}/models`, {
-      headers: NINE_ROUTER_API_KEY ? { 'Authorization': `Bearer ${NINE_ROUTER_API_KEY}` } : {},
+    const modelsRes = await fetch(`${LITELLM_URL}/models`, {
+      headers: LITELLM_API_KEY ? { 'Authorization': `Bearer ${LITELLM_API_KEY}` } : {},
       signal: controller.signal
     }).catch((e) => {
       errorMsg = e.message;
@@ -2317,9 +2317,9 @@ app.get('/api/v1/9router/status', async (_req, res) => {
 
   res.json({
     success: true,
-    gateway_url: NINE_ROUTER_URL,
-    chat_endpoint: `${NINE_ROUTER_URL}/chat/completions`,
-    has_api_key: Boolean(NINE_ROUTER_API_KEY),
+    gateway_url: LITELLM_URL,
+    chat_endpoint: `${LITELLM_URL}/chat/completions`,
+    has_api_key: Boolean(LITELLM_API_KEY),
     healthy: isHealthy,
     error: errorMsg,
     total_models: models.length,
@@ -2491,7 +2491,7 @@ app.delete('/api/v1/modelos/:id', async (req, res) => {
   }
 });
 
-// POST /api/v1/modelos/:id/testar - Testar inferência/ping do modelo via 9Router
+// POST /api/v1/modelos/:id/testar - Testar inferência/ping do modelo via LiteLLM
 app.post('/api/v1/modelos/:id/testar', async (req, res) => {
   if (!isAdmin(req)) {
     return res.status(403).json({ success: false, error: 'Acesso restrito a administradores.' });
@@ -2521,11 +2521,11 @@ app.post('/api/v1/modelos/:id/testar', async (req, res) => {
     let rawResponse = null;
 
     try {
-      const response = await fetch(`${NINE_ROUTER_URL}/chat/completions`, {
+      const response = await fetch(`${LITELLM_URL}/chat/completions`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${NINE_ROUTER_API_KEY}`
+          'Authorization': `Bearer ${LITELLM_API_KEY}`
         },
         body: JSON.stringify({
           model: record.modelo,
@@ -2541,7 +2541,7 @@ app.post('/api/v1/modelos/:id/testar', async (req, res) => {
       rawResponse = await response.json().catch(() => ({}));
 
       const latencyMs = Date.now() - startTime;
-      const endpointUsed = `${NINE_ROUTER_URL}/chat/completions`;
+      const endpointUsed = `${LITELLM_URL}/chat/completions`;
 
       if (!response.ok) {
         return res.status(502).json({
@@ -2550,7 +2550,7 @@ app.post('/api/v1/modelos/:id/testar', async (req, res) => {
           modelo_solicitado: record.modelo,
           latency_ms: latencyMs,
           status_http: statusHttp,
-          error: rawResponse.error?.message || rawResponse.message || 'Falha na resposta do 9Router/LLM',
+          error: rawResponse.error?.message || rawResponse.message || 'Falha na resposta do LiteLLM/LLM',
           raw: rawResponse
         });
       }
@@ -2577,10 +2577,10 @@ app.post('/api/v1/modelos/:id/testar', async (req, res) => {
 
       res.status(504).json({
         success: false,
-        endpoint_url: `${NINE_ROUTER_URL}/chat/completions`,
+        endpoint_url: `${LITELLM_URL}/chat/completions`,
         modelo_solicitado: record.modelo,
         latency_ms: latencyMs,
-        error: isTimeout ? 'Timeout: o modelo não respondeu em até 12 segundos' : `Erro de conexão com 9Router: ${fetchErr.message}`
+        error: isTimeout ? 'Timeout: o modelo não respondeu em até 12 segundos' : `Erro de conexão com LiteLLM: ${fetchErr.message}`
       });
     }
   } catch (err) {

@@ -143,8 +143,8 @@
     gatewayStatusBadge: document.getElementById('gateway-status-badge'),
     gatewayModelsCount: document.getElementById('gateway-models-count'),
     gatewayEndpointDisplay: document.getElementById('gateway-endpoint-display'),
-    btnSync9Router: document.getElementById('btn-sync-9router'),
-    datalist9RouterModels: document.getElementById('datalist-9router-models'),
+    btnSyncLiteLLM: document.getElementById('btn-sync-litellm'),
+    datalistLiteLLMModels: document.getElementById('datalist-litellm-models'),
 
     // Modal Modelo
     modalModelo: document.getElementById('modal-modelo'),
@@ -271,7 +271,7 @@
   };
 
   let modelsList = [];
-  let nineRouterModels = [];
+  let liteLLMModels = [];
   let knowledgeDocs = [];
   let knowledgePagination = { page: 1, limit: 25, total: 0, totalPages: 1 };
   let ragSearchDebounceTimer = null;
@@ -1524,11 +1524,11 @@
   // GESTÃO E TESTE DE MODELOS DE IA
   // ---------------------------------------------------------------------------
 
-  async function checkNineRouterStatus() {
+  async function checkLiteLLMStatus() {
     try {
-      const res = await api('/api/v1/9router/status');
+      const res = await api('/api/v1/litellm/status');
       if (elements.gatewayEndpointDisplay) {
-        elements.gatewayEndpointDisplay.textContent = res.gateway_url || 'http://9router:20000/v1';
+        elements.gatewayEndpointDisplay.textContent = res.gateway_url || 'http://litellm:4000/v1';
       }
 
       if (res.healthy) {
@@ -1545,20 +1545,20 @@
         }
       }
 
-      nineRouterModels = Array.isArray(res.models) ? res.models : [];
+      liteLLMModels = Array.isArray(res.models) ? res.models : [];
       if (elements.gatewayModelsCount) {
-        elements.gatewayModelsCount.textContent = `${nineRouterModels.length} modelos descobertos`;
+        elements.gatewayModelsCount.textContent = `${liteLLMModels.length} modelos descobertos`;
       }
 
       // Preenche datalist para autocompletion no cadastro
-      if (elements.datalist9RouterModels) {
-        elements.datalist9RouterModels.innerHTML = nineRouterModels.map(m => {
+      if (elements.datalistLiteLLMModels) {
+        elements.datalistLiteLLMModels.innerHTML = liteLLMModels.map(m => {
           const label = m.owned_by ? `${m.id} (${m.owned_by})` : m.id;
           return `<option value="${escapeHtml(m.id)}">${escapeHtml(label)}</option>`;
         }).join('');
       }
     } catch (err) {
-      console.warn('[9router] Erro ao checar status:', err.message);
+      console.warn('[litellm] Erro ao checar status:', err.message);
       if (elements.gatewayStatusBadge) {
         elements.gatewayStatusBadge.textContent = 'Erro ao verificar';
         elements.gatewayStatusBadge.className = 'badge badge-close';
@@ -1570,7 +1570,7 @@
     try {
       const [res] = await Promise.all([
         api('/api/v1/modelos'),
-        checkNineRouterStatus()
+        checkLiteLLMStatus()
       ]);
       modelsList = Array.isArray(res.data) ? res.data : [];
       renderModels();
@@ -1638,7 +1638,7 @@
           <td>${statusBadge}</td>
           <td class="text-right">
             <div class="action-buttons justify-end">
-              <button class="btn btn-xs btn-secondary" data-action="test-model" data-id="${escapeHtml(String(m.id))}" title="Testar resposta e latência via 9Router">
+              <button class="btn btn-xs btn-secondary" data-action="test-model" data-id="${escapeHtml(String(m.id))}" title="Testar resposta e latência via LiteLLM">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
                 Testar
               </button>
@@ -1750,8 +1750,8 @@
     const mod = modelsList.find(m => String(m.id) === String(id));
     if (!mod) return;
 
-    elements.modalTestTitle.textContent = `Teste: ${mod.provedor}/${mod.modelo}`;
-    elements.modalTestSubtitle.textContent = 'Enviando ping de teste para o gateway 9Router...';
+    elements.modalTestTitle.textContent = `Teste (Ping LiteLLM): ${mod.provedor}/${mod.modelo}`;
+    elements.modalTestSubtitle.textContent = 'Enviando ping de teste para o gateway LiteLLM...';
     elements.testLoading.classList.remove('hidden');
     elements.testResultBox.classList.add('hidden');
     if (elements.testEndpointUrl) {
@@ -1765,7 +1765,7 @@
       elements.testResultBox.classList.remove('hidden');
 
       if (elements.testEndpointUrl) {
-        elements.testEndpointUrl.textContent = res.endpoint_url || 'http://9router:20000/v1/chat/completions';
+        elements.testEndpointUrl.textContent = res.endpoint_url || 'http://litellm:4000/v1/chat/completions';
       }
 
       const latency = res.latency_ms || 0;
@@ -1787,10 +1787,10 @@
       elements.testResultBox.classList.remove('hidden');
 
       if (elements.testEndpointUrl) {
-        elements.testEndpointUrl.textContent = 'http://9router:20000/v1/chat/completions';
+        elements.testEndpointUrl.textContent = 'http://litellm:4000/v1/chat/completions';
       }
 
-      elements.testStatusCode.textContent = 'ERRO HTTP / 9ROUTER';
+      elements.testStatusCode.textContent = 'ERRO HTTP / LITELLM';
       elements.testStatusCode.className = 'text-base font-semibold text-danger';
 
       elements.testLatency.textContent = '--';
@@ -1798,7 +1798,7 @@
 
       elements.testModelEffective.textContent = mod.modelo;
       if (elements.testReplyLabel) elements.testReplyLabel.textContent = 'Diagnóstico / Erro retornado:';
-      elements.testReplyContent.textContent = `${err.message}\n\nDica: certifique-se de que o ID do modelo existe no 9Router e possui credencial/provedor configurado no gateway.`;
+      elements.testReplyContent.textContent = `${err.message}\n\nDica: certifique-se de que o ID do modelo existe no LiteLLM e possui credencial/provedor configurado no gateway.`;
     }
   }
 
@@ -1806,13 +1806,13 @@
   if (elements.btnNewModel) {
     elements.btnNewModel.addEventListener('click', () => openModelModal(null));
   }
-  if (elements.btnSync9Router) {
-    elements.btnSync9Router.addEventListener('click', async () => {
-      elements.btnSync9Router.disabled = true;
-      showToast('Sincronizando com gateway 9Router...');
-      await checkNineRouterStatus();
-      elements.btnSync9Router.disabled = false;
-      showToast('Modelos do 9Router sincronizados!');
+  if (elements.btnSyncLiteLLM) {
+    elements.btnSyncLiteLLM.addEventListener('click', async () => {
+      elements.btnSyncLiteLLM.disabled = true;
+      showToast('Sincronizando com gateway LiteLLM...');
+      await checkLiteLLMStatus();
+      elements.btnSyncLiteLLM.disabled = false;
+      showToast('Modelos do LiteLLM sincronizados!');
     });
   }
   if (elements.formModelo) {
