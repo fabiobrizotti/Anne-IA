@@ -1708,23 +1708,20 @@ app.all('/api/v1/instances/:id/connect', async (req, res) => {
     let code = evoRes.data?.code || evoRes.data?.qrcode?.code || null;
     let pairingCode = evoRes.data?.pairingCode || null;
 
-    // Se for Pairing Code mas o WhatsApp ainda estiver negociando o código (assíncrono no Baileys)
-    // Realiza espera ativa inteligente de até ~4.8s (4 tentativas de 1.2s)
-    if (cleanNumber && !pairingCode) {
-      for (let attempt = 1; attempt <= 4; attempt++) {
-        await new Promise((resolve) => setTimeout(resolve, 1200));
+    // O Baileys publica o QR/código de pareamento de forma assíncrona: a primeira
+    // resposta pode vir vazia. Faz até 4 consultas (1,2s) à Evolution, que devolve
+    // o QR em cache quando a instância já está "connecting" (sem abrir novo socket).
+    const wantsPairing = Boolean(cleanNumber);
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      if ((wantsPairing && pairingCode) || (!wantsPairing && (base64 || code))) break;
+      await new Promise((resolve) => setTimeout(resolve, 1200));
 
-        const pollRes = await evolutionFetch(endpoint);
-        if (pollRes.ok) {
-          pairingCode = pollRes.data?.pairingCode || null;
-          base64 = pollRes.data?.base64 || pollRes.data?.qrcode?.base64 || base64;
-          code = pollRes.data?.code || pollRes.data?.qrcode?.code || code;
-          if (pairingCode) {
-            evoRes = pollRes;
-            break;
-          }
-        }
-      }
+      const pollRes = await evolutionFetch(endpoint);
+      if (!pollRes.ok) continue;
+      evoRes = pollRes;
+      pairingCode = pollRes.data?.pairingCode || pairingCode;
+      base64 = pollRes.data?.base64 || pollRes.data?.qrcode?.base64 || base64;
+      code = pollRes.data?.code || pollRes.data?.qrcode?.code || code;
     }
 
     res.json({
@@ -1757,6 +1754,7 @@ app.get('/api/v1/instances/:id/status', async (req, res) => {
     const evoRes = await evolutionFetch(`/instance/connectionState/${encodeURIComponent(id)}`);
 
     const state = evoRes.data?.instance?.state || evoRes.data?.state || 'close';
+    res.set('Cache-Control', 'no-store');
     res.json({ success: true, state });
   } catch (err) {
     res.status(500).json({ success: false, error: 'Falha ao verificar status' });
