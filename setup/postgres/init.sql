@@ -10,9 +10,39 @@
 -- `prisma migrate deploy` falha com P3005 (schema not empty).
 -- ============================================================================
 
+-- Roles dos gateways (LiteLLM e Langfuse). As senhas vêm de PGOPTIONS
+-- (app.litellm_password / app.langfuse_password) no container db-evolution.
+-- Reaplicar o SQL em volume existente NÃO altera senha já definida.
+DO $$
+DECLARE
+  v_senha TEXT := COALESCE(current_setting('app.litellm_password', true), 'changeme');
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'litellm') THEN
+    EXECUTE format('CREATE ROLE litellm LOGIN PASSWORD %L', v_senha);
+    RAISE NOTICE 'Role litellm criado com senha da .env';
+  END IF;
+END $$;
+
+DO $$
+DECLARE
+  v_senha TEXT := COALESCE(current_setting('app.langfuse_password', true), 'changeme');
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'langfuse') THEN
+    EXECUTE format('CREATE ROLE langfuse LOGIN PASSWORD %L', v_senha);
+    RAISE NOTICE 'Role langfuse criado com senha da .env';
+  END IF;
+END $$;
+
 -- Cria o banco de negócio dedicado da Anne-IA (se ainda não existir).
 SELECT 'CREATE DATABASE anneia'
 WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'anneia')\gexec
+
+-- Bancos lógicos dos gateways, com os respectivos roles como owners.
+SELECT 'CREATE DATABASE litellm OWNER litellm'
+WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'litellm')\gexec
+
+SELECT 'CREATE DATABASE langfuse OWNER langfuse'
+WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'langfuse')\gexec
 
 -- Conecta ao banco de negócio.
 \connect anneia
@@ -420,7 +450,7 @@ BEGIN
 
   v_chave_idemp := left('n8n:' || v_wf_clean || ':' || v_exec_clean || ':' || v_step_clean, 128);
 
-  v_prov_clean := lower(COALESCE(NULLIF(btrim(p_provedor), ''), '9router'));
+  v_prov_clean := lower(COALESCE(NULLIF(btrim(p_provedor), ''), 'litellm'));
   v_mod_clean := COALESCE(NULLIF(btrim(p_modelo), ''), 'anneia');
   v_mod_slug := lower(regexp_replace(v_mod_clean, '^[^/]+/', ''));
 

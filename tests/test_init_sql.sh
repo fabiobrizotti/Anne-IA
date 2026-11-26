@@ -172,6 +172,21 @@ assert_ge "UPDATE auditado com dados_antigos + dados_novos (pareamento)" 1 "${AU
 AUD_CLI="$(psql_q "SELECT count(*) FROM auditoria_geral WHERE tabela='clientes' AND operacao='U'")"
 assert_ge "UPDATE em clientes auditado (tabela com PK id)" 1 "${AUD_CLI}"
 
+# Gateway: bancos lógicos e roles dedicados precisam existir antes do docker compose up.
+db_count() { # datname
+  docker exec "${CONTAINER}" psql -U "${TEST_USER}" -d "${TEST_DB}" -tAc \
+    "SELECT count(*) FROM pg_database WHERE datname='$1'" 2>/dev/null | tr -d '[:space:]'
+}
+assert_eq "Banco litellm criado" "1" "$(db_count litellm)"
+assert_eq "Banco langfuse criado" "1" "$(db_count langfuse)"
+
+ROLES_GATEWAY="$(psql_q "SELECT count(*) FROM pg_roles WHERE rolname IN ('litellm', 'langfuse')")"
+assert_eq "Roles litellm/langfuse criados" "2" "${ROLES_GATEWAY}"
+
+# Fallback ativo do contábil de tokens passa a ser litellm; '9router_sync' segue só no CHECK.
+FALLBACK_PROV="$(psql_q "SELECT fn_registrar_uso_tokens('tenant-teste-idempotencia', 'wf-fallback', 'exec-fallback', NULL, 'modelo-sem-preco-teste', 1, 1)->>'provedor'")"
+assert_eq "Fallback de provedor em fn_registrar_uso_tokens" "litellm" "${FALLBACK_PROV}"
+
 say "[7/7] Resultado final..."
 if [[ ${FAILS} -eq 0 ]]; then
   say "==================================================================="
