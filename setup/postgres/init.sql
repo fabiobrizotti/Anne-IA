@@ -1088,15 +1088,17 @@ DO $$
 DECLARE
   v_password TEXT := COALESCE(current_setting('PGBOUNCER_PASSWORD', true), 'changeme');
 BEGIN
+  -- CREATE/ALTER ROLE exigem literal de string: a variável é interpolada via
+  -- format(%L), que também escapa aspas. Sem EXECUTE, o parser vê um
+  -- identificador e falha com "syntax error at or near v_password".
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'pgbouncer_app') THEN
-    CREATE ROLE pgbouncer_app
-      LOGIN
-      PASSWORD v_password
-      NOINHERIT
-      CONNECTION LIMIT 50;
+    EXECUTE format(
+      'CREATE ROLE pgbouncer_app LOGIN PASSWORD %L NOINHERIT CONNECTION LIMIT 50',
+      v_password
+    );
     RAISE NOTICE 'Role pgbouncer_app criada com senha da .env';
   ELSE
-    ALTER ROLE pgbouncer_app WITH PASSWORD v_password;
+    EXECUTE format('ALTER ROLE pgbouncer_app WITH PASSWORD %L', v_password);
     RAISE NOTICE 'Role pgbouncer_app senha atualizada da .env';
   END IF;
 END $$;
