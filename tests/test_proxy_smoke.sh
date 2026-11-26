@@ -226,9 +226,11 @@ for probe_path in "/rest/settings" "${workflows_probe}"; do
     "http://127.0.0.1:${NGINX_HOST_PORT}${N8N_BASE_PATH}${probe_path}" > "${probe_codes}" 2>/dev/null || true
   total=$(wc -l < "${probe_codes}" | tr -d '[:space:]')
   blocked=$(grep -c '^429$' "${probe_codes}" || true)
-  echo "  ${probe_path%%\?*}: ${total}/60 respostas, ${blocked} HTTP 429"
+  unhealthy=$(grep -cE '^(000|5[0-9][0-9])$' "${probe_codes}" || true)
+  echo "  ${probe_path%%\?*}: ${total}/60 respostas, ${blocked} HTTP 429, ${unhealthy} HTTP 000/5xx"
   [[ "${total}" -eq 60 ]] || fail "Sonda n8n ${probe_path%%\?*} incompleta (${total}/60 respostas)"
   [[ "${blocked}" -eq 0 ]] || fail "location ${N8N_BASE_PATH}/ ainda aplica limit_req: ${blocked}/60 HTTP 429 em ${probe_path%%\?*}"
+  [[ "${unhealthy}" -eq 0 ]] || fail "Sonda n8n ${probe_path%%\?*} falhou: ${unhealthy}/60 respostas 000/5xx (upstream indisponível)"
 done
 rm -f "${probe_codes}"
 

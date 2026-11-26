@@ -110,6 +110,10 @@ compartilhavam o mesmo bucket: 147 respostas 429 no log (129 assets, 36 REST,
 que conta conexões, não requests). Se houver abuso, criar zona dedicada e
 generosa em vez de restaurar a zona `api`.
 
+*Rollback pós-commit:* `git restore --source=0950ca9^ -- setup/nginx/nginx.conf.template
+&& docker compose restart nginx`. O `git checkout -- setup/nginx/nginx.conf.template`
+só era válido antes do commit (depois dele restaura justamente a versão corrigida).
+
 ### Changed — versão 1.2.2
 
 - `dashboard/package.json` e `dashboard/package-lock.json`: `1.2.1`/`1.2.0` → `1.2.2`
