@@ -155,7 +155,9 @@ http {
             proxy_read_timeout 1h;
             proxy_send_timeout 1h;
 
-            limit_req zone=api burst=${NGINX_RATE_LIMIT_BURST_API} nodelay;
+            # Sem limit_req aqui: o editor dispara >100 assets + REST em paralelo
+            # e estourava a zona `api` (10r/s, burst 20), causando 429 em
+            # workflows/settings. Proteção residual: limit_conn + auth do n8n.
             limit_conn perip 30;
             include /tmp/nginx/snippets/proxy-params.conf;
             proxy_pass http://n8n_backend/;

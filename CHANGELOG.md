@@ -90,6 +90,26 @@ Medido em container de teste (mesmo upstream, `keepalive 32`, 3 requests):
 - **`tests/test_proxy_smoke.sh`**: nova checagem estática "keepalive de upstream
   habilitado" (falha se voltar `close` ou faltar `proxy_http_version 1.1`).
 
+### Fixed — editor n8n com HTTP 429 (`Error fetching workflows`)
+
+A abertura do editor dispara >100 assets + REST em paralelo e estourava o burst
+da zona `api` (10r/s, burst 20), compartilhada com dashboard/pgAdmin/RabbitMQ.
+Como todos os clientes chegam ao Nginx como `172.20.0.1` (gateway Docker),
+compartilhavam o mesmo bucket: 147 respostas 429 no log (129 assets, 36 REST,
+4 types), incluindo `workflows`, `settings`, `roles` e `projects`.
+
+- **`setup/nginx/nginx.conf.template`**: removido `limit_req` de `location /n8n/`;
+  mantidos `limit_conn perip 30`, WebSocket e o include de `proxy-params.conf`.
+  Login (zona `login`, 5r/m) e dashboard permanecem limitados.
+- **`tests/test_proxy_smoke.sh`**: nova checagem 7.4 com 60 requisições paralelas
+  (`-P 20`) em `/rest/settings` e em `/rest/workflows`, exigindo zero 429, mais
+  guardião estático no bloco `location /n8n/` do config gerado (`0,1,1`).
+- **`README.md`**: tabela de rotas e bullet documentam a exceção e o motivo.
+
+*Follow-up:* `/n8n/rest/*` fica sem limite de requisições (apenas `limit_conn`,
+que conta conexões, não requests). Se houver abuso, criar zona dedicada e
+generosa em vez de restaurar a zona `api`.
+
 ### Changed — versão 1.2.2
 
 - `dashboard/package.json` e `dashboard/package-lock.json`: `1.2.1`/`1.2.0` → `1.2.2`

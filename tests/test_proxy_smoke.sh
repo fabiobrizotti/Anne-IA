@@ -213,6 +213,42 @@ else
   fail "keepalive de upstream desligado: falta 'proxy_http_version 1.1' no snippet ou o map mapeia '' para 'close'"
 fi
 
+# 7.4 Rate limit do editor: /n8n/ NÃO deve aplicar limit_req.
+# O editor dispara >100 assets + REST em paralelo; a zona `api` (10r/s, burst 20)
+# compartilhada com o dashboard devolvia 429 em workflows/settings. Concurrency
+# fixada em 20 para não confundir com `limit_conn perip 30`.
+echo "--- Rate Limit do editor n8n ---"
+probe_codes="$(mktemp)"
+workflows_probe='/rest/workflows?includeScopes=true&includeFolders=true&filter=%7B%7D&skip=0&take=50&sortBy=updatedAt%3Adesc'
+for probe_path in "/rest/settings" "${workflows_probe}"; do
+  seq 1 60 | xargs -P 20 -I{} curl -s -o /dev/null -w '%{http_code}\n' -m 10 \
+    -H "Host: ${TAILSCALE_HOSTNAME}" \
+    "http://127.0.0.1:${NGINX_HOST_PORT}${N8N_BASE_PATH}${probe_path}" > "${probe_codes}" 2>/dev/null || true
+  total=$(wc -l < "${probe_codes}" | tr -d '[:space:]')
+  blocked=$(grep -c '^429$' "${probe_codes}" || true)
+  echo "  ${probe_path%%\?*}: ${total}/60 respostas, ${blocked} HTTP 429"
+  [[ "${total}" -eq 60 ]] || fail "Sonda n8n ${probe_path%%\?*} incompleta (${total}/60 respostas)"
+  [[ "${blocked}" -eq 0 ]] || fail "location ${N8N_BASE_PATH}/ ainda aplica limit_req: ${blocked}/60 HTTP 429 em ${probe_path%%\?*}"
+done
+rm -f "${probe_codes}"
+
+conf_dump="$(mktemp)"
+docker compose exec -T nginx cat /tmp/nginx/nginx.conf > "${conf_dump}" 2>/dev/null || true
+loc_check=$(awk -v pat="location ${N8N_BASE_PATH}/" '
+  inblock == 0 && index($0, pat) > 0 { inblock = 1; next }
+  inblock == 1 && $1 == "}" { inblock = 0; next }
+  inblock == 1 && $1 == "limit_req" { req++ }
+  inblock == 1 && $1 == "limit_conn" && $2 == "perip" && $3 == "30;" { conn++ }
+  inblock == 1 && $1 == "include" && $2 ~ /proxy-params\.conf/ { inc++ }
+  END { print (req + 0) "," (conn + 0) "," (inc + 0) }
+' "${conf_dump}")
+rm -f "${conf_dump}"
+if [[ "${loc_check}" == "0,1,1" ]]; then
+  ok "location ${N8N_BASE_PATH}/ sem limit_req; limit_conn perip 30 e proxy-params preservados"
+else
+  fail "location ${N8N_BASE_PATH}/ deve ter 0 limit_req, limit_conn perip 30 e include do snippet (atual: ${loc_check}; esperado 0,1,1)"
+fi
+
 # ------------------------------------------------------------------------------
 # 8. PGBOUNCER CONEXÃO
 # ------------------------------------------------------------------------------
