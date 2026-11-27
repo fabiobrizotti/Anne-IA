@@ -5,7 +5,10 @@ const crypto = require('crypto');
 const Redis = require('ioredis');
 const auth = require('./auth');
 const logger = require('./logger');
-const { normalizarLinhaUsoTokens, normalizarLinhaSpendLog, mesclarLinhasUso, construirDadosFinanceiro } = require('./financeiro');
+const { criarSyncModelos } = require('./modelos-sync');
+const { criarAdapterLiteLLM } = require('./modelos-sync-litellm');
+const { criarAdapterLangfuse } = require('./modelos-sync-langfuse');
+const { slugModelo } = require('./modelos-sync-mapping');
 
 const app = express();
 const port = parseInt(process.env.PORT || '3000', 10);
@@ -34,23 +37,24 @@ if (DATABASE_URL) {
   console.error('[db] DATABASE_URL não configurada. Schema deve ser provisionado por setup/postgres/init.sql.');
 }
 
-// Pool somente-leitura do LiteLLM (spend log). Sem URL o financeiro falha fechado.
-const LITELLM_DATABASE_URL = process.env.LITELLM_DATABASE_URL || '';
-let gatewayPool = null;
-if (LITELLM_DATABASE_URL) {
-  gatewayPool = new Pool({
-    connectionString: LITELLM_DATABASE_URL,
-    max: 4,
-    idleTimeoutMillis: 10000,
-    connectionTimeoutMillis: 2000
-  });
-  gatewayPool.on('error', (err) => {
-    console.error('[db-gateway] Erro inesperado no pool do LiteLLM:', err.message);
-  });
-}
-
 // Injeta o pool no logger ANTES de qualquer rota poder logar.
 logger.init(pool);
+
+// Catálogo de modelos como fonte única: as rotas de escrita propagam para os
+// dois serviços. As rotas já exigem pool; sem ele o dashboard continua subindo.
+const LITELLM_BASE = LITELLM_URL.replace(/\/v1\/?$/, '');
+const syncModelos = pool
+  ? criarSyncModelos({
+    pool,
+    litellm: criarAdapterLiteLLM({ baseUrl: LITELLM_BASE, masterKey: LITELLM_API_KEY }),
+    langfuse: criarAdapterLangfuse({
+      host: process.env.LANGFUSE_HOST || 'http://langfuse-web:3000',
+      publicKey: process.env.LANGFUSE_PUBLIC_KEY || '',
+      secretKey: process.env.LANGFUSE_SECRET_KEY || ''
+    })
+  })
+  : null;
+
 
 // Redis client para rate limiting distribuído.
 // Sem REDIS_URL o rate limit cai no fallback em memória (fail-open) em vez de
@@ -2088,7 +2092,6 @@ app.get('/api/v1/financeiro', async (req, res) => {
   if (!pool) {
     return res.status(503).json({ success: false, error: 'Banco de dados indisponível' });
   }
-  let gatewayFalhou = false;
 
   try {
     let range;
@@ -2109,62 +2112,118 @@ app.get('/api/v1/financeiro', async (req, res) => {
       }
       targetClienteId = req.user.cliente_id;
     }
-    if (!isAdmin(req) && !targetClienteId) return res.status(403).json({ success: false, error: 'Acesso negado ao relatório financeiro.' });
 
-    if (!pool || !gatewayPool) {
-      return res.status(503).json({ success: false, error: 'Dados financeiros indisponíveis' });
-    }
+    const clientFilterWhere = targetClienteId ? ' AND cliente_id = $3' : '';
+    const clientFilterWhereU = targetClienteId ? ' AND u.cliente_id = $3' : '';
+    const queryParams = targetClienteId ? [range.inicio, range.fim, targetClienteId] : [range.inicio, range.fim];
+    const prevQueryParams = targetClienteId ? [range.prevInicio, range.prevFim, targetClienteId] : [range.prevInicio, range.prevFim];
 
-    const clienteFiltro = targetClienteId ? targetClienteId : null;
-    const limites = [range.inicio, range.fim, clienteFiltro];
-    const limitesAnteriores = [range.prevInicio, range.prevFim, clienteFiltro];
-
-    // startTime já é timestamp without time zone em UTC: to_char sem conversão
-    // de fuso mantém o sufixo Z honesto e evita que o pg produza Date local.
-    const gatewaySql = `SELECT "request_id", COALESCE("end_user", '') AS end_user, "model",
-  "spend", "prompt_tokens", "completion_tokens", "total_tokens",
-  to_char("startTime", 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS ocorrido_em
-  FROM "LiteLLM_SpendLogs"
-  WHERE "startTime" >= ($1::timestamptz AT TIME ZONE 'UTC')
-    AND "endTime" < ($2::timestamptz AT TIME ZONE 'UTC')
-    AND ($3::text IS NULL OR "end_user" = $3)`;
-
-    const usoSql = `SELECT u.cliente_id, COALESCE(c.nome, u.cliente_id) AS nome, u.provedor, u.modelo,
-       u.custo_usd, u.total_tokens, u.prompt_tokens, u.completion_tokens,
-       u.cached_tokens, u.request_id, u.criado_em
-FROM uso_tokens u LEFT JOIN clientes c ON c.id = u.cliente_id
-WHERE u.criado_em >= $1 AND u.criado_em <= $2
-  AND ($3::text IS NULL OR u.cliente_id = $3)`;
-
-    const consultarGateway = (params) =>
-      gatewayPool.query(gatewaySql, params).catch((err) => { gatewayFalhou = true; throw err; });
-
-    const [gatewayAtualRes, gatewayAnteriorRes, legacyAtualRes, legacyAnteriorRes, clientesRes] = await Promise.all([
-      consultarGateway(limites),
-      consultarGateway(limitesAnteriores),
-      pool.query(usoSql, limites),
-      pool.query(usoSql, limitesAnteriores),
-      pool.query('SELECT id, nome FROM clientes')
+    const [kpiRes, kpiPrevRes, serieRes, clienteRes, modeloRes] = await Promise.all([
+      // KPIs período atual (100% parametrizado)
+      pool.query(
+        `SELECT
+           COALESCE(SUM(custo_usd), 0) AS custo_usd,
+           COALESCE(COUNT(*), 0) AS requisicoes,
+           COALESCE(SUM(total_tokens), 0) AS tokens_total,
+           COALESCE(SUM(prompt_tokens), 0) AS tokens_prompt,
+           COALESCE(SUM(completion_tokens), 0) AS tokens_completion,
+           COALESCE(SUM(cached_tokens), 0) AS tokens_cached,
+           COUNT(DISTINCT cliente_id) AS clientes_ativos
+         FROM uso_tokens
+         WHERE criado_em >= $1 AND criado_em <= $2${clientFilterWhere}`,
+        queryParams
+      ),
+      // KPIs período anterior (para cálculo de delta no cliente)
+      pool.query(
+        `SELECT
+           COALESCE(SUM(custo_usd), 0) AS custo_usd,
+           COALESCE(COUNT(*), 0) AS requisicoes,
+           COALESCE(SUM(total_tokens), 0) AS tokens_total,
+           COALESCE(SUM(cached_tokens), 0) AS tokens_cached
+         FROM uso_tokens
+         WHERE criado_em >= $1 AND criado_em <= $2${clientFilterWhere}`,
+        prevQueryParams
+      ),
+      // Série temporal diária agregada
+      pool.query(
+        `SELECT
+           TO_CHAR(date_trunc('day', criado_em AT TIME ZONE 'America/Sao_Paulo'), 'YYYY-MM-DD') AS dia,
+           COALESCE(SUM(custo_usd), 0) AS custo_usd,
+           COALESCE(SUM(total_tokens), 0) AS tokens,
+           COUNT(*) AS requisicoes
+         FROM uso_tokens
+         WHERE criado_em >= $1 AND criado_em <= $2${clientFilterWhere}
+         GROUP BY 1
+         ORDER BY 1 ASC`,
+        queryParams
+      ),
+      // Agrupamento por cliente
+      pool.query(
+        `SELECT
+           u.cliente_id,
+           COALESCE(c.nome, u.cliente_id) AS nome,
+           COALESCE(SUM(u.custo_usd), 0) AS custo_usd,
+           COALESCE(SUM(u.total_tokens), 0) AS tokens,
+           COALESCE(SUM(u.cached_tokens), 0) AS tokens_cached,
+           COUNT(*) AS requisicoes
+         FROM uso_tokens u
+         LEFT JOIN clientes c ON c.id = u.cliente_id
+         WHERE u.criado_em >= $1 AND u.criado_em <= $2${clientFilterWhereU}
+         GROUP BY u.cliente_id, c.nome
+         ORDER BY custo_usd DESC, tokens DESC`,
+        queryParams
+      ),
+      // Agrupamento por modelo
+      pool.query(
+        `SELECT
+           COALESCE(provedor, 'desconhecido') AS provedor,
+           COALESCE(modelo, 'desconhecido') AS modelo,
+           COALESCE(SUM(custo_usd), 0) AS custo_usd,
+           COALESCE(SUM(total_tokens), 0) AS tokens,
+           COUNT(*) AS requisicoes
+         FROM uso_tokens
+         WHERE criado_em >= $1 AND criado_em <= $2${clientFilterWhere}
+         GROUP BY provedor, modelo
+         ORDER BY custo_usd DESC, tokens DESC`,
+        queryParams
+      )
     ]);
 
-    const atual = mesclarLinhasUso(
-      legacyAtualRes.rows.map(normalizarLinhaUsoTokens),
-      gatewayAtualRes.rows.map(normalizarLinhaSpendLog)
-    );
-    const anterior = mesclarLinhasUso(
-      legacyAnteriorRes.rows.map(normalizarLinhaUsoTokens),
-      gatewayAnteriorRes.rows.map(normalizarLinhaSpendLog)
-    );
+    const kpiRow = kpiRes.rows[0] || {};
+    const kpiPrevRow = kpiPrevRes.rows[0] || {};
 
-    const dados = construirDadosFinanceiro({
-      atual,
-      anterior,
-      clientes: clientesRes.rows,
-      inicio: range.inicio,
-      fim: range.fim,
-      prevInicio: range.prevInicio,
-      prevFim: range.prevFim
-    });
+    const custo = Number(kpiRow.custo_usd || 0);
+    const reqs = Number(kpiRow.requisicoes || 0);
+    const tokensTotal = Number(kpiRow.tokens_total || 0);
+    const tokensCached = Number(kpiRow.tokens_cached || 0);
+
+    const prevCusto = Number(kpiPrevRow.custo_usd || 0);
+    const prevReqs = Number(kpiPrevRow.requisicoes || 0);
+    const prevTokens = Number(kpiPrevRow.tokens_total || 0);
+
+    const serieBruta = serieRes.rows.map(r => ({
+      dia: r.dia,
+      custo_usd: Number(r.custo_usd || 0),
+      tokens: Number(r.tokens || 0),
+      requisicoes: Number(r.requisicoes || 0)
+    }));
+
+    const porCliente = clienteRes.rows.map(r => ({
+      cliente_id: r.cliente_id,
+      nome: r.nome,
+      custo_usd: Number(r.custo_usd || 0),
+      tokens: Number(r.tokens || 0),
+      tokens_cached: Number(r.tokens_cached || 0),
+      requisicoes: Number(r.requisicoes || 0)
+    }));
+
+    const porModelo = modeloRes.rows.map(r => ({
+      provedor: r.provedor,
+      modelo: r.modelo,
+      custo_usd: Number(r.custo_usd || 0),
+      tokens: Number(r.tokens || 0),
+      requisicoes: Number(r.requisicoes || 0)
+    }));
 
     res.json({
       success: true,
@@ -2173,15 +2232,28 @@ WHERE u.criado_em >= $1 AND u.criado_em <= $2
         inicio: range.labelInicio,
         fim: range.labelFim,
         gerado_em: new Date().toISOString(),
-        ...dados
+        kpis: {
+          custo_usd: custo,
+          requisicoes: reqs,
+          tokens_total: tokensTotal,
+          tokens_prompt: Number(kpiRow.tokens_prompt || 0),
+          tokens_completion: Number(kpiRow.tokens_completion || 0),
+          tokens_cached: tokensCached,
+          clientes_ativos: Number(kpiRow.clientes_ativos || 0)
+        },
+        kpis_anteriores: {
+          custo_usd: prevCusto,
+          requisicoes: prevReqs,
+          tokens_total: prevTokens
+        },
+        serie_diaria: serieBruta,
+        por_cliente: porCliente,
+        por_modelo: porModelo
       }
     });
   } catch (err) {
-    console.error('[api] Erro ao carregar dados financeiros:', err.message);
-    if (gatewayFalhou || !gatewayPool) {
-      return res.status(503).json({ success: false, error: 'Dados financeiros indisponíveis' });
-    }
-    return res.status(500).json({ success: false, error: 'Falha ao processar dados financeiros' });
+    console.error('[api] Erro ao carregar dados financeiros:', err);
+    res.status(500).json({ success: false, error: 'Falha ao processar dados financeiros' });
   }
 });
 
@@ -2278,15 +2350,10 @@ const ALLOWED_MODEL_TIERS = ['tier_1', 'tier_2', 'tier_3'];
 
 // GET /api/v1/modelos - Listar todos os modelos
 app.get('/api/v1/modelos', async (_req, res) => {
-  if (!pool) return res.status(500).json({ success: false, error: 'Postgres não conectado' });
+  if (!pool || !syncModelos) return res.status(500).json({ success: false, error: 'Postgres não conectado' });
   try {
-    const result = await pool.query(
-      `SELECT id, provedor, modelo, tier, input_per_1m, cached_per_1m, output_per_1m,
-              reasoning_per_1m, cache_creation_per_1m, moeda, vigente_de, vigente_ate, ativo
-       FROM precos_modelos
-       ORDER BY ativo DESC, tier ASC, input_per_1m ASC, provedor ASC, modelo ASC`
-    );
-    res.json({ success: true, data: result.rows });
+    const data = await syncModelos.listar();
+    res.json({ success: true, data });
   } catch (err) {
     console.error('[api] Erro ao listar modelos:', err.message);
     res.status(500).json({ success: false, error: 'Falha ao consultar modelos' });
@@ -2330,9 +2397,11 @@ app.post('/api/v1/modelos', async (req, res) => {
        RETURNING *`,
       [provClean, modClean, tierClean, pInput, pCached, pOutput, pReasoning, pCacheCreation, isAtivo]
     );
-    res.status(201).json({ success: true, data: insertRes.rows[0] });
+    const linha = insertRes.rows[0];
+    const sincronizacao = await syncModelos.aplicarModelo(linha);
+    res.status(201).json({ success: true, data: linha, sincronizacao });
     logger.writeLog('info', 'modelos', `Modelo cadastrado: ${provClean}/${modClean}`, {
-      modelo_id: insertRes.rows[0].id, tier: tierClean, ativo: isAtivo
+      modelo_id: linha.id, tier: tierClean, ativo: isAtivo, sincronizacao
     }).catch(() => {});
   } catch (err) {
     console.error('[api] Erro ao cadastrar modelo:', err.message);
@@ -2385,9 +2454,11 @@ app.put('/api/v1/modelos/:id', async (req, res) => {
     if (updateRes.rowCount === 0) {
       return res.status(404).json({ success: false, error: 'Modelo não encontrado' });
     }
-    res.json({ success: true, data: updateRes.rows[0] });
+    const linha = updateRes.rows[0];
+    const sincronizacao = await syncModelos.aplicarModelo(linha);
+    res.json({ success: true, data: linha, sincronizacao });
     logger.writeLog('info', 'modelos', `Modelo atualizado: ${provClean}/${modClean}`, {
-      modelo_id: id, tier: tierClean, ativo: isAtivo
+      modelo_id: id, tier: tierClean, ativo: isAtivo, sincronizacao
     }).catch(() => {});
   } catch (err) {
     console.error('[api] Erro ao atualizar modelo:', err.message);
@@ -2405,12 +2476,26 @@ app.delete('/api/v1/modelos/:id', async (req, res) => {
   if (!id || id <= 0) return res.status(400).json({ success: false, error: 'ID inválido' });
 
   try {
-    // Busca informações do modelo
-    const modRes = await pool.query('SELECT provedor, modelo FROM precos_modelos WHERE id = $1', [id]);
+    // Linha completa: a remoção externa precisa do id para gravar o estado.
+    const modRes = await pool.query('SELECT * FROM precos_modelos WHERE id = $1', [id]);
     if (modRes.rowCount === 0) {
       return res.status(404).json({ success: false, error: 'Modelo não encontrado' });
     }
-    const { provedor, modelo } = modRes.rows[0];
+    const linha = modRes.rows[0];
+    const { provedor, modelo } = linha;
+    const sincronizacao = await syncModelos.removerModelo(linha);
+    const pendente = Object.values(sincronizacao).includes('pendente');
+
+    // Falha externa: preserva linha e external_id para a próxima reconciliação.
+    if (pendente) {
+      await pool.query('UPDATE precos_modelos SET ativo = false WHERE id = $1', [id]);
+      return res.json({
+        success: true,
+        action: 'removido_parcial',
+        sincronizacao,
+        message: 'Remoção externa pendente; modelo desativado para nova tentativa.'
+      });
+    }
 
     // Checa se possui registros no ledger de uso de tokens
     const usageCheck = await pool.query(
@@ -2424,16 +2509,42 @@ app.delete('/api/v1/modelos/:id', async (req, res) => {
       return res.json({
         success: true,
         action: 'desativado',
+        sincronizacao,
         message: 'Modelo possui histórico financeiro; foi desativado em vez de excluído para preservar auditoria.'
       });
     }
 
     await pool.query('DELETE FROM precos_modelos WHERE id = $1', [id]);
-    res.json({ success: true, action: 'removido', message: 'Modelo removido com sucesso' });
-    logger.writeLog('info', 'modelos', `Modelo removido: ${provedor}/${modelo}`, { modelo_id: id }).catch(() => {});
+    res.json({ success: true, action: 'removido', sincronizacao, message: 'Modelo removido com sucesso' });
+    logger.writeLog('info', 'modelos', `Modelo removido: ${provedor}/${modelo}`, {
+      modelo_id: id, sincronizacao
+    }).catch(() => {});
   } catch (err) {
     console.error('[api] Erro ao excluir modelo:', err.message);
     res.status(500).json({ success: false, error: 'Falha ao excluir modelo' });
+  }
+});
+
+// POST /api/v1/modelos/sincronizar - Reconcilia catálogo ↔ LiteLLM ↔ Langfuse
+app.post('/api/v1/modelos/sincronizar', async (req, res) => {
+  if (!isAdmin(req)) {
+    return res.status(403).json({ success: false, error: 'Acesso restrito a administradores.' });
+  }
+  if (!pool || !syncModelos) return res.status(500).json({ success: false, error: 'Postgres não conectado' });
+
+  const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'local';
+  const rateLimitOk = await checkTestRateLimitRedis(`modelos-sync:${clientIp}`, 5, 60_000);
+  if (!rateLimitOk) {
+    return res.status(429).json({ success: false, error: 'Limite de sincronizações atingido (máx 5 por minuto). Aguarde.' });
+  }
+
+  try {
+    const data = await syncModelos.reconciliar();
+    res.json({ success: true, data });
+    logger.writeLog('info', 'modelos', 'Reconciliação manual concluída', data).catch(() => {});
+  } catch (err) {
+    console.error('[api] Erro ao sincronizar modelos:', err.message);
+    res.status(500).json({ success: false, error: 'Falha ao sincronizar modelos' });
   }
 });
 
@@ -2458,6 +2569,7 @@ app.post('/api/v1/modelos/:id/testar', async (req, res) => {
       return res.status(404).json({ success: false, error: 'Modelo não encontrado' });
     }
     const record = modRes.rows[0];
+    const slug = slugModelo(record);
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 12000); // 12s timeout estrito
@@ -2474,7 +2586,7 @@ app.post('/api/v1/modelos/:id/testar', async (req, res) => {
           'Authorization': `Bearer ${LITELLM_API_KEY}`
         },
         body: JSON.stringify({
-          model: record.modelo,
+          model: slugModelo(record),
           messages: [{ role: 'user', content: 'Responda apenas "OK" em 1 palavra.' }],
           max_tokens: 5,
           temperature: 0.1
@@ -2493,7 +2605,7 @@ app.post('/api/v1/modelos/:id/testar', async (req, res) => {
         return res.status(502).json({
           success: false,
           endpoint_url: endpointUsed,
-          modelo_solicitado: record.modelo,
+          modelo_solicitado: slug,
           latency_ms: latencyMs,
           status_http: statusHttp,
           error: rawResponse.error?.message || rawResponse.message || 'Falha na resposta do LiteLLM/LLM',
@@ -2509,10 +2621,10 @@ app.post('/api/v1/modelos/:id/testar', async (req, res) => {
       res.json({
         success: true,
         endpoint_url: endpointUsed,
-        modelo_solicitado: record.modelo,
+        modelo_solicitado: slug,
         latency_ms: latencyMs,
         status_http: statusHttp,
-        modelo_retornado: rawResponse.model || record.modelo,
+        modelo_retornado: rawResponse.model || slug,
         resposta: reply.trim(),
         usage
       });
@@ -2524,7 +2636,7 @@ app.post('/api/v1/modelos/:id/testar', async (req, res) => {
       res.status(504).json({
         success: false,
         endpoint_url: `${LITELLM_URL}/chat/completions`,
-        modelo_solicitado: record.modelo,
+        modelo_solicitado: slug,
         latency_ms: latencyMs,
         error: isTimeout ? 'Timeout: o modelo não respondeu em até 12 segundos' : `Erro de conexão com LiteLLM: ${fetchErr.message}`
       });
@@ -3109,14 +3221,6 @@ process.on('uncaughtException', (erro) => {
   });
 });
 
-// Fecha os dois pools no desligamento graceful, sem expor connection strings.
-async function encerrarPools() {
-  await Promise.allSettled([pool?.end(), gatewayPool?.end()]);
-  process.exit(0);
-}
-process.once('SIGTERM', encerrarPools);
-process.once('SIGINT', encerrarPools);
-
 // Inicia servidor HTTP
 app.listen(port, '0.0.0.0', async () => {
   console.log(`[dashboard] Painel administrativo ativo na porta ${port}`);
@@ -3127,6 +3231,17 @@ app.listen(port, '0.0.0.0', async () => {
     // um restart do container (antes ela mostrava "cache vazio").
     const aquecidos = await logger.warmup();
     if (aquecidos > 0) console.log(`[log] Cache aquecido com ${aquecidos} entrada(s) de system_logs.`);
+
+    // Reconciliação inicial sem await: o listen não depende dos serviços externos.
+    syncModelos.reconciliar().catch((err) => {
+      logger.writeLog('warn', 'modelos', 'Reconciliação inicial falhou', {
+        erro: err?.mensagem || 'indisponível'
+      }).catch(() => {});
+      return null;
+    }).then((r) => {
+      if (r) logger.writeLog('info', 'modelos', 'Reconciliação inicial concluída', r).catch(() => {});
+    });
+
 
     // Retenção automática (diária) — sem isso a tabela cresce indefinidamente.
     const retencaoDias = parseInt(process.env.LOG_RETENTION_DAYS || '90', 10);
