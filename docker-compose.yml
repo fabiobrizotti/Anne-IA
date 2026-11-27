@@ -298,7 +298,6 @@ services:
       OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT: ${OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT}
       LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY}
       LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY}
-      LANGFUSE_HOST: ${LANGFUSE_HOST}
     command: ["--config", "/app/config.yaml", "--port", "${LITELLM_CONTAINER_PORT}"]
     volumes:
       - ./setup/litellm/config.yaml:/app/config.yaml:ro

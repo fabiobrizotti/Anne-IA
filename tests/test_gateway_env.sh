@@ -117,6 +117,18 @@ fi
 assert_file_has "LITELLM_URL resolvido no compose" 'LITELLM_URL: http://litellm:4000/v1' "${TMP_DIR}/compose.config"
 assert_file_has "Master key resolvida no compose" "LITELLM_MASTER_KEY: $(get_val LITELLM_MASTER_KEY)" "${TMP_DIR}/compose.config"
 
+# Variáveis exportadas no shell têm precedência sobre o .env na interpolação do
+# Compose. Se LANGFUSE_HOST vier poluído (placeholder literal), o LiteLLM monta
+# um endpoint OTEL inválido e os spans nunca chegam ao Langfuse. O valor do
+# LiteLLM deve vir do .env via env_file, sem override explícito no compose.
+POLLUTED_LANGFUSE_HOST='http://langfuse-web:${LANGFUSE_CONTAINER_PORT}'
+resolved_host="$(
+  LANGFUSE_HOST="${POLLUTED_LANGFUSE_HOST}" docker compose --env-file "${TMP_COMPOSE_ENV}" config --format json 2>/dev/null |
+    python3 -c 'import json,sys; print(json.load(sys.stdin)["services"]["litellm"]["environment"].get("LANGFUSE_HOST", ""))'
+)"
+assert_eq "LiteLLM resolve LANGFUSE_HOST do .env mesmo com override no shell" \
+  "$(get_val LANGFUSE_HOST "${TMP_ENV}")" "${resolved_host}"
+
 # O compose versionado e o resultado interpolado não podem conter segredos literais.
 for var in LITELLM_MASTER_KEY LITELLM_SALT_KEY LITELLM_DB_PASSWORD CLICKHOUSE_PASSWORD LANGFUSE_REDIS_PASSWORD; do
   secret="$(get_val "${var}")"
