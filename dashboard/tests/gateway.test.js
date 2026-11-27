@@ -117,3 +117,33 @@ test('litellm status', async (t) => {
   assert.equal(body.has_api_key, true);
   assert.equal(authHeaderSeen, 'Bearer chave-teste');
 });
+
+test('financeiro fail-closed quando o gateway falha', async (t) => {
+  const dashboardPort = await freePort();
+  const child = spawn(process.execPath, ['src/server.js'], {
+    cwd: DASHBOARD_DIR,
+    env: {
+      ...process.env,
+      PORT: String(dashboardPort),
+      DATABASE_URL: 'postgresql://u:p@127.0.0.1:1/anneia',
+      LITELLM_DATABASE_URL: 'postgresql://u:p@127.0.0.1:1/litellm',
+      REDIS_URL: '',
+      DASHBOARD_AUTH_ENABLED: 'true',
+      DASHBOARD_USERNAME: 'admin',
+      DASHBOARD_PASSWORD: 'senha-teste'
+    },
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  t.after(() => child.kill());
+  await waitFor(`http://127.0.0.1:${dashboardPort}/api/health`, child);
+  const basic = Buffer.from('admin:senha-teste').toString('base64');
+  const res = await fetch(`http://127.0.0.1:${dashboardPort}/api/v1/financeiro`, {
+    headers: { Authorization: `Basic ${basic}` }
+  });
+  assert.equal(res.status, 503);
+});
+
+test('handler bloqueia usuario sem cliente_id', () => {
+  const src = fs.readFileSync(path.join(DASHBOARD_DIR, 'src/server.js'), 'utf8');
+  assert.match(src, /if \(!isAdmin\(req\) && !targetClienteId\) return res\.status\(403\)/);
+});

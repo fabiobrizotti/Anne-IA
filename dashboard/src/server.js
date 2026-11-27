@@ -5,6 +5,7 @@ const crypto = require('crypto');
 const Redis = require('ioredis');
 const auth = require('./auth');
 const logger = require('./logger');
+const { normalizarLinhaUsoTokens, normalizarLinhaSpendLog, mesclarLinhasUso, construirDadosFinanceiro } = require('./financeiro');
 
 const app = express();
 const port = parseInt(process.env.PORT || '3000', 10);
@@ -31,6 +32,21 @@ if (DATABASE_URL) {
   });
 } else {
   console.error('[db] DATABASE_URL não configurada. Schema deve ser provisionado por setup/postgres/init.sql.');
+}
+
+// Pool somente-leitura do LiteLLM (spend log). Sem URL o financeiro falha fechado.
+const LITELLM_DATABASE_URL = process.env.LITELLM_DATABASE_URL || '';
+let gatewayPool = null;
+if (LITELLM_DATABASE_URL) {
+  gatewayPool = new Pool({
+    connectionString: LITELLM_DATABASE_URL,
+    max: 4,
+    idleTimeoutMillis: 10000,
+    connectionTimeoutMillis: 2000
+  });
+  gatewayPool.on('error', (err) => {
+    console.error('[db-gateway] Erro inesperado no pool do LiteLLM:', err.message);
+  });
 }
 
 // Injeta o pool no logger ANTES de qualquer rota poder logar.
@@ -2072,6 +2088,7 @@ app.get('/api/v1/financeiro', async (req, res) => {
   if (!pool) {
     return res.status(503).json({ success: false, error: 'Banco de dados indisponível' });
   }
+  let gatewayFalhou = false;
 
   try {
     let range;
@@ -2092,118 +2109,62 @@ app.get('/api/v1/financeiro', async (req, res) => {
       }
       targetClienteId = req.user.cliente_id;
     }
+    if (!isAdmin(req) && !targetClienteId) return res.status(403).json({ success: false, error: 'Acesso negado ao relatório financeiro.' });
 
-    const clientFilterWhere = targetClienteId ? ' AND cliente_id = $3' : '';
-    const clientFilterWhereU = targetClienteId ? ' AND u.cliente_id = $3' : '';
-    const queryParams = targetClienteId ? [range.inicio, range.fim, targetClienteId] : [range.inicio, range.fim];
-    const prevQueryParams = targetClienteId ? [range.prevInicio, range.prevFim, targetClienteId] : [range.prevInicio, range.prevFim];
+    if (!pool || !gatewayPool) {
+      return res.status(503).json({ success: false, error: 'Dados financeiros indisponíveis' });
+    }
 
-    const [kpiRes, kpiPrevRes, serieRes, clienteRes, modeloRes] = await Promise.all([
-      // KPIs período atual (100% parametrizado)
-      pool.query(
-        `SELECT
-           COALESCE(SUM(custo_usd), 0) AS custo_usd,
-           COALESCE(COUNT(*), 0) AS requisicoes,
-           COALESCE(SUM(total_tokens), 0) AS tokens_total,
-           COALESCE(SUM(prompt_tokens), 0) AS tokens_prompt,
-           COALESCE(SUM(completion_tokens), 0) AS tokens_completion,
-           COALESCE(SUM(cached_tokens), 0) AS tokens_cached,
-           COUNT(DISTINCT cliente_id) AS clientes_ativos
-         FROM uso_tokens
-         WHERE criado_em >= $1 AND criado_em <= $2${clientFilterWhere}`,
-        queryParams
-      ),
-      // KPIs período anterior (para cálculo de delta no cliente)
-      pool.query(
-        `SELECT
-           COALESCE(SUM(custo_usd), 0) AS custo_usd,
-           COALESCE(COUNT(*), 0) AS requisicoes,
-           COALESCE(SUM(total_tokens), 0) AS tokens_total,
-           COALESCE(SUM(cached_tokens), 0) AS tokens_cached
-         FROM uso_tokens
-         WHERE criado_em >= $1 AND criado_em <= $2${clientFilterWhere}`,
-        prevQueryParams
-      ),
-      // Série temporal diária agregada
-      pool.query(
-        `SELECT
-           TO_CHAR(date_trunc('day', criado_em AT TIME ZONE 'America/Sao_Paulo'), 'YYYY-MM-DD') AS dia,
-           COALESCE(SUM(custo_usd), 0) AS custo_usd,
-           COALESCE(SUM(total_tokens), 0) AS tokens,
-           COUNT(*) AS requisicoes
-         FROM uso_tokens
-         WHERE criado_em >= $1 AND criado_em <= $2${clientFilterWhere}
-         GROUP BY 1
-         ORDER BY 1 ASC`,
-        queryParams
-      ),
-      // Agrupamento por cliente
-      pool.query(
-        `SELECT
-           u.cliente_id,
-           COALESCE(c.nome, u.cliente_id) AS nome,
-           COALESCE(SUM(u.custo_usd), 0) AS custo_usd,
-           COALESCE(SUM(u.total_tokens), 0) AS tokens,
-           COALESCE(SUM(u.cached_tokens), 0) AS tokens_cached,
-           COUNT(*) AS requisicoes
-         FROM uso_tokens u
-         LEFT JOIN clientes c ON c.id = u.cliente_id
-         WHERE u.criado_em >= $1 AND u.criado_em <= $2${clientFilterWhereU}
-         GROUP BY u.cliente_id, c.nome
-         ORDER BY custo_usd DESC, tokens DESC`,
-        queryParams
-      ),
-      // Agrupamento por modelo
-      pool.query(
-        `SELECT
-           COALESCE(provedor, 'desconhecido') AS provedor,
-           COALESCE(modelo, 'desconhecido') AS modelo,
-           COALESCE(SUM(custo_usd), 0) AS custo_usd,
-           COALESCE(SUM(total_tokens), 0) AS tokens,
-           COUNT(*) AS requisicoes
-         FROM uso_tokens
-         WHERE criado_em >= $1 AND criado_em <= $2${clientFilterWhere}
-         GROUP BY provedor, modelo
-         ORDER BY custo_usd DESC, tokens DESC`,
-        queryParams
-      )
+    const clienteFiltro = targetClienteId ? targetClienteId : null;
+    const limites = [range.inicio, range.fim, clienteFiltro];
+    const limitesAnteriores = [range.prevInicio, range.prevFim, clienteFiltro];
+
+    // startTime já é timestamp without time zone em UTC: to_char sem conversão
+    // de fuso mantém o sufixo Z honesto e evita que o pg produza Date local.
+    const gatewaySql = `SELECT "request_id", COALESCE("end_user", '') AS end_user, "model",
+  "spend", "prompt_tokens", "completion_tokens", "total_tokens",
+  to_char("startTime", 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS ocorrido_em
+  FROM "LiteLLM_SpendLogs"
+  WHERE "startTime" >= ($1::timestamptz AT TIME ZONE 'UTC')
+    AND "endTime" < ($2::timestamptz AT TIME ZONE 'UTC')
+    AND ($3::text IS NULL OR "end_user" = $3)`;
+
+    const usoSql = `SELECT u.cliente_id, COALESCE(c.nome, u.cliente_id) AS nome, u.provedor, u.modelo,
+       u.custo_usd, u.total_tokens, u.prompt_tokens, u.completion_tokens,
+       u.cached_tokens, u.request_id, u.criado_em
+FROM uso_tokens u LEFT JOIN clientes c ON c.id = u.cliente_id
+WHERE u.criado_em >= $1 AND u.criado_em <= $2
+  AND ($3::text IS NULL OR u.cliente_id = $3)`;
+
+    const consultarGateway = (params) =>
+      gatewayPool.query(gatewaySql, params).catch((err) => { gatewayFalhou = true; throw err; });
+
+    const [gatewayAtualRes, gatewayAnteriorRes, legacyAtualRes, legacyAnteriorRes, clientesRes] = await Promise.all([
+      consultarGateway(limites),
+      consultarGateway(limitesAnteriores),
+      pool.query(usoSql, limites),
+      pool.query(usoSql, limitesAnteriores),
+      pool.query('SELECT id, nome FROM clientes')
     ]);
 
-    const kpiRow = kpiRes.rows[0] || {};
-    const kpiPrevRow = kpiPrevRes.rows[0] || {};
+    const atual = mesclarLinhasUso(
+      legacyAtualRes.rows.map(normalizarLinhaUsoTokens),
+      gatewayAtualRes.rows.map(normalizarLinhaSpendLog)
+    );
+    const anterior = mesclarLinhasUso(
+      legacyAnteriorRes.rows.map(normalizarLinhaUsoTokens),
+      gatewayAnteriorRes.rows.map(normalizarLinhaSpendLog)
+    );
 
-    const custo = Number(kpiRow.custo_usd || 0);
-    const reqs = Number(kpiRow.requisicoes || 0);
-    const tokensTotal = Number(kpiRow.tokens_total || 0);
-    const tokensCached = Number(kpiRow.tokens_cached || 0);
-
-    const prevCusto = Number(kpiPrevRow.custo_usd || 0);
-    const prevReqs = Number(kpiPrevRow.requisicoes || 0);
-    const prevTokens = Number(kpiPrevRow.tokens_total || 0);
-
-    const serieBruta = serieRes.rows.map(r => ({
-      dia: r.dia,
-      custo_usd: Number(r.custo_usd || 0),
-      tokens: Number(r.tokens || 0),
-      requisicoes: Number(r.requisicoes || 0)
-    }));
-
-    const porCliente = clienteRes.rows.map(r => ({
-      cliente_id: r.cliente_id,
-      nome: r.nome,
-      custo_usd: Number(r.custo_usd || 0),
-      tokens: Number(r.tokens || 0),
-      tokens_cached: Number(r.tokens_cached || 0),
-      requisicoes: Number(r.requisicoes || 0)
-    }));
-
-    const porModelo = modeloRes.rows.map(r => ({
-      provedor: r.provedor,
-      modelo: r.modelo,
-      custo_usd: Number(r.custo_usd || 0),
-      tokens: Number(r.tokens || 0),
-      requisicoes: Number(r.requisicoes || 0)
-    }));
+    const dados = construirDadosFinanceiro({
+      atual,
+      anterior,
+      clientes: clientesRes.rows,
+      inicio: range.inicio,
+      fim: range.fim,
+      prevInicio: range.prevInicio,
+      prevFim: range.prevFim
+    });
 
     res.json({
       success: true,
@@ -2212,28 +2173,15 @@ app.get('/api/v1/financeiro', async (req, res) => {
         inicio: range.labelInicio,
         fim: range.labelFim,
         gerado_em: new Date().toISOString(),
-        kpis: {
-          custo_usd: custo,
-          requisicoes: reqs,
-          tokens_total: tokensTotal,
-          tokens_prompt: Number(kpiRow.tokens_prompt || 0),
-          tokens_completion: Number(kpiRow.tokens_completion || 0),
-          tokens_cached: tokensCached,
-          clientes_ativos: Number(kpiRow.clientes_ativos || 0)
-        },
-        kpis_anteriores: {
-          custo_usd: prevCusto,
-          requisicoes: prevReqs,
-          tokens_total: prevTokens
-        },
-        serie_diaria: serieBruta,
-        por_cliente: porCliente,
-        por_modelo: porModelo
+        ...dados
       }
     });
   } catch (err) {
-    console.error('[api] Erro ao carregar dados financeiros:', err);
-    res.status(500).json({ success: false, error: 'Falha ao processar dados financeiros' });
+    console.error('[api] Erro ao carregar dados financeiros:', err.message);
+    if (gatewayFalhou || !gatewayPool) {
+      return res.status(503).json({ success: false, error: 'Dados financeiros indisponíveis' });
+    }
+    return res.status(500).json({ success: false, error: 'Falha ao processar dados financeiros' });
   }
 });
 
@@ -3160,6 +3108,14 @@ process.on('uncaughtException', (erro) => {
     setTimeout(() => process.exit(1), 500);
   });
 });
+
+// Fecha os dois pools no desligamento graceful, sem expor connection strings.
+async function encerrarPools() {
+  await Promise.allSettled([pool?.end(), gatewayPool?.end()]);
+  process.exit(0);
+}
+process.once('SIGTERM', encerrarPools);
+process.once('SIGINT', encerrarPools);
 
 // Inicia servidor HTTP
 app.listen(port, '0.0.0.0', async () => {
