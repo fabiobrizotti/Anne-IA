@@ -200,6 +200,14 @@ assert_eq "enum de status inclui nao_aplicavel" "1" \
 assert_eq "seeds dos 3 modelos do config.yaml" "3" \
   "$(db_count "SELECT count(*) FROM precos_modelos WHERE provedor='openrouter' AND vigente_de='2026-11-26T00:00:00Z'")"
 
+# psql_q consulta `anneia`; o grant vive no banco `litellm`.
+# defaclacl é aclitem[]: cast para name[] retorna 0 — usar LIKE no texto.
+litellm_q() {
+  docker exec "${CONTAINER}" psql -U "${TEST_USER}" -d litellm -tAc "$1" 2>/dev/null | tr -d '[:space:]'
+}
+ADMIN_PRIV="$(litellm_q "SELECT count(*) FROM pg_default_acl d JOIN pg_roles r ON r.oid=d.defaclrole WHERE r.rolname='litellm' AND d.defaclobjtype='r' AND d.defaclacl::text LIKE '%pgbouncer_app=r%'")"
+assert_ge "Default privileges de leitura para pgbouncer_app em litellm" 1 "${ADMIN_PRIV}"
+
 say "[7/7] Resultado final..."
 if [[ ${FAILS} -eq 0 ]]; then
   say "==================================================================="

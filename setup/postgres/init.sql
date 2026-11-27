@@ -1260,6 +1260,14 @@ COMMENT ON ROLE pgbouncer_admin IS 'Role admin para console PgBouncer (session p
 COMMENT ON ROLE pgbouncer_auth IS 'Role para auth_query (opcional, não usada com userlist.txt)';
 COMMENT ON FUNCTION pgbouncer.get_auth(TEXT) IS 'Retorna credenciais SCRAM para auth_query do PgBouncer';
 
+-- 10. Leitura do spend do gateway pelo Dashboard (banco lógico litellm).
+-- O ALTER DEFAULT PRIVILEGES cobre o boot limpo: o LiteLLM cria
+-- LiteLLM_SpendLogs DEPOIS do entrypoint do Postgres.
+\connect litellm
+GRANT USAGE ON SCHEMA public TO pgbouncer_app;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO pgbouncer_app;
+ALTER DEFAULT PRIVILEGES FOR ROLE litellm IN SCHEMA public GRANT SELECT ON TABLES TO pgbouncer_app;
+
 
 
 
