@@ -2,25 +2,9 @@
 # ANNE IA — CONFIGURAÇÃO DO LITELLM (gateway OpenAI-compatible)
 # ==============================================================================
 # A provider key NUNCA entra neste arquivo: vem de OPENROUTER_API_KEY (.env).
-# Modelos fora desta lista devem ser adicionados aqui antes de aparecerem no
-# Dashboard; o teste de ping falha com erro explícito se o modelo não existir.
+# Modelos são gerenciados na aba Modelos de IA do Dashboard e replicados por API;
+# não editar modelos nas UIs do LiteLLM/Langfuse.
 # ==============================================================================
-
-model_list:
-  - model_name: openrouter/z-ai/glm-5.3
-    litellm_params:
-      model: openrouter/z-ai/glm-5.3
-      api_key: os.environ/OPENROUTER_API_KEY
-
-  - model_name: openrouter/openai/gpt-4o-mini
-    litellm_params:
-      model: openrouter/openai/gpt-4o-mini
-      api_key: os.environ/OPENROUTER_API_KEY
-
-  - model_name: openrouter/recursive/flint-v1.0:free
-    litellm_params:
-      model: openrouter/recursive/flint-v1.0:free
-      api_key: os.environ/OPENROUTER_API_KEY
 
 general_settings:
   # Catálogo gerenciado pelo Dashboard; UI do LiteLLM em modo somente leitura.

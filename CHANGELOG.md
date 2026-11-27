@@ -1,5 +1,19 @@
 # CHANGELOG - Anne-IA Dashboard
 
+## [1.2.4] - 2026-11-26
+
+### Added — Dashboard como fonte única do catálogo de IAs
+
+- `precos_modelos` é a SSOT do catálogo: criar/editar/ativar/remover no Dashboard replica por API para LiteLLM e Langfuse. `modelos_sync_estado` registra `sincronizado`, `pendente`, `removido` ou `nao_aplicavel` por sistema.
+- Botão **Sincronizar Modelos** reconcilia de verdade (`POST /api/v1/modelos/sincronizar`, admin, 5/min por IP) e exibe badge por linha + resumo (criados/atualizados/removidos/pendentes/órfãos observados).
+- Chaves de escrita do Langfuse ficam somente no backend; contas humanas devem usar `Member`/`Viewer`.
+
+### Changed — LiteLLM com catálogo no DB e UI em modo leitura
+
+- `store_model_in_db: true` e `ui_access_mode: "admin_only"`; `model_list` removido do YAML após migrar os modelos seed. O teste de inferência usa o slug canônico `provedor/modelo`.
+- `STORE_MODEL_IN_DB=True` versionado no `.env.example`/Compose: sem essa env o proxy recusa `/model/new` e `/model/delete`.
+- Hard delete só conclui se as remoções externas sucederem; caso contrário o modelo é desativado e permanece `pendente` para retry.
+
 ## [1.2.2] - 2026-11-24
 
 ### Fixed — Evolution API: `500 Not allowed by CORS` ao marcar mensagens como lidas

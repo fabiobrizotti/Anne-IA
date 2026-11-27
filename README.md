@@ -208,7 +208,7 @@ O LiteLLM é o gateway OpenAI-compatible usado pelo Dashboard (catálogo e teste
 - **Custeio por cliente (Dashboard)**: `LITELLM_DATABASE_URL` deriva de `CHAVE_PGBOUNCER_PASSWORD` e lê `LiteLLM_SpendLogs` via `pgbouncer` (db `litellm`).
 - **Fail-closed do financeiro**: `/api/v1/financeiro` retorna `503` se o banco `litellm` estiver indisponível.
 - **Endpoint no host (Strix/CLI)**: `http://127.0.0.1:${LITELLM_PORT}/v1` (OpenAI-compatible). Use uma chave virtual do LiteLLM em `LLM_API_KEY`/`Authorization: Bearer ...`; a master key fica restrita ao Dashboard dentro do container.
-- **Modelos**: IDs `openrouter/<provider>/<model>` declarados em `setup/litellm/config.yaml`; `OPENROUTER_API_KEY` entra somente pelo `.env`. A chave de teste do Dashboard usa esse mesmo endpoint.
+- **Modelos**: IDs `openrouter/<provider>/<model>` são gerenciados na aba **Modelos de IA** do Dashboard (`precos_modelos` é a SSOT) e replicados por API para LiteLLM e Langfuse; não editar modelos nas UIs desses serviços. `OPENROUTER_API_KEY` entra somente pelo `.env`. A chave de teste do Dashboard usa esse mesmo endpoint.
 - **Langfuse v4**: UI em `http://127.0.0.1:${LANGFUSE_PORT}` (web + worker + ClickHouse 25.12 + MinIO + Redis). No primeiro login, crie o projeto e copie `pk-lf-*`/`sk-lf-*` para `LANGFUSE_PUBLIC_KEY`/`LANGFUSE_SECRET_KEY` no `.env`; depois rode `docker compose up -d --force-recreate litellm langfuse-web langfuse-worker` para o gateway passar a publicar spans.
 - **Observabilidade**: preset `langfuse_otel` com `LITELLM_OTEL_V2=true` e `LITELLM_OTEL_LANGFUSE_SPAN_SCOPE=llm_only`. `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=NO_CONTENT` registra modelo, tokens, custo e latência **sem** prompt/resposta; mudar para `SPAN_ONLY` exige avaliação LGPD prévia.
 - **Agente → Langfuse (opcional)**: configurar *Observability → Broadcast* na conta OpenRouter apontando para o Langfuse. É uma decisão externa ao repositório; não há código para isso.
@@ -370,6 +370,8 @@ O Dashboard administrativo é uma aplicação web ultra-leve construída em **Va
    - Catálogo de modelos com precificação por 1M tokens (input, output, cache, reasoning) e **classificação por Níveis** (`T1`, `T2`, `T3`, com rótulos acessíveis `Nível 1`, `Nível 2`, `Nível 3`).
    - Cadastro, edição e desativação segura protegendo integridade de auditoria contábil.
    - Teste de conectividade e inferência direta via LiteLLM com medição de latência em milissegundos e rate limit defensivo.
+   - Coluna **Sync** por modelo e resumo de reconciliação no banner: `Sincronizado`, `Pendente`, `Removido` ou `N/A` por sistema (`Litellm`/`Langfuse`), atualizados pelo botão **Sincronizar Modelos**.
+   - O custo exibido nos traces do Langfuse é o devolvido pelo LiteLLM; os preços cadastrados no Dashboard são referência/fallback, não sobrescrevem o custo observado.
 6. **Base de Conhecimento RAG & Vetores pgvector (Sub-aba Base de Conhecimento)**:
    - Central de auditoria e inspeção de fragmentos (chunks) textuais, metadados JSONB e embeddings na tabela `base_conhecimento`.
    - Índices de performance industrial: B-tree composto `(instance_id, id DESC)` para paginação multi-tenant instantânea e GIN `pg_trgm` para buscas textuais rápidas.
@@ -411,6 +413,7 @@ O Dashboard administrativo é uma aplicação web ultra-leve construída em **Va
 | `PUT` | `/api/v1/modelos/:id` | Atualiza parâmetros e vigência de precificação do modelo |
 | `DELETE` | `/api/v1/modelos/:id` | Exclui ou desativa modelo (soft-delete seguro se houver histórico contábil) |
 | `POST` | `/api/v1/modelos/:id/testar` | Dispara teste de ping/inferência no LiteLLM e afere latência |
+| `POST` | `/api/v1/modelos/sincronizar` | Reconcilia o catálogo com LiteLLM e Langfuse (admin, máx. 5/min por IP) |
 | `GET` | `/api/v1/prompts-padrao` | Lista prompts padrão globais com filtro opcional por status ativo |
 | `GET` | `/api/v1/prompts-padrao/:id` | Obtém prompt padrão por ID ou chave única (slug n8n) |
 | `POST` | `/api/v1/prompts-padrao` | Cadastra novo prompt padrão com modelo validado contra a tabela de modelos |
@@ -514,7 +517,28 @@ O dashboard isola dados sensíveis de titulares (CPF) com dupla proteção cript
   2. Rotação de `CPF_ENC_KEY`: requer script de migração para decifrar os registros legados com a chave anterior e recifrá-los com a nova chave.
   3. Rotação de `CPF_HMAC_KEY`: altera as assinaturas determinísticas; requer recalcular `cpf_hash` de todos os registros na tabela `dashboard_usuarios` utilizando a nova chave HMAC.
 
-### 9.4. Recriar Banco e RabbitMQ do Zero (Destrutivo)
+### 9.4. Catálogo de IAs: chaves do Langfuse e papéis de conta
+
+- `STORE_MODEL_IN_DB=True` no `.env` é pré-requisito do `/model/new` e `/model/delete`
+  do proxy LiteLLM; sem ele a reconciliação marca esse sistema como `pendente`.
+- No primeiro login do Langfuse, crie o projeto e copie `pk-lf-*`/`sk-lf-*` de
+  *Project Settings → API Keys* para `LANGFUSE_PUBLIC_KEY`/`LANGFUSE_SECRET_KEY`
+  no `.env` (nunca impressos em log, README ou commit). Recrie os containers com
+  `docker compose up -d --force-recreate litellm langfuse-web langfuse-worker`.
+- Contas humanas no Langfuse devem usar `Member` ou `Viewer`. A conta bootstrap
+  pode permanecer `Owner` apenas para administração inicial; transferir/proteger
+  essa conta é responsabilidade operacional, pois `Owner`/`Admin` consegue
+  configurar modelos pela UI. As chaves de escrita vivem somente no backend do
+  Dashboard.
+- Sem as chaves, a reconciliação marca os modelos como `pendente` (não derruba o
+  boot). Preencha o `.env`, recrie os containers e clique em **Sincronizar
+  Modelos** (ou `POST /api/v1/modelos/sincronizar`) para convergir.
+- `POST /api/v1/modelos/sincronizar` é administrativo e limitado a 5 chamadas por
+  minuto por IP. Falhas externas não apagam o catálogo local: viram `pendente`
+  e são retentadas na próxima reconciliação. Modelos padrão do Langfuse fora do
+  catálogo aparecem apenas como `orfos_observados`; nenhum é removido.
+
+### 9.5. Recriar Banco e RabbitMQ do Zero (Destrutivo)
 Se desejar destruir todos os volumes e reinicializar o ambiente do zero:
 
 <details>
