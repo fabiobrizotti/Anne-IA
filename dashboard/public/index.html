@@ -344,6 +344,8 @@
             <div class="gateway-status-info">
               <span id="gateway-status-badge" class="badge badge-connecting">Checando conexão...</span>
               <span id="gateway-models-count" class="text-xs text-muted">0 modelos descobertos</span>
+              <span id="sync-status-badge" class="badge badge-connecting">Sync: —</span>
+              <span id="sync-summary" class="text-xs text-muted" role="status" aria-live="polite"></span>
               <button id="btn-sync-litellm" class="btn btn-xs btn-secondary" title="Sincronizar catálogo de modelos do LiteLLM">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
                 Sincronizar Modelos
@@ -379,12 +381,13 @@
                   <th>Output / 1M</th>
                   <th>Cache / 1M</th>
                   <th>Status</th>
+                  <th>Sync</th>
                   <th class="text-right">Ações</th>
                 </tr>
               </thead>
               <tbody id="modelos-tbody">
                 <tr>
-                  <td colspan="8" class="text-center py-8 text-muted">Carregando modelos...</td>
+                  <td colspan="9" class="text-center py-8 text-muted">Carregando modelos...</td>
                 </tr>
               </tbody>
             </table>

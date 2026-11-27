@@ -144,6 +144,8 @@
     gatewayModelsCount: document.getElementById('gateway-models-count'),
     gatewayEndpointDisplay: document.getElementById('gateway-endpoint-display'),
     btnSyncLiteLLM: document.getElementById('btn-sync-litellm'),
+    syncStatusBadge: document.getElementById('sync-status-badge'),
+    syncSummary: document.getElementById('sync-summary'),
     datalistLiteLLMModels: document.getElementById('datalist-litellm-models'),
 
     // Modal Modelo
@@ -1580,6 +1582,26 @@
     }
   }
 
+  function renderSyncStatus(sync) {
+    const litellm = sync?.litellm?.status || 'nao_aplicavel';
+    const langfuse = sync?.langfuse?.status || 'nao_aplicavel';
+
+    let label = 'N/A';
+    let className = 'badge badge-outline';
+    if (litellm === 'pendente' || langfuse === 'pendente') {
+      label = 'Pendente';
+      className = 'badge badge-connecting';
+    } else if (litellm === 'sincronizado' || langfuse === 'sincronizado') {
+      label = 'Sincronizado';
+      className = 'badge badge-open';
+    } else if (litellm === 'removido' || langfuse === 'removido') {
+      label = 'Removido';
+    }
+
+    const title = `LiteLLM: ${litellm} · Langfuse: ${langfuse}`;
+    return `<span class="${className}" title="${escapeHtml(title)}">${escapeHtml(label)}</span>`;
+  }
+
   function renderModels() {
     if (!elements.modelosTbody) return;
 
@@ -1604,7 +1626,7 @@
     if (filtered.length === 0) {
       elements.modelosTbody.innerHTML = `
         <tr>
-          <td colspan="7" class="text-center py-8 text-muted">
+          <td colspan="9" class="text-center py-8 text-muted">
             ${term ? 'Nenhum modelo encontrado para o termo pesquisado.' : 'Nenhum modelo cadastrado.'}
           </td>
         </tr>
@@ -1636,6 +1658,7 @@
           <td>$${Number(m.output_per_1m || 0).toFixed(4)}</td>
           <td>$${Number(m.cached_per_1m || 0).toFixed(4)}</td>
           <td>${statusBadge}</td>
+          <td>${renderSyncStatus(m.sync)}</td>
           <td class="text-right">
             <div class="action-buttons justify-end">
               <button class="btn btn-xs btn-secondary" data-action="test-model" data-id="${escapeHtml(String(m.id))}" title="Testar resposta e latência via LiteLLM">
@@ -1808,11 +1831,39 @@
   }
   if (elements.btnSyncLiteLLM) {
     elements.btnSyncLiteLLM.addEventListener('click', async () => {
-      elements.btnSyncLiteLLM.disabled = true;
-      showToast('Sincronizando com gateway LiteLLM...');
-      await checkLiteLLMStatus();
-      elements.btnSyncLiteLLM.disabled = false;
-      showToast('Modelos do LiteLLM sincronizados!');
+      const btn = elements.btnSyncLiteLLM;
+      btn.disabled = true;
+      if (elements.syncStatusBadge) {
+        elements.syncStatusBadge.textContent = 'Sync: ...';
+        elements.syncStatusBadge.className = 'badge badge-connecting';
+      }
+      try {
+        const res = await api('/api/v1/modelos/sincronizar', { method: 'POST' });
+        const r = res.data || {};
+        const pendente = Number(r.pendentes) > 0;
+        if (elements.syncSummary) {
+          const erros = Array.isArray(r.erros) ? r.erros.length : 0;
+          elements.syncSummary.textContent = `Criados: ${r.criados ?? 0} · Atualizados: ${r.atualizados ?? 0} · Removidos: ${r.removidos ?? 0} · Pendentes: ${r.pendentes ?? 0} · Órfãos observados: ${r.orfos_observados ?? 0}${erros ? ` · Erros: ${erros}` : ''}`;
+        }
+        if (elements.syncStatusBadge) {
+          elements.syncStatusBadge.textContent = pendente ? 'Sync: Pendente' : 'Sync: Sincronizado';
+          elements.syncStatusBadge.className = pendente ? 'badge badge-connecting' : 'badge badge-open';
+        }
+        showToast(pendente
+          ? 'Sincronização concluída com pendências; revise o resumo.'
+          : 'Catálogo de modelos sincronizado!', pendente ? 'error' : 'success');
+        // loadModels() já chama checkLiteLLMStatus(): uma única leitura do gateway.
+        await loadModels();
+      } catch (err) {
+        if (elements.syncStatusBadge) {
+          elements.syncStatusBadge.textContent = 'Sync: Erro';
+          elements.syncStatusBadge.className = 'badge badge-close';
+        }
+        if (elements.syncSummary) elements.syncSummary.textContent = '';
+        showToast(err.message, 'error');
+      } finally {
+        btn.disabled = false;
+      }
     });
   }
   if (elements.formModelo) {

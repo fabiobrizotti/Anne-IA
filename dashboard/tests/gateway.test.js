@@ -37,7 +37,7 @@ async function waitFor(url, child) {
 
 test('litellm UI wiring', () => {
   const html = fs.readFileSync(path.join(DASHBOARD_DIR, 'public/index.html'), 'utf8');
-  const app = fs.readFileSync(path.join(DASHBOARD_DIR, 'public/app.js'), 'utf8');
+  const appJs = fs.readFileSync(path.join(DASHBOARD_DIR, 'public/app.js'), 'utf8');
 
   for (const text of [
     'btn-sync-litellm',
@@ -47,9 +47,26 @@ test('litellm UI wiring', () => {
   ]) {
     assert.ok(html.includes(text), `index.html deveria conter ${text}`);
   }
-  assert.ok(app.includes('/api/v1/litellm/status'));
-  assert.ok(app.includes('checkLiteLLMStatus'));
-  assert.ok(!/9router/i.test(html) && !/9router/i.test(app));
+  assert.ok(appJs.includes('/api/v1/litellm/status'));
+  assert.ok(appJs.includes('checkLiteLLMStatus'));
+  assert.ok(!/9router/i.test(html) && !/9router/i.test(appJs));
+
+  assert.match(html, /id="sync-status-badge"/);
+  assert.match(html, /id="sync-summary"/);
+  assert.match(html, /aria-live="polite"/);
+  assert.match(html, /<th>Sync<\/th>/);
+  assert.match(appJs, /\/api\/v1\/modelos\/sincronizar/);
+  assert.match(appJs, /orfos_observados/);
+
+  const modelsTable = html.slice(
+    html.indexOf('id="modelos-tbody"'),
+    html.indexOf('<!-- SUB-ABA 2:')
+  );
+  const modelsRender = appJs.slice(appJs.indexOf('function renderModels()'), appJs.indexOf('function openModelModal('));
+  assert.match(modelsTable, /colspan="9"/);
+  assert.match(modelsRender, /colspan="9"/);
+  assert.ok(!/colspan="(7|8)"/.test(modelsTable), 'empty state da tabela de modelos deve usar colspan="9"');
+  assert.ok(!/colspan="(7|8)"/.test(modelsRender), 'empty state dinâmico da tabela de modelos deve usar colspan="9"');
 });
 
 test('litellm status', async (t) => {
