@@ -118,6 +118,11 @@ else
   bad "Langfuse web com memória insuficiente (< 1536m)"
 fi
 assert_file_has "LITELLM_URL resolvido no compose" 'LITELLM_URL: http://litellm:4000/v1' "${TMP_DIR}/compose.config"
+assert_file_has "Dashboard lê o spend via pgbouncer/litellm" \
+  'LITELLM_DATABASE_URL: postgresql://pgbouncer_app:${CHAVE_PGBOUNCER_PASSWORD}@pgbouncer:${PGBOUNCER_CONTAINER_PORT}/litellm' \
+  "${PROJECT_ROOT}/docker-compose.yml"
+assert_file_has ".env.example documenta a URL derivada do gateway" \
+  'LITELLM_DATABASE_URL' "${ENV_EXAMPLE}"
 assert_file_has "Master key resolvida no compose" "LITELLM_MASTER_KEY: $(get_val LITELLM_MASTER_KEY)" "${TMP_DIR}/compose.config"
 
 # Variáveis exportadas no shell têm precedência sobre o .env na interpolação do
@@ -149,6 +154,8 @@ assert_no_match "Bootstrap não concede proxy_admin com permissão total" 'user_
 
 say "[5/6] Documentação operacional..."
 README="${PROJECT_ROOT}/README.md"
+assert_file_has "README documenta fail-closed do financeiro" \
+  '/api/v1/financeiro` retorna `503' "${README}"
 assert_file_has "README documenta o gateway para o Strix no host" \
   'http://127.0.0.1:${LITELLM_PORT}/v1' "${README}"
 # A seção 5 é a do roteamento de IA; 9Router pode aparecer apenas como

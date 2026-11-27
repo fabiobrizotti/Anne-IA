@@ -205,6 +205,8 @@ A infraestrutura utiliza o `.env.example` como fonte única da verdade estrutura
 O LiteLLM é o gateway OpenAI-compatible usado pelo Dashboard (catálogo e teste de modelos) e pelo Strix (`LLM_API_BASE`). O Agente nativo do n8n **continua** chamando a OpenRouter direto pelo nó `LLM: OpenRouter` — memória Postgres, tools e filas `anne.direct.work`/`costs.telemetry` permanecem intactos; limite de gasto por cliente no Agente segue pendente.
 
 - **Endpoint interno (Dashboard)**: `http://litellm:4000/v1` (`LITELLM_URL`). A master key vem de `LITELLM_MASTER_KEY`/`LITELLM_API_KEY` no `.env`; `config.yaml` não contém segredos.
+- **Custeio por cliente (Dashboard)**: `LITELLM_DATABASE_URL` deriva de `CHAVE_PGBOUNCER_PASSWORD` e lê `LiteLLM_SpendLogs` via `pgbouncer` (db `litellm`).
+- **Fail-closed do financeiro**: `/api/v1/financeiro` retorna `503` se o banco `litellm` estiver indisponível.
 - **Endpoint no host (Strix/CLI)**: `http://127.0.0.1:${LITELLM_PORT}/v1` (OpenAI-compatible). Use uma chave virtual do LiteLLM em `LLM_API_KEY`/`Authorization: Bearer ...`; a master key fica restrita ao Dashboard dentro do container.
 - **Modelos**: IDs `openrouter/<provider>/<model>` declarados em `setup/litellm/config.yaml`; `OPENROUTER_API_KEY` entra somente pelo `.env`. A chave de teste do Dashboard usa esse mesmo endpoint.
 - **Langfuse v4**: UI em `http://127.0.0.1:${LANGFUSE_PORT}` (web + worker + ClickHouse 25.12 + MinIO + Redis). No primeiro login, crie o projeto e copie `pk-lf-*`/`sk-lf-*` para `LANGFUSE_PUBLIC_KEY`/`LANGFUSE_SECRET_KEY` no `.env`; depois rode `docker compose up -d --force-recreate litellm langfuse-web langfuse-worker` para o gateway passar a publicar spans.

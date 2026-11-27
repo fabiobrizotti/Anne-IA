@@ -552,6 +552,7 @@ services:
       EVOLUTION_API_URL: http://evolution-api:${SERVER_PORT}
       EVOLUTION_API_KEY: ${AUTHENTICATION_API_KEY}
       DATABASE_URL: postgresql://pgbouncer_app:${CHAVE_PGBOUNCER_PASSWORD}@pgbouncer:${PGBOUNCER_CONTAINER_PORT}/anneia
+      LITELLM_DATABASE_URL: postgresql://pgbouncer_app:${CHAVE_PGBOUNCER_PASSWORD}@pgbouncer:${PGBOUNCER_CONTAINER_PORT}/litellm
       # Revisão em execução (gravada no .env pelo update.sh). Em runtime, para que
       # /api/health sempre reflita o HEAD aplicado — inclusive em updates que só
       # tocaram documentação e por isso não reconstroem a imagem.
