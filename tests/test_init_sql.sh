@@ -173,7 +173,12 @@ AUD_CLI="$(psql_q "SELECT count(*) FROM auditoria_geral WHERE tabela='clientes' 
 assert_ge "UPDATE em clientes auditado (tabela com PK id)" 1 "${AUD_CLI}"
 
 # Gateway: bancos lógicos e roles dedicados precisam existir antes do docker compose up.
-db_count() { # datname
+# Aceita nome de banco (legado) ou uma consulta SELECT count(...) contra `anneia`.
+db_count() { # datname|consulta SQL
+  if [[ "$1" == SELECT* ]]; then
+    docker exec "${CONTAINER}" psql -U "${TEST_USER}" -d anneia -tAc "$1" 2>/dev/null | tr -d '[:space:]'
+    return
+  fi
   docker exec "${CONTAINER}" psql -U "${TEST_USER}" -d "${TEST_DB}" -tAc \
     "SELECT count(*) FROM pg_database WHERE datname='$1'" 2>/dev/null | tr -d '[:space:]'
 }
@@ -186,6 +191,14 @@ assert_eq "Roles litellm/langfuse criados" "2" "${ROLES_GATEWAY}"
 # Fallback ativo do contábil de tokens passa a ser litellm; '9router_sync' segue só no CHECK.
 FALLBACK_PROV="$(psql_q "SELECT fn_registrar_uso_tokens('tenant-teste-idempotencia', 'wf-fallback', 'exec-fallback', NULL, 'modelo-sem-preco-teste', 1, 1)->>'provedor'")"
 assert_eq "Fallback de provedor em fn_registrar_uso_tokens" "litellm" "${FALLBACK_PROV}"
+
+# SSOT do catálogo: estado de sincronização e seeds do config.yaml do gateway.
+assert_eq "tabela modelos_sync_estado existe" "1" \
+  "$(db_count "SELECT count(*) FROM information_schema.tables WHERE table_name='modelos_sync_estado'")"
+assert_eq "enum de status inclui nao_aplicavel" "1" \
+  "$(db_count "SELECT count(*) FROM pg_constraint WHERE conname='modelos_sync_estado_status_check' AND pg_get_constraintdef(oid) LIKE '%nao_aplicavel%'")"
+assert_eq "seeds dos 3 modelos do config.yaml" "3" \
+  "$(db_count "SELECT count(*) FROM precos_modelos WHERE provedor='openrouter' AND vigente_de='2026-11-26T00:00:00Z'")"
 
 say "[7/7] Resultado final..."
 if [[ ${FAILS} -eq 0 ]]; then

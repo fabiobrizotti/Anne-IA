@@ -349,6 +349,18 @@ ALTER TABLE precos_modelos ADD COLUMN IF NOT EXISTS tier VARCHAR(20) NOT NULL DE
 CREATE INDEX IF NOT EXISTS idx_precos_modelos_lookup ON precos_modelos(provedor, modelo, ativo, vigente_de);
 CREATE INDEX IF NOT EXISTS idx_precos_modelos_tier_ativo_custo ON precos_modelos (tier, ativo, input_per_1m ASC);
 
+-- 9.1 Estado da propagação do catálogo para LiteLLM e Langfuse (uma linha por par).
+-- Sem índice extra: a PRIMARY KEY (modelo_id, sistema) já cobre o lookup do orchestrator.
+CREATE TABLE IF NOT EXISTS modelos_sync_estado (
+  modelo_id BIGINT REFERENCES precos_modelos(id) ON DELETE CASCADE,
+  sistema VARCHAR(20) CHECK (sistema IN ('litellm','langfuse')),
+  external_id VARCHAR(128),
+  status VARCHAR(20) CHECK (status IN ('sincronizado','pendente','removido','nao_aplicavel')),
+  ultimo_erro TEXT,
+  sincronizado_em TIMESTAMPTZ,
+  PRIMARY KEY (modelo_id, sistema)
+);
+
 -- Seed idempotente: preços mínimos para opencode/big-pickle e antigravity/ag/gemini-3.1-flash-lite
 INSERT INTO precos_modelos (provedor, modelo, tier, input_per_1m, cached_per_1m, output_per_1m, reasoning_per_1m, cache_creation_per_1m, moeda, vigente_de, ativo)
 VALUES ('opencode', 'big-pickle', 'tier_3', 0, 0, 0, 0, 0, 'USD', NOW(), true)
@@ -359,6 +371,19 @@ SELECT 'antigravity', 'ag/gemini-3.1-flash-lite', 'tier_1', 0.250000, 0.000000, 
 WHERE NOT EXISTS (
   SELECT 1 FROM precos_modelos WHERE provedor = 'antigravity' AND modelo = 'ag/gemini-3.1-flash-lite'
 );
+
+-- Seeds idempotentes: os 3 modelos do config.yaml do LiteLLM passam a viver no catálogo.
+INSERT INTO precos_modelos (provedor, modelo, tier, input_per_1m, output_per_1m, moeda, vigente_de, ativo)
+VALUES ('openrouter', 'z-ai/glm-5.3', 'tier_1', 0, 0, 'USD', '2026-11-26T00:00:00Z', true)
+ON CONFLICT (provedor, modelo, vigente_de) DO NOTHING;
+
+INSERT INTO precos_modelos (provedor, modelo, tier, input_per_1m, output_per_1m, moeda, vigente_de, ativo)
+VALUES ('openrouter', 'openai/gpt-4o-mini', 'tier_1', 0, 0, 'USD', '2026-11-26T00:00:00Z', true)
+ON CONFLICT (provedor, modelo, vigente_de) DO NOTHING;
+
+INSERT INTO precos_modelos (provedor, modelo, tier, input_per_1m, output_per_1m, moeda, vigente_de, ativo)
+VALUES ('openrouter', 'recursive/flint-v1.0:free', 'tier_1', 0, 0, 'USD', '2026-11-26T00:00:00Z', true)
+ON CONFLICT (provedor, modelo, vigente_de) DO NOTHING;
 
 -- 10. Ledger de uso de tokens por cliente/instância (granular por requisição)
 CREATE TABLE IF NOT EXISTS uso_tokens (
