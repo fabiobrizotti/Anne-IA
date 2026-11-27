@@ -1,34 +1,11 @@
 'use strict';
 
 document.addEventListener('DOMContentLoaded', () => {
-  // ---------------------------------------------------------------------------
-  // 1. TEMA CLARO / ESCURO
-  // ---------------------------------------------------------------------------
+  window.AnneTheme.syncIcons();
+
   const btnTheme = document.getElementById('btn-theme-toggle');
-  const iconSun = document.getElementById('theme-icon-sun');
-  const iconMoon = document.getElementById('theme-icon-moon');
-
-  function updateThemeUI(theme) {
-    document.documentElement.setAttribute('data-theme', theme);
-    if (theme === 'dark') {
-      iconSun.classList.remove('hidden');
-      iconMoon.classList.add('hidden');
-    } else {
-      iconSun.classList.add('hidden');
-      iconMoon.classList.remove('hidden');
-    }
-  }
-
-  const currentTheme = document.documentElement.getAttribute('data-theme') || 'light';
-  updateThemeUI(currentTheme);
-
   if (btnTheme) {
-    btnTheme.addEventListener('click', () => {
-      const active = document.documentElement.getAttribute('data-theme');
-      const next = active === 'dark' ? 'light' : 'dark';
-      localStorage.setItem('anne_theme', next);
-      updateThemeUI(next);
-    });
+    btnTheme.addEventListener('click', () => window.AnneTheme.toggle());
   }
 
   // ---------------------------------------------------------------------------

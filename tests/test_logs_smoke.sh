@@ -48,8 +48,11 @@ echo "Smoke test da aba Logs — alvo: ${BASE_URL}"
 
 # --- 1. Sem credencial -------------------------------------------------------
 CODE=$(curl -s -o /dev/null -w '%{http_code}' "${BASE_URL}/api/v1/logs")
-[ "${CODE}" = "401" ] && pass "GET /api/v1/logs sem sessão retorna 401" \
-  || fail "GET /api/v1/logs sem sessão retornou ${CODE} (esperado 401)"
+if [ "${CODE}" = "401" ]; then
+  pass "GET /api/v1/logs sem sessão retorna 401"
+else
+  fail "GET /api/v1/logs sem sessão retornou ${CODE} (esperado 401)"
+fi
 
 # --- 2. Listagem autenticada -------------------------------------------------
 BODY=$(curl -s -u "${USER}:${PASS}" "${BASE_URL}/api/v1/logs?limit=5")
@@ -84,13 +87,23 @@ fi
 CSV_HEADERS=$(curl -s -D - -o /dev/null -u "${USER}:${PASS}" "${BASE_URL}/api/v1/logs/export?limit=10")
 CODE=$(printf '%s' "${CSV_HEADERS}" | head -1 | grep -o '[0-9]\{3\}')
 CONTENT_TYPE=$(printf '%s' "${CSV_HEADERS}" | grep -i '^content-type:' | head -1)
-[ "${CODE}" = "200" ] && pass "Export responde 200" || fail "Export respondeu ${CODE} (esperado 200)"
-printf '%s' "${CONTENT_TYPE}" | grep -qi 'text/csv' \
-  && pass "Export serve text/csv" || fail "Export não serve text/csv"
+if [ "${CODE}" = "200" ]; then
+  pass "Export responde 200"
+else
+  fail "Export respondeu ${CODE} (esperado 200)"
+fi
+if printf '%s' "${CONTENT_TYPE}" | grep -qi 'text/csv'; then
+  pass "Export serve text/csv"
+else
+  fail "Export não serve text/csv"
+fi
 
 CSV_BODY=$(curl -s -u "${USER}:${PASS}" "${BASE_URL}/api/v1/logs/export?limit=10")
-printf '%s' "${CSV_BODY}" | head -1 | grep -q '^Timestamp,Nivel,Origem,Mensagem,Contexto,Cliente' \
-  && pass "CSV começa com o cabeçalho esperado" || fail "Cabeçalho do CSV incorreto"
+if printf '%s' "${CSV_BODY}" | head -1 | grep -q '^Timestamp,Nivel,Origem,Mensagem,Contexto,Cliente'; then
+  pass "CSV começa com o cabeçalho esperado"
+else
+  fail "Cabeçalho do CSV incorreto"
+fi
 
 # --- 5. Ingestão externa nunca é anônima -------------------------------------
 CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \

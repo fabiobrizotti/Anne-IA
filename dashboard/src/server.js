@@ -5,6 +5,11 @@ const crypto = require('crypto');
 const Redis = require('ioredis');
 const auth = require('./auth');
 const logger = require('./logger');
+const { normalizarLinhaUsoTokens, normalizarLinhaSpendLog, mesclarLinhasUso, construirDadosFinanceiro } = require('./financeiro');
+const { criarSyncModelos } = require('./modelos-sync');
+const { criarAdapterLiteLLM } = require('./modelos-sync-litellm');
+const { criarAdapterLangfuse } = require('./modelos-sync-langfuse');
+const { slugModelo } = require('./modelos-sync-mapping');
 
 const app = express();
 const port = parseInt(process.env.PORT || '3000', 10);
@@ -12,8 +17,8 @@ const port = parseInt(process.env.PORT || '3000', 10);
 const EVOLUTION_API_URL = process.env.EVOLUTION_API_URL || 'http://evolution-api:8080';
 const EVOLUTION_API_KEY = process.env.EVOLUTION_API_KEY || '';
 const DATABASE_URL = process.env.DATABASE_URL || '';
-const NINE_ROUTER_URL = process.env.NINE_ROUTER_URL || 'http://9router:20000/v1';
-const NINE_ROUTER_API_KEY = process.env.NINE_ROUTER_API_KEY || process.env.NINE_ROUTER_PASSWORD || '';
+const LITELLM_URL = process.env.LITELLM_URL || 'http://litellm:4000/v1';
+const LITELLM_API_KEY = process.env.LITELLM_API_KEY || '';
 
 // Pool PostgreSQL (dimensionado para alta concorrência e proteção contra queries lentas)
 // statement_timeout removido — PgBouncer não aceita como parâmetro de startup;
@@ -33,8 +38,41 @@ if (DATABASE_URL) {
   console.error('[db] DATABASE_URL não configurada. Schema deve ser provisionado por setup/postgres/init.sql.');
 }
 
+// Pool somente-leitura do LiteLLM (spend log). Sem URL o financeiro falha fechado.
+const LITELLM_DATABASE_URL = process.env.LITELLM_DATABASE_URL || '';
+let gatewayPool = null;
+if (LITELLM_DATABASE_URL) {
+  gatewayPool = new Pool({
+    connectionString: LITELLM_DATABASE_URL,
+    max: 4,
+    idleTimeoutMillis: 10000,
+    // O primeiro acesso após o boot pode levar >2s (DNS do PgBouncer +
+    // handshake SCRAM). Com 2s o financeiro devolvia 503 nas primeiras
+    // requisições do CI mesmo com a fixture carregada.
+    connectionTimeoutMillis: 10000
+  });
+  gatewayPool.on('error', (err) => {
+    console.error('[db-gateway] Erro inesperado no pool do LiteLLM:', err.message);
+  });
+}
+
 // Injeta o pool no logger ANTES de qualquer rota poder logar.
 logger.init(pool);
+
+// Catálogo de modelos como fonte única: as rotas de escrita propagam para os
+// dois serviços. As rotas já exigem pool; sem ele o dashboard continua subindo.
+const LITELLM_BASE = LITELLM_URL.replace(/\/v1\/?$/, '');
+const syncModelos = pool
+  ? criarSyncModelos({
+    pool,
+    litellm: criarAdapterLiteLLM({ baseUrl: LITELLM_BASE, masterKey: LITELLM_API_KEY }),
+    langfuse: criarAdapterLangfuse({
+      host: process.env.LANGFUSE_HOST || 'http://langfuse-web:3000',
+      publicKey: process.env.LANGFUSE_PUBLIC_KEY || '',
+      secretKey: process.env.LANGFUSE_SECRET_KEY || ''
+    })
+  })
+  : null;
 
 // Redis client para rate limiting distribuído.
 // Sem REDIS_URL o rate limit cai no fallback em memória (fail-open) em vez de
@@ -1708,23 +1746,20 @@ app.all('/api/v1/instances/:id/connect', async (req, res) => {
     let code = evoRes.data?.code || evoRes.data?.qrcode?.code || null;
     let pairingCode = evoRes.data?.pairingCode || null;
 
-    // Se for Pairing Code mas o WhatsApp ainda estiver negociando o código (assíncrono no Baileys)
-    // Realiza espera ativa inteligente de até ~4.8s (4 tentativas de 1.2s)
-    if (cleanNumber && !pairingCode) {
-      for (let attempt = 1; attempt <= 4; attempt++) {
-        await new Promise((resolve) => setTimeout(resolve, 1200));
+    // O Baileys publica o QR/código de pareamento de forma assíncrona: a primeira
+    // resposta pode vir vazia. Faz até 4 consultas (1,2s) à Evolution, que devolve
+    // o QR em cache quando a instância já está "connecting" (sem abrir novo socket).
+    const wantsPairing = Boolean(cleanNumber);
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      if ((wantsPairing && pairingCode) || (!wantsPairing && (base64 || code))) break;
+      await new Promise((resolve) => setTimeout(resolve, 1200));
 
-        const pollRes = await evolutionFetch(endpoint);
-        if (pollRes.ok) {
-          pairingCode = pollRes.data?.pairingCode || null;
-          base64 = pollRes.data?.base64 || pollRes.data?.qrcode?.base64 || base64;
-          code = pollRes.data?.code || pollRes.data?.qrcode?.code || code;
-          if (pairingCode) {
-            evoRes = pollRes;
-            break;
-          }
-        }
-      }
+      const pollRes = await evolutionFetch(endpoint);
+      if (!pollRes.ok) continue;
+      evoRes = pollRes;
+      pairingCode = pollRes.data?.pairingCode || pairingCode;
+      base64 = pollRes.data?.base64 || pollRes.data?.qrcode?.base64 || base64;
+      code = pollRes.data?.code || pollRes.data?.qrcode?.code || code;
     }
 
     res.json({
@@ -1757,6 +1792,7 @@ app.get('/api/v1/instances/:id/status', async (req, res) => {
     const evoRes = await evolutionFetch(`/instance/connectionState/${encodeURIComponent(id)}`);
 
     const state = evoRes.data?.instance?.state || evoRes.data?.state || 'close';
+    res.set('Cache-Control', 'no-store');
     res.json({ success: true, state });
   } catch (err) {
     res.status(500).json({ success: false, error: 'Falha ao verificar status' });
@@ -2074,6 +2110,7 @@ app.get('/api/v1/financeiro', async (req, res) => {
   if (!pool) {
     return res.status(503).json({ success: false, error: 'Banco de dados indisponível' });
   }
+  let gatewayFalhou = false;
 
   try {
     let range;
@@ -2094,118 +2131,62 @@ app.get('/api/v1/financeiro', async (req, res) => {
       }
       targetClienteId = req.user.cliente_id;
     }
+    if (!isAdmin(req) && !targetClienteId) return res.status(403).json({ success: false, error: 'Acesso negado ao relatório financeiro.' });
 
-    const clientFilterWhere = targetClienteId ? ' AND cliente_id = $3' : '';
-    const clientFilterWhereU = targetClienteId ? ' AND u.cliente_id = $3' : '';
-    const queryParams = targetClienteId ? [range.inicio, range.fim, targetClienteId] : [range.inicio, range.fim];
-    const prevQueryParams = targetClienteId ? [range.prevInicio, range.prevFim, targetClienteId] : [range.prevInicio, range.prevFim];
+    if (!pool || !gatewayPool) {
+      return res.status(503).json({ success: false, error: 'Dados financeiros indisponíveis' });
+    }
 
-    const [kpiRes, kpiPrevRes, serieRes, clienteRes, modeloRes] = await Promise.all([
-      // KPIs período atual (100% parametrizado)
-      pool.query(
-        `SELECT
-           COALESCE(SUM(custo_usd), 0) AS custo_usd,
-           COALESCE(COUNT(*), 0) AS requisicoes,
-           COALESCE(SUM(total_tokens), 0) AS tokens_total,
-           COALESCE(SUM(prompt_tokens), 0) AS tokens_prompt,
-           COALESCE(SUM(completion_tokens), 0) AS tokens_completion,
-           COALESCE(SUM(cached_tokens), 0) AS tokens_cached,
-           COUNT(DISTINCT cliente_id) AS clientes_ativos
-         FROM uso_tokens
-         WHERE criado_em >= $1 AND criado_em <= $2${clientFilterWhere}`,
-        queryParams
-      ),
-      // KPIs período anterior (para cálculo de delta no cliente)
-      pool.query(
-        `SELECT
-           COALESCE(SUM(custo_usd), 0) AS custo_usd,
-           COALESCE(COUNT(*), 0) AS requisicoes,
-           COALESCE(SUM(total_tokens), 0) AS tokens_total,
-           COALESCE(SUM(cached_tokens), 0) AS tokens_cached
-         FROM uso_tokens
-         WHERE criado_em >= $1 AND criado_em <= $2${clientFilterWhere}`,
-        prevQueryParams
-      ),
-      // Série temporal diária agregada
-      pool.query(
-        `SELECT
-           TO_CHAR(date_trunc('day', criado_em AT TIME ZONE 'America/Sao_Paulo'), 'YYYY-MM-DD') AS dia,
-           COALESCE(SUM(custo_usd), 0) AS custo_usd,
-           COALESCE(SUM(total_tokens), 0) AS tokens,
-           COUNT(*) AS requisicoes
-         FROM uso_tokens
-         WHERE criado_em >= $1 AND criado_em <= $2${clientFilterWhere}
-         GROUP BY 1
-         ORDER BY 1 ASC`,
-        queryParams
-      ),
-      // Agrupamento por cliente
-      pool.query(
-        `SELECT
-           u.cliente_id,
-           COALESCE(c.nome, u.cliente_id) AS nome,
-           COALESCE(SUM(u.custo_usd), 0) AS custo_usd,
-           COALESCE(SUM(u.total_tokens), 0) AS tokens,
-           COALESCE(SUM(u.cached_tokens), 0) AS tokens_cached,
-           COUNT(*) AS requisicoes
-         FROM uso_tokens u
-         LEFT JOIN clientes c ON c.id = u.cliente_id
-         WHERE u.criado_em >= $1 AND u.criado_em <= $2${clientFilterWhereU}
-         GROUP BY u.cliente_id, c.nome
-         ORDER BY custo_usd DESC, tokens DESC`,
-        queryParams
-      ),
-      // Agrupamento por modelo
-      pool.query(
-        `SELECT
-           COALESCE(provedor, 'desconhecido') AS provedor,
-           COALESCE(modelo, 'desconhecido') AS modelo,
-           COALESCE(SUM(custo_usd), 0) AS custo_usd,
-           COALESCE(SUM(total_tokens), 0) AS tokens,
-           COUNT(*) AS requisicoes
-         FROM uso_tokens
-         WHERE criado_em >= $1 AND criado_em <= $2${clientFilterWhere}
-         GROUP BY provedor, modelo
-         ORDER BY custo_usd DESC, tokens DESC`,
-        queryParams
-      )
+    const clienteFiltro = targetClienteId ? targetClienteId : null;
+    const limites = [range.inicio, range.fim, clienteFiltro];
+    const limitesAnteriores = [range.prevInicio, range.prevFim, clienteFiltro];
+
+    // startTime já é timestamp without time zone em UTC: to_char sem conversão
+    // de fuso mantém o sufixo Z honesto e evita que o pg produza Date local.
+    const gatewaySql = `SELECT "request_id", COALESCE("end_user", '') AS end_user, "model",
+  "spend", "prompt_tokens", "completion_tokens", "total_tokens",
+  to_char("startTime", 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS ocorrido_em
+  FROM "LiteLLM_SpendLogs"
+  WHERE "startTime" >= ($1::timestamptz AT TIME ZONE 'UTC')
+    AND "endTime" < ($2::timestamptz AT TIME ZONE 'UTC')
+    AND ($3::text IS NULL OR "end_user" = $3)`;
+
+    const usoSql = `SELECT u.cliente_id, COALESCE(c.nome, u.cliente_id) AS nome, u.provedor, u.modelo,
+       u.custo_usd, u.total_tokens, u.prompt_tokens, u.completion_tokens,
+       u.cached_tokens, u.request_id, u.criado_em
+FROM uso_tokens u LEFT JOIN clientes c ON c.id = u.cliente_id
+WHERE u.criado_em >= $1 AND u.criado_em <= $2
+  AND ($3::text IS NULL OR u.cliente_id = $3)`;
+
+    const consultarGateway = (params) =>
+      gatewayPool.query(gatewaySql, params).catch((err) => { gatewayFalhou = true; throw err; });
+
+    const [gatewayAtualRes, gatewayAnteriorRes, legacyAtualRes, legacyAnteriorRes, clientesRes] = await Promise.all([
+      consultarGateway(limites),
+      consultarGateway(limitesAnteriores),
+      pool.query(usoSql, limites),
+      pool.query(usoSql, limitesAnteriores),
+      pool.query('SELECT id, nome FROM clientes')
     ]);
 
-    const kpiRow = kpiRes.rows[0] || {};
-    const kpiPrevRow = kpiPrevRes.rows[0] || {};
+    const atual = mesclarLinhasUso(
+      legacyAtualRes.rows.map(normalizarLinhaUsoTokens),
+      gatewayAtualRes.rows.map(normalizarLinhaSpendLog)
+    );
+    const anterior = mesclarLinhasUso(
+      legacyAnteriorRes.rows.map(normalizarLinhaUsoTokens),
+      gatewayAnteriorRes.rows.map(normalizarLinhaSpendLog)
+    );
 
-    const custo = Number(kpiRow.custo_usd || 0);
-    const reqs = Number(kpiRow.requisicoes || 0);
-    const tokensTotal = Number(kpiRow.tokens_total || 0);
-    const tokensCached = Number(kpiRow.tokens_cached || 0);
-
-    const prevCusto = Number(kpiPrevRow.custo_usd || 0);
-    const prevReqs = Number(kpiPrevRow.requisicoes || 0);
-    const prevTokens = Number(kpiPrevRow.tokens_total || 0);
-
-    const serieBruta = serieRes.rows.map(r => ({
-      dia: r.dia,
-      custo_usd: Number(r.custo_usd || 0),
-      tokens: Number(r.tokens || 0),
-      requisicoes: Number(r.requisicoes || 0)
-    }));
-
-    const porCliente = clienteRes.rows.map(r => ({
-      cliente_id: r.cliente_id,
-      nome: r.nome,
-      custo_usd: Number(r.custo_usd || 0),
-      tokens: Number(r.tokens || 0),
-      tokens_cached: Number(r.tokens_cached || 0),
-      requisicoes: Number(r.requisicoes || 0)
-    }));
-
-    const porModelo = modeloRes.rows.map(r => ({
-      provedor: r.provedor,
-      modelo: r.modelo,
-      custo_usd: Number(r.custo_usd || 0),
-      tokens: Number(r.tokens || 0),
-      requisicoes: Number(r.requisicoes || 0)
-    }));
+    const dados = construirDadosFinanceiro({
+      atual,
+      anterior,
+      clientes: clientesRes.rows,
+      inicio: range.inicio,
+      fim: range.fim,
+      prevInicio: range.prevInicio,
+      prevFim: range.prevFim
+    });
 
     res.json({
       success: true,
@@ -2214,28 +2195,15 @@ app.get('/api/v1/financeiro', async (req, res) => {
         inicio: range.labelInicio,
         fim: range.labelFim,
         gerado_em: new Date().toISOString(),
-        kpis: {
-          custo_usd: custo,
-          requisicoes: reqs,
-          tokens_total: tokensTotal,
-          tokens_prompt: Number(kpiRow.tokens_prompt || 0),
-          tokens_completion: Number(kpiRow.tokens_completion || 0),
-          tokens_cached: tokensCached,
-          clientes_ativos: Number(kpiRow.clientes_ativos || 0)
-        },
-        kpis_anteriores: {
-          custo_usd: prevCusto,
-          requisicoes: prevReqs,
-          tokens_total: prevTokens
-        },
-        serie_diaria: serieBruta,
-        por_cliente: porCliente,
-        por_modelo: porModelo
+        ...dados
       }
     });
   } catch (err) {
-    console.error('[api] Erro ao carregar dados financeiros:', err);
-    res.status(500).json({ success: false, error: 'Falha ao processar dados financeiros' });
+    console.error('[api] Erro ao carregar dados financeiros:', err.message);
+    if (gatewayFalhou || !gatewayPool) {
+      return res.status(503).json({ success: false, error: 'Dados financeiros indisponíveis' });
+    }
+    return res.status(500).json({ success: false, error: 'Falha ao processar dados financeiros' });
   }
 });
 
@@ -2267,29 +2235,29 @@ async function checkTestRateLimitRedis(key, maxRequests = 10, windowMs = 60 * 10
   }
 }
 
-// GET /api/v1/9router/status - Diagnóstico e lista de modelos do 9Router
-app.get('/api/v1/9router/status', async (_req, res) => {
+// GET /api/v1/litellm/status - Diagnóstico e lista de modelos do LiteLLM
+app.get('/api/v1/litellm/status', async (_req, res) => {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 5000);
 
-  // Calcula URL base da API do 9Router (ex: http://9router:20000)
-  const baseUrl = NINE_ROUTER_URL.replace(/\/v1\/?$/, '');
+  // Health do LiteLLM fica na raiz; LITELLM_URL termina em /v1.
+  const baseUrl = LITELLM_URL.replace(/\/v1\/?$/, '');
 
   let isHealthy = false;
   let models = [];
   let errorMsg = null;
 
   try {
-    // 1. Checa health
-    const healthRes = await fetch(`${baseUrl}/api/health`, { signal: controller.signal }).catch(() => null);
-    if (healthRes && healthRes.ok) {
-      const hData = await healthRes.json().catch(() => ({}));
-      isHealthy = hData.ok === true || healthRes.status < 400;
-    }
+    // 1. Checa liveness e readiness (Ambos devem responder 2xx).
+    const [liveliness, readiness] = await Promise.all([
+      fetch(`${baseUrl}/health/liveliness`, { signal: controller.signal }).catch(() => null),
+      fetch(`${baseUrl}/health/readiness`, { signal: controller.signal }).catch(() => null)
+    ]);
+    isHealthy = Boolean(liveliness?.ok && readiness?.ok);
 
     // 2. Consulta modelos
-    const modelsRes = await fetch(`${NINE_ROUTER_URL}/models`, {
-      headers: NINE_ROUTER_API_KEY ? { 'Authorization': `Bearer ${NINE_ROUTER_API_KEY}` } : {},
+    const modelsRes = await fetch(`${LITELLM_URL}/models`, {
+      headers: LITELLM_API_KEY ? { 'Authorization': `Bearer ${LITELLM_API_KEY}` } : {},
       signal: controller.signal
     }).catch((e) => {
       errorMsg = e.message;
@@ -2317,9 +2285,9 @@ app.get('/api/v1/9router/status', async (_req, res) => {
 
   res.json({
     success: true,
-    gateway_url: NINE_ROUTER_URL,
-    chat_endpoint: `${NINE_ROUTER_URL}/chat/completions`,
-    has_api_key: Boolean(NINE_ROUTER_API_KEY),
+    gateway_url: LITELLM_URL,
+    chat_endpoint: `${LITELLM_URL}/chat/completions`,
+    has_api_key: Boolean(LITELLM_API_KEY),
     healthy: isHealthy,
     error: errorMsg,
     total_models: models.length,
@@ -2332,15 +2300,10 @@ const ALLOWED_MODEL_TIERS = ['tier_1', 'tier_2', 'tier_3'];
 
 // GET /api/v1/modelos - Listar todos os modelos
 app.get('/api/v1/modelos', async (_req, res) => {
-  if (!pool) return res.status(500).json({ success: false, error: 'Postgres não conectado' });
+  if (!pool || !syncModelos) return res.status(500).json({ success: false, error: 'Postgres não conectado' });
   try {
-    const result = await pool.query(
-      `SELECT id, provedor, modelo, tier, input_per_1m, cached_per_1m, output_per_1m,
-              reasoning_per_1m, cache_creation_per_1m, moeda, vigente_de, vigente_ate, ativo
-       FROM precos_modelos
-       ORDER BY ativo DESC, tier ASC, input_per_1m ASC, provedor ASC, modelo ASC`
-    );
-    res.json({ success: true, data: result.rows });
+    const data = await syncModelos.listar();
+    res.json({ success: true, data });
   } catch (err) {
     console.error('[api] Erro ao listar modelos:', err.message);
     res.status(500).json({ success: false, error: 'Falha ao consultar modelos' });
@@ -2384,9 +2347,11 @@ app.post('/api/v1/modelos', async (req, res) => {
        RETURNING *`,
       [provClean, modClean, tierClean, pInput, pCached, pOutput, pReasoning, pCacheCreation, isAtivo]
     );
-    res.status(201).json({ success: true, data: insertRes.rows[0] });
+    const linha = insertRes.rows[0];
+    const sincronizacao = await syncModelos.aplicarModelo(linha);
+    res.status(201).json({ success: true, data: linha, sincronizacao });
     logger.writeLog('info', 'modelos', `Modelo cadastrado: ${provClean}/${modClean}`, {
-      modelo_id: insertRes.rows[0].id, tier: tierClean, ativo: isAtivo
+      modelo_id: linha.id, tier: tierClean, ativo: isAtivo, sincronizacao
     }).catch(() => {});
   } catch (err) {
     console.error('[api] Erro ao cadastrar modelo:', err.message);
@@ -2439,9 +2404,11 @@ app.put('/api/v1/modelos/:id', async (req, res) => {
     if (updateRes.rowCount === 0) {
       return res.status(404).json({ success: false, error: 'Modelo não encontrado' });
     }
-    res.json({ success: true, data: updateRes.rows[0] });
+    const linha = updateRes.rows[0];
+    const sincronizacao = await syncModelos.aplicarModelo(linha);
+    res.json({ success: true, data: linha, sincronizacao });
     logger.writeLog('info', 'modelos', `Modelo atualizado: ${provClean}/${modClean}`, {
-      modelo_id: id, tier: tierClean, ativo: isAtivo
+      modelo_id: id, tier: tierClean, ativo: isAtivo, sincronizacao
     }).catch(() => {});
   } catch (err) {
     console.error('[api] Erro ao atualizar modelo:', err.message);
@@ -2459,12 +2426,26 @@ app.delete('/api/v1/modelos/:id', async (req, res) => {
   if (!id || id <= 0) return res.status(400).json({ success: false, error: 'ID inválido' });
 
   try {
-    // Busca informações do modelo
-    const modRes = await pool.query('SELECT provedor, modelo FROM precos_modelos WHERE id = $1', [id]);
+    // Linha completa: a remoção externa precisa do id para gravar o estado.
+    const modRes = await pool.query('SELECT * FROM precos_modelos WHERE id = $1', [id]);
     if (modRes.rowCount === 0) {
       return res.status(404).json({ success: false, error: 'Modelo não encontrado' });
     }
-    const { provedor, modelo } = modRes.rows[0];
+    const linha = modRes.rows[0];
+    const { provedor, modelo } = linha;
+    const sincronizacao = await syncModelos.removerModelo(linha);
+    const pendente = Object.values(sincronizacao).includes('pendente');
+
+    // Falha externa: preserva linha e external_id para a próxima reconciliação.
+    if (pendente) {
+      await pool.query('UPDATE precos_modelos SET ativo = false WHERE id = $1', [id]);
+      return res.json({
+        success: true,
+        action: 'removido_parcial',
+        sincronizacao,
+        message: 'Remoção externa pendente; modelo desativado para nova tentativa.'
+      });
+    }
 
     // Checa se possui registros no ledger de uso de tokens
     const usageCheck = await pool.query(
@@ -2478,20 +2459,46 @@ app.delete('/api/v1/modelos/:id', async (req, res) => {
       return res.json({
         success: true,
         action: 'desativado',
+        sincronizacao,
         message: 'Modelo possui histórico financeiro; foi desativado em vez de excluído para preservar auditoria.'
       });
     }
 
     await pool.query('DELETE FROM precos_modelos WHERE id = $1', [id]);
-    res.json({ success: true, action: 'removido', message: 'Modelo removido com sucesso' });
-    logger.writeLog('info', 'modelos', `Modelo removido: ${provedor}/${modelo}`, { modelo_id: id }).catch(() => {});
+    res.json({ success: true, action: 'removido', sincronizacao, message: 'Modelo removido com sucesso' });
+    logger.writeLog('info', 'modelos', `Modelo removido: ${provedor}/${modelo}`, {
+      modelo_id: id, sincronizacao
+    }).catch(() => {});
   } catch (err) {
     console.error('[api] Erro ao excluir modelo:', err.message);
     res.status(500).json({ success: false, error: 'Falha ao excluir modelo' });
   }
 });
 
-// POST /api/v1/modelos/:id/testar - Testar inferência/ping do modelo via 9Router
+// POST /api/v1/modelos/sincronizar - Reconcilia catálogo ↔ LiteLLM ↔ Langfuse
+app.post('/api/v1/modelos/sincronizar', async (req, res) => {
+  if (!isAdmin(req)) {
+    return res.status(403).json({ success: false, error: 'Acesso restrito a administradores.' });
+  }
+  if (!pool || !syncModelos) return res.status(500).json({ success: false, error: 'Postgres não conectado' });
+
+  const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'local';
+  const rateLimitOk = await checkTestRateLimitRedis(`modelos-sync:${clientIp}`, 5, 60_000);
+  if (!rateLimitOk) {
+    return res.status(429).json({ success: false, error: 'Limite de sincronizações atingido (máx 5 por minuto). Aguarde.' });
+  }
+
+  try {
+    const data = await syncModelos.reconciliar();
+    res.json({ success: true, data });
+    logger.writeLog('info', 'modelos', 'Reconciliação manual concluída', data).catch(() => {});
+  } catch (err) {
+    console.error('[api] Erro ao sincronizar modelos:', err.message);
+    res.status(500).json({ success: false, error: 'Falha ao sincronizar modelos' });
+  }
+});
+
+// POST /api/v1/modelos/:id/testar - Testar inferência/ping do modelo via LiteLLM
 app.post('/api/v1/modelos/:id/testar', async (req, res) => {
   if (!isAdmin(req)) {
     return res.status(403).json({ success: false, error: 'Acesso restrito a administradores.' });
@@ -2512,6 +2519,7 @@ app.post('/api/v1/modelos/:id/testar', async (req, res) => {
       return res.status(404).json({ success: false, error: 'Modelo não encontrado' });
     }
     const record = modRes.rows[0];
+    const slug = slugModelo(record);
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 12000); // 12s timeout estrito
@@ -2521,14 +2529,14 @@ app.post('/api/v1/modelos/:id/testar', async (req, res) => {
     let rawResponse = null;
 
     try {
-      const response = await fetch(`${NINE_ROUTER_URL}/chat/completions`, {
+      const response = await fetch(`${LITELLM_URL}/chat/completions`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${NINE_ROUTER_API_KEY}`
+          'Authorization': `Bearer ${LITELLM_API_KEY}`
         },
         body: JSON.stringify({
-          model: record.modelo,
+          model: slugModelo(record),
           messages: [{ role: 'user', content: 'Responda apenas "OK" em 1 palavra.' }],
           max_tokens: 5,
           temperature: 0.1
@@ -2541,16 +2549,16 @@ app.post('/api/v1/modelos/:id/testar', async (req, res) => {
       rawResponse = await response.json().catch(() => ({}));
 
       const latencyMs = Date.now() - startTime;
-      const endpointUsed = `${NINE_ROUTER_URL}/chat/completions`;
+      const endpointUsed = `${LITELLM_URL}/chat/completions`;
 
       if (!response.ok) {
         return res.status(502).json({
           success: false,
           endpoint_url: endpointUsed,
-          modelo_solicitado: record.modelo,
+          modelo_solicitado: slug,
           latency_ms: latencyMs,
           status_http: statusHttp,
-          error: rawResponse.error?.message || rawResponse.message || 'Falha na resposta do 9Router/LLM',
+          error: rawResponse.error?.message || rawResponse.message || 'Falha na resposta do LiteLLM/LLM',
           raw: rawResponse
         });
       }
@@ -2563,10 +2571,10 @@ app.post('/api/v1/modelos/:id/testar', async (req, res) => {
       res.json({
         success: true,
         endpoint_url: endpointUsed,
-        modelo_solicitado: record.modelo,
+        modelo_solicitado: slug,
         latency_ms: latencyMs,
         status_http: statusHttp,
-        modelo_retornado: rawResponse.model || record.modelo,
+        modelo_retornado: rawResponse.model || slug,
         resposta: reply.trim(),
         usage
       });
@@ -2577,10 +2585,10 @@ app.post('/api/v1/modelos/:id/testar', async (req, res) => {
 
       res.status(504).json({
         success: false,
-        endpoint_url: `${NINE_ROUTER_URL}/chat/completions`,
-        modelo_solicitado: record.modelo,
+        endpoint_url: `${LITELLM_URL}/chat/completions`,
+        modelo_solicitado: slug,
         latency_ms: latencyMs,
-        error: isTimeout ? 'Timeout: o modelo não respondeu em até 12 segundos' : `Erro de conexão com 9Router: ${fetchErr.message}`
+        error: isTimeout ? 'Timeout: o modelo não respondeu em até 12 segundos' : `Erro de conexão com LiteLLM: ${fetchErr.message}`
       });
     }
   } catch (err) {
@@ -3163,6 +3171,14 @@ process.on('uncaughtException', (erro) => {
   });
 });
 
+// Fecha os dois pools no desligamento graceful, sem expor connection strings.
+async function encerrarPools() {
+  await Promise.allSettled([pool?.end(), gatewayPool?.end()]);
+  process.exit(0);
+}
+process.once('SIGTERM', encerrarPools);
+process.once('SIGINT', encerrarPools);
+
 // Inicia servidor HTTP
 app.listen(port, '0.0.0.0', async () => {
   console.log(`[dashboard] Painel administrativo ativo na porta ${port}`);
@@ -3173,6 +3189,16 @@ app.listen(port, '0.0.0.0', async () => {
     // um restart do container (antes ela mostrava "cache vazio").
     const aquecidos = await logger.warmup();
     if (aquecidos > 0) console.log(`[log] Cache aquecido com ${aquecidos} entrada(s) de system_logs.`);
+
+    // Reconciliação inicial sem await: o listen não depende dos serviços externos.
+    syncModelos.reconciliar().catch((err) => {
+      logger.writeLog('warn', 'modelos', 'Reconciliação inicial falhou', {
+        erro: err?.mensagem || 'indisponível'
+      }).catch(() => {});
+      return null;
+    }).then((r) => {
+      if (r) logger.writeLog('info', 'modelos', 'Reconciliação inicial concluída', r).catch(() => {});
+    });
 
     // Retenção automática (diária) — sem isso a tabela cresce indefinidamente.
     const retencaoDias = parseInt(process.env.LOG_RETENTION_DAYS || '90', 10);

@@ -10,9 +10,41 @@
 -- `prisma migrate deploy` falha com P3005 (schema not empty).
 -- ============================================================================
 
+-- Roles dos gateways (LiteLLM e Langfuse). As senhas vêm de PGOPTIONS
+-- (app.litellm_password / app.langfuse_password / app.pgbouncer_password) no
+-- container db-evolution. Nomes com ponto são obrigatórios: um GUC custom
+-- sem ponto (ex.: PGBOUNCER_PASSWORD) é rejeitado com "unrecognized parameter".
+-- Reaplicar o SQL em volume existente NÃO altera senha já definida.
+DO $$
+DECLARE
+  v_senha TEXT := COALESCE(current_setting('app.litellm_password', true), 'changeme');
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'litellm') THEN
+    EXECUTE format('CREATE ROLE litellm LOGIN PASSWORD %L', v_senha);
+    RAISE NOTICE 'Role litellm criado com senha da .env';
+  END IF;
+END $$;
+
+DO $$
+DECLARE
+  v_senha TEXT := COALESCE(current_setting('app.langfuse_password', true), 'changeme');
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'langfuse') THEN
+    EXECUTE format('CREATE ROLE langfuse LOGIN PASSWORD %L', v_senha);
+    RAISE NOTICE 'Role langfuse criado com senha da .env';
+  END IF;
+END $$;
+
 -- Cria o banco de negócio dedicado da Anne-IA (se ainda não existir).
 SELECT 'CREATE DATABASE anneia'
 WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'anneia')\gexec
+
+-- Bancos lógicos dos gateways, com os respectivos roles como owners.
+SELECT 'CREATE DATABASE litellm OWNER litellm'
+WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'litellm')\gexec
+
+SELECT 'CREATE DATABASE langfuse OWNER langfuse'
+WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'langfuse')\gexec
 
 -- Conecta ao banco de negócio.
 \connect anneia
@@ -319,6 +351,18 @@ ALTER TABLE precos_modelos ADD COLUMN IF NOT EXISTS tier VARCHAR(20) NOT NULL DE
 CREATE INDEX IF NOT EXISTS idx_precos_modelos_lookup ON precos_modelos(provedor, modelo, ativo, vigente_de);
 CREATE INDEX IF NOT EXISTS idx_precos_modelos_tier_ativo_custo ON precos_modelos (tier, ativo, input_per_1m ASC);
 
+-- 9.1 Estado da propagação do catálogo para LiteLLM e Langfuse (uma linha por par).
+-- Sem índice extra: a PRIMARY KEY (modelo_id, sistema) já cobre o lookup do orchestrator.
+CREATE TABLE IF NOT EXISTS modelos_sync_estado (
+  modelo_id BIGINT REFERENCES precos_modelos(id) ON DELETE CASCADE,
+  sistema VARCHAR(20) CHECK (sistema IN ('litellm','langfuse')),
+  external_id VARCHAR(128),
+  status VARCHAR(20) CHECK (status IN ('sincronizado','pendente','removido','nao_aplicavel')),
+  ultimo_erro TEXT,
+  sincronizado_em TIMESTAMPTZ,
+  PRIMARY KEY (modelo_id, sistema)
+);
+
 -- Seed idempotente: preços mínimos para opencode/big-pickle e antigravity/ag/gemini-3.1-flash-lite
 INSERT INTO precos_modelos (provedor, modelo, tier, input_per_1m, cached_per_1m, output_per_1m, reasoning_per_1m, cache_creation_per_1m, moeda, vigente_de, ativo)
 VALUES ('opencode', 'big-pickle', 'tier_3', 0, 0, 0, 0, 0, 'USD', NOW(), true)
@@ -329,6 +373,19 @@ SELECT 'antigravity', 'ag/gemini-3.1-flash-lite', 'tier_1', 0.250000, 0.000000, 
 WHERE NOT EXISTS (
   SELECT 1 FROM precos_modelos WHERE provedor = 'antigravity' AND modelo = 'ag/gemini-3.1-flash-lite'
 );
+
+-- Seeds idempotentes: os 3 modelos do config.yaml do LiteLLM passam a viver no catálogo.
+INSERT INTO precos_modelos (provedor, modelo, tier, input_per_1m, output_per_1m, moeda, vigente_de, ativo)
+VALUES ('openrouter', 'z-ai/glm-5.3', 'tier_1', 0, 0, 'USD', '2026-11-26T00:00:00Z', true)
+ON CONFLICT (provedor, modelo, vigente_de) DO NOTHING;
+
+INSERT INTO precos_modelos (provedor, modelo, tier, input_per_1m, output_per_1m, moeda, vigente_de, ativo)
+VALUES ('openrouter', 'openai/gpt-4o-mini', 'tier_1', 0, 0, 'USD', '2026-11-26T00:00:00Z', true)
+ON CONFLICT (provedor, modelo, vigente_de) DO NOTHING;
+
+INSERT INTO precos_modelos (provedor, modelo, tier, input_per_1m, output_per_1m, moeda, vigente_de, ativo)
+VALUES ('openrouter', 'recursive/flint-v1.0:free', 'tier_1', 0, 0, 'USD', '2026-11-26T00:00:00Z', true)
+ON CONFLICT (provedor, modelo, vigente_de) DO NOTHING;
 
 -- 10. Ledger de uso de tokens por cliente/instância (granular por requisição)
 CREATE TABLE IF NOT EXISTS uso_tokens (
@@ -420,7 +477,7 @@ BEGIN
 
   v_chave_idemp := left('n8n:' || v_wf_clean || ':' || v_exec_clean || ':' || v_step_clean, 128);
 
-  v_prov_clean := lower(COALESCE(NULLIF(btrim(p_provedor), ''), '9router'));
+  v_prov_clean := lower(COALESCE(NULLIF(btrim(p_provedor), ''), 'litellm'));
   v_mod_clean := COALESCE(NULLIF(btrim(p_modelo), ''), 'anneia');
   v_mod_slug := lower(regexp_replace(v_mod_clean, '^[^/]+/', ''));
 
@@ -1081,18 +1138,25 @@ BEGIN
 END $$;
 
 -- 2. Role de aplicação (usado pelo Dashboard)
--- A senha será definida via ALTER ROLE pelo update.sh
+-- A senha é lida da variável PGBOUNCER_PASSWORD do .env (Source of Truth).
+-- Idempotente: se o role já existir, altera a senha para o valor da .env.
+-- Se a var env não estiver definida, mantém 'changeme' como fallback.
 DO $$
+DECLARE
+  v_password TEXT := COALESCE(current_setting('app.pgbouncer_password', true), 'changeme');
 BEGIN
+  -- CREATE/ALTER ROLE exigem literal de string: a variável é interpolada via
+  -- format(%L), que também escapa aspas. Sem EXECUTE, o parser vê um
+  -- identificador e falha com "syntax error at or near v_password".
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'pgbouncer_app') THEN
-    CREATE ROLE pgbouncer_app
-      LOGIN
-      PASSWORD 'changeme'
-      NOINHERIT
-      CONNECTION LIMIT 50;
-    RAISE NOTICE 'Role pgbouncer_app criada';
+    EXECUTE format(
+      'CREATE ROLE pgbouncer_app LOGIN PASSWORD %L NOINHERIT CONNECTION LIMIT 50',
+      v_password
+    );
+    RAISE NOTICE 'Role pgbouncer_app criada com senha da .env';
   ELSE
-    RAISE NOTICE 'Role pgbouncer_app já existe';
+    EXECUTE format('ALTER ROLE pgbouncer_app WITH PASSWORD %L', v_password);
+    RAISE NOTICE 'Role pgbouncer_app senha atualizada da .env';
   END IF;
 END $$;
 
@@ -1197,6 +1261,47 @@ COMMENT ON ROLE pgbouncer_app IS 'Role de aplicação para PgBouncer (transactio
 COMMENT ON ROLE pgbouncer_admin IS 'Role admin para console PgBouncer (session pool)';
 COMMENT ON ROLE pgbouncer_auth IS 'Role para auth_query (opcional, não usada com userlist.txt)';
 COMMENT ON FUNCTION pgbouncer.get_auth(TEXT) IS 'Retorna credenciais SCRAM para auth_query do PgBouncer';
+
+-- 10. Leitura do spend do gateway pelo Dashboard (banco lógico litellm).
+-- MENOR PRIVILÉGIO: pgbouncer_app lê SOMENTE "LiteLLM_SpendLogs". O LiteLLM
+-- cria essa tabela DEPOIS do entrypoint do Postgres, então um event trigger
+-- concede o SELECT no instante da criação. A cláusula condicional cobre volumes
+-- onde a tabela já existe e a reaplicação do init.sql.
+\connect litellm
+GRANT USAGE ON SCHEMA public TO pgbouncer_app;
+
+-- Remove o grant amplo de versões anteriores (tabelas atuais e futuras).
+REVOKE SELECT ON ALL TABLES IN SCHEMA public FROM pgbouncer_app;
+ALTER DEFAULT PRIVILEGES FOR ROLE litellm IN SCHEMA public REVOKE SELECT ON TABLES FROM pgbouncer_app;
+
+CREATE OR REPLACE FUNCTION public.fn_grant_spend_log_select()
+RETURNS event_trigger
+LANGUAGE plpgsql
+AS $fn$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM pg_event_trigger_ddl_commands()
+    WHERE object_type = 'table'
+      AND object_identity = 'public."LiteLLM_SpendLogs"'
+  ) THEN
+    EXECUTE 'GRANT SELECT ON TABLE public."LiteLLM_SpendLogs" TO pgbouncer_app';
+  END IF;
+END;
+$fn$;
+
+DO $do$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_event_trigger WHERE evtname = 'grant_spend_log_select') THEN
+    CREATE EVENT TRIGGER grant_spend_log_select ON ddl_command_end
+      WHEN TAG IN ('CREATE TABLE')
+      EXECUTE FUNCTION public.fn_grant_spend_log_select();
+  END IF;
+  IF to_regclass('public."LiteLLM_SpendLogs"') IS NOT NULL THEN
+    EXECUTE 'GRANT SELECT ON TABLE public."LiteLLM_SpendLogs" TO pgbouncer_app';
+  END IF;
+END;
+$do$;
 
 
 

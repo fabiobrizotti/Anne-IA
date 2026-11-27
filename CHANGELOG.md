@@ -1,5 +1,279 @@
 # CHANGELOG - Anne-IA Dashboard
 
+## [1.2.6] - 2026-11-26
+
+### Fixed — bootstrap dos gateways, CI de merge e versão reportada
+
+- **Credenciais dos roles no boot limpo**: `docker-compose.yml` agora injeta
+  `PGOPTIONS` no `db-evolution` com `CHAVE_LITELLM_DB_PASSWORD`,
+  `CHAVE_LANGFUSE_DB_PASSWORD` e `PGBOUNCER_PASSWORD`. Antes, o `init.sql`
+  criava `litellm`, `langfuse` e `pgbouncer_app` com senha placeholder e os
+  gateways não conseguiam conectar em volume novo. `scripts/update.sh` passou
+  a reaplicar o schema com o mesmo `PGOPTIONS` e a sincronizar as senhas das
+  roles já existentes (o `init.sql` preserva senhas para não destruir dados).
+- **Teste de idempotência**: `tests/test_init_sql.sh` usa senhas efêmeras via
+  `PGOPTIONS` e compara o verifier SCRAM gravado em `pg_authid` — a imagem
+  `pgvector` confia em `127.0.0.1`, então um teste TCP aceitaria qualquer senha.
+  O teste prova que as roles usam a senha configurada e rejeitam o placeholder.
+  `tests/test_gateway_env.sh` valida a presença do `PGOPTIONS` no compose sem
+  imprimir segredos.
+- **CI do merge**: o job `lint-and-sast` usa ShellCheck `-S warning` (os achados
+  `SC2015`/`SC2016`/`SC2329` são informativos e intencionais); o job `dast`
+  injeta `setup/postgres/fixtures-test-gateway.sql` para que
+  `/api/v1/financeiro` não responda `503` quando o serviço LiteLLM não sobe no
+  CI. O pool somente-leitura do gateway passou de `connectionTimeoutMillis:
+  2000` para `10000`: a fixture sozinha não bastava, porque as duas primeiras
+  consultas ao `LiteLLM_SpendLogs` estouravam 2s no handshake frio do
+  PgBouncer e derrubavam os testes 1.3 e 2.3.
+- **Credenciais versionadas**: `setup/pgbouncer/userlist.txt` deixou de ser
+  rastreado e passou a ser ignorado. O arquivo continha senhas reais de três
+  roles e é redundante: `setup/pgbouncer/entrypoint.sh` gera o `userlist` em
+  `/run/pgbouncer` a partir do `.env` e redireciona o `auth_file`. As credenciais
+  expostas devem ser rotacionadas no `.env` de cada instalação.
+- **Deriva de versão**: `DASHBOARD_VERSION`, `package.json`/`package-lock.json`,
+  footer e cache-buster do `index.html`, example do `/api/health` no README e
+  este CHANGELOG passam a usar `1.2.6`. O deploy volta a reportar a versão
+  realmente publicada e a invalidar o JS em cache. Uma asserção em
+  `test_gateway_env.sh` impede nova divergência.
+
+### Changed
+
+- `docs/superpowers/` deixou de ser rastreado (já coberto pelo `.gitignore`);
+  os dois artefatos de planejamento versionados anteriormente foram removidos
+  do índice, sem apagar os arquivos locais.
+- **Menor privilégio no banco `litellm`**: `pgbouncer_app` passa a ler somente
+  `"LiteLLM_SpendLogs"`; o grant amplo em todas as tabelas e o
+  `ALTER DEFAULT PRIVILEGES` foram revogados. Um event trigger concede o SELECT
+  quando o LiteLLM cria a tabela após o boot do Postgres.
+- `scripts/update.sh` agora aborta o deploy se a sincronização das senhas das
+  roles falhar, em vez de apenas avisar — health check com conexões antigas
+  poderia mascarar `.env` e banco divergentes. Nenhuma senha é logada.
+- O job `dast` passou a exigir HTTP 200 autenticado em `/api/v1/financeiro`
+  antes do pentest, provando por runtime a regressão do handshake frio (antes,
+  a checagem era só textual). O log de falha de login do pentest registra apenas
+  o status, nunca o corpo da resposta.
+
+### Exceção de release
+
+- `LITELLM_VERSION=lts` permanece como tag móvel nesta versão. O pin por
+  digest está previsto para 2026-12-02; até lá, `lts` é resolvido no pull e
+  CI/produção podem receber imagens diferentes. Registrado como exceção
+  consciente — não é uma release reproduzível bit a bit.
+
+> `v1.2.5` permanece intacta no commit `add0c46`. Esta versão é a que segue
+> para `main` via PR.
+
+## [1.2.5] - 2026-11-26
+
+### Fixed — boot da stack: URLs aninhadas, n8n 2.49.7 e login do LiteLLM
+
+Quatro falhas independentes impediam/degradavam o `docker compose up`:
+
+1. **Langfuse (`ZodError: Invalid URL` em `NEXTAUTH_URL`)**: o `.env` continha
+   `http://127.0.0.1:${LANGFUSE_PORT}`. O Compose **não expande placeholders
+   dentro de valores lidos do `.env`**, então a env chegava como
+   `http://127.0.0.1:$${LANGFUSE_PORT}` e o Next.js 16 rejeitava a URL no boot.
+   O mesmo padrão quebrava `LANGFUSE_HOST`, `LITELLM_URL`,
+   `LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT` e `LITELLM_API_KEY`.
+2. **n8n em crash-loop**: `ZodError invalid_union_discriminator ... Expected 1`
+   no `SystemTrustedSourceSeeder`. O `data/n8n/database.sqlite` registra
+   `trusted_source.configVersion=2`, mas a imagem pinada era `2.47.7`
+   (a `2.47.8` anunciada nunca foi publicada no Docker Hub).
+3. **Alerta "Environment-credential login is enabled" do LiteLLM**: sem
+   usuário admin com senha própria, a master key funcionava como login da UI.
+4. **OTLP do LiteLLM**: apontar o exporter global para o Langfuse sem projeto
+   criado/devido retorno 401; até as chaves serem configuradas, o exporter
+   permanece no `console` padrão (spans de DB no stdout são informativos).
+
+- **`.env` / `.env.example`**: URLs derivadas viraram literais
+  (`http://langfuse-web:3000`, `http://litellm:4000/v1`,
+  `http://minio:9000`, `http://127.0.0.1:40193`); `LITELLM_API_KEY` deixou de
+  existir como variável e é injetada pelo Compose a partir de
+  `LITELLM_MASTER_KEY`. `N8N_VERSION=2.49.7`. Nova `LITELLM_ADMIN_PASSWORD`.
+- **`docker-compose.yml`**: `LITELLM_API_KEY: ${LITELLM_MASTER_KEY}`;
+  reforço documental contra placeholders aninhados.
+- **`scripts/generate-passwords.sh`**: gera `LITELLM_ADMIN_PASSWORD` em Base62
+  + `!` (a política do LiteLLM exige caractere especial e senha não entra em
+  URI). Idempotente: nunca sobrescreve valor existente.
+- **`setup/litellm/config.yaml`**: `general_settings.disable_env_credential_login:
+  true`. Usuário `anneia-admin` criado via `/user/new` (`user_role: proxy_admin_viewer`,
+  `auto_create_key: false`) com senha definida via `/user/update`.
+- **`scripts/bootstrap-litellm-admin.sh` (novo)**: bootstrap idempotente do admin
+  para deploy limpo — cria o usuário e define a senha a partir do `.env`;
+  `--force` redefine. Sem segredos em stdout, logs ou commits.
+- **`tests/test_gateway_env.sh`**: o teste agora limpa overrides de shell
+  (que venciam `--env-file`) e valida literais, ausência de `$${`, imagem do
+  n8n, mapeamento da master key e o toggle de login.
+- **`README.md`**: documenta o login administrativo, a armadilha das URLs
+  derivadas e o comportamento do exporter antes do primeiro projeto Langfuse.
+
+Verificado: `tests/test_gateway_env.sh` verde; `docker compose ps` com
+`n8n`, `n8n-worker`, `langfuse-web`, `langfuse-worker`, `litellm` e `dashboard`
+em `running/healthy` e `RestartCount=0`; login `anneia-admin` → 303 com sessão,
+master key na UI → 401; `docker compose config` sem placeholder residual (com os overrides de shell do ambiente limpos, como o teste faz). Também validado: `bash -n` nos 4 hooks e no bootstrap; `upstream n8n_backend` com `zone`/`resolve` e `resolver 127.0.0.11` presentes no nginx em execução (1.27.5).
+
+- **Hooks/merge driver**: `post-commit`, `post-checkout`, `post-merge` e `post-rewrite` versionados; o bloco graphify antes inalcançável (`exec` no `post-merge`, `exit 0` no `post-rewrite`) agora é executado; `.gitattributes` registra `graphify-out/graph.json merge=graphify`. `graphify-out/` permanece gerado/ignorado.
+
+## [1.2.4] - 2026-11-26
+
+### Added — Dashboard como fonte única do catálogo de IAs
+
+- `precos_modelos` é a SSOT do catálogo: criar/editar/ativar/remover no Dashboard replica por API para LiteLLM e Langfuse. `modelos_sync_estado` registra `sincronizado`, `pendente`, `removido` ou `nao_aplicavel` por sistema.
+- Botão **Sincronizar Modelos** reconcilia de verdade (`POST /api/v1/modelos/sincronizar`, admin, 5/min por IP) e exibe badge por linha + resumo (criados/atualizados/removidos/pendentes/órfãos observados).
+- Chaves de escrita do Langfuse ficam somente no backend; contas humanas devem usar `Member`/`Viewer`.
+
+### Changed — LiteLLM com catálogo no DB e UI em modo leitura
+
+- `store_model_in_db: true` e `ui_access_mode: "admin_only"`; `model_list` removido do YAML após migrar os modelos seed. O teste de inferência usa o slug canônico `provedor/modelo`.
+- `STORE_MODEL_IN_DB=True` versionado no `.env.example`/Compose: sem essa env o proxy recusa `/model/new` e `/model/delete`.
+- Hard delete só conclui se as remoções externas sucederem; caso contrário o modelo é desativado e permanece `pendente` para retry.
+
+## [1.2.2] - 2026-11-24
+
+### Fixed — Evolution API: `500 Not allowed by CORS` ao marcar mensagens como lidas
+
+O node `n8n-nodes-evolution-api` (operação *read messages*) chama a Evolution
+**server-side**, sem header `Origin`. O callback de CORS da v2.3.7 é:
+
+```js
+origin(r, a) {
+  const { ORIGIN: c } = E.get('CORS');
+  return c.includes('*') || c.indexOf(r) !== -1
+    ? a(null, true)
+    : a(new Error('Not allowed by CORS'));
+}
+```
+
+Com allow-list, `r === undefined` ⇒ `indexOf(undefined) === -1` ⇒ erro ⇒
+`500 {"response":{"message":"Not allowed by CORS"}}`. Reprovado ao reproduzir a
+chamada de dentro do n8n: **sem Origin → 500**; com Origin permitido → 404
+(instância inexistente), provando que o CORS era o único bloqueio.
+
+- **`.env` / `.env.example`**: `CORS_ORIGIN` passou de allow-list para `*` (com
+  comentário explicando o motivo e quando reverter). A API **não tem porta
+  publicada nem rota no Nginx** — só containers das redes internas a alcançam e
+  o acesso exige `AUTHENTICATION_API_KEY`; se um dia for exposta, voltar para
+  allow-list **e** injetar `Origin` nos chamadores (o Dashboard já faz isso em
+  `evolutionFetch()`).
+- **`README.md`**: nota na tabela de portas com o motivo do `CORS_ORIGIN=*`.
+- **`tests/test_proxy_smoke.sh`**: nova checagem reproduzindo a chamada
+  server-side de dentro do n8n (sem `Origin`) — falha se o 500 voltar.
+
+Verificado após recriar o `evolution-api`: chamada sem `Origin` → `200` em
+`/instance/fetchInstances`; instância WhatsApp `fabiobrizotti-dev` voltou a
+`open`; suíte de fumaça 100% verde (13 checagens).
+
+### Fixed — editor do n8n: "Lost connection to the server" / "Problem running workflow"
+
+O handshake WebSocket do editor (`GET /n8n/rest/push?pushRef=...`) era rejeitado
+pelo **próprio n8n** com `400 Bad Request` (`text/html`, 22 bytes, corpo
+`Invalid Upgrade header`), não pelo nginx.
+
+Causa raiz: `proxy_set_header Upgrade $http_upgrade;` e
+`proxy_set_header Connection ...` estavam declarados **duas vezes no mesmo
+`location /n8n/`** — inline no template (resquício do suporte a WebSocket) e de
+novo no snippet `proxy-params.conf` incluído naquele location. O nginx acumula as
+diretivas do mesmo nível e envia o header **duplicado** (`Upgrade: websocket,
+websocket`). O Node concatena headers repetidos com `", "`, então
+`req.headers.upgrade` vira `"websocket, websocket"` e a lib `ws@8` usada pelo n8n
+rejeita o upgrade em `WebSocketServer.handleUpgrade` com
+`400 "Invalid Upgrade header"` — o editor perde o canal de push e exibe
+"Lost connection to the server" / "Problem running workflow".
+
+Evidência (mesma instância n8n, mesmo path):
+`1 proxy_set_header Upgrade` → `101 Switching Protocols`;
+`2 proxy_set_header Upgrade` → `400` + `Invalid Upgrade header`.
+
+- **`setup/nginx/nginx.conf.template`**: removidos os `proxy_set_header
+  Upgrade`/`Connection` inline do `location /n8n/`; os headers passam a vir
+  exclusivamente do snippet (via `$connection_upgrade`, que só faz upgrade quando
+  o cliente pede). `proxy_http_version 1.1` mantido (obrigatório para upgrade).
+- **`setup/nginx/snippets/proxy-params.conf`**: comentário de alerta explicando
+  por que não se redeclara `Upgrade`/`Connection` em locations que incluem o snippet.
+- **`tests/test_proxy_smoke.sh`**: a seção "n8n via Nginx" só checava `/healthz`
+  (por isso a regressão passou). Agora valida o handshake real de
+  `/n8n/rest/push` (`101`) e falha se o `location /n8n/` voltar a redeclarar
+  `Upgrade`/`Connection` fora do snippet.
+- **`README.md`**: tabela de rotas + nota de troubleshooting com o `curl` de
+  verificação do handshake.
+
+### Changed — keepalive de upstream restaurado (dívida técnica do proxy)
+
+Os blocos `upstream { keepalive N }` (`dashboard_backend` 32, `n8n_backend` 32,
+pgAdmin/RabbitMQ 16) nunca eram usados: faltava `proxy_http_version 1.1` e o map
+mandava `Connection: close` em toda requisição sem upgrade, então o nginx abria
+uma conexão TCP nova para cada request.
+
+Medido em container de teste (mesmo upstream, `keepalive 32`, 3 requests):
+`Connection: close` → 3 conexões; `Connection` vazio → **1 conexão**.
+
+- **`setup/nginx/nginx.conf.template`**: `map $http_upgrade $connection_upgrade`
+  passou de `'' close` para `'' ''` (header vazio ⇒ nginx omite `Connection` ⇒
+  HTTP/1.1 assume keep-alive).
+- **`setup/nginx/snippets/proxy-params.conf`**: `proxy_http_version 1.1` movido
+  para o snippet (fonte única, vale para todos os locations); removido do
+  `location /n8n/`.
+- **`setup/nginx/snippets/rate-limits.conf`**: removida a segunda definição do
+  `map` (estava duplicado com o template).
+- **`tests/test_proxy_smoke.sh`**: nova checagem estática "keepalive de upstream
+  habilitado" (falha se voltar `close` ou faltar `proxy_http_version 1.1`).
+
+### Fixed — editor n8n com HTTP 429 (`Error fetching workflows`)
+
+A abertura do editor dispara >100 assets + REST em paralelo e estourava o burst
+da zona `api` (10r/s, burst 20), compartilhada com dashboard/pgAdmin/RabbitMQ.
+Como todos os clientes chegam ao Nginx como `172.20.0.1` (gateway Docker),
+compartilhavam o mesmo bucket: 147 respostas 429 no log (129 assets, 36 REST,
+4 types), incluindo `workflows`, `settings`, `roles` e `projects`.
+
+- **`setup/nginx/nginx.conf.template`**: removido `limit_req` de `location /n8n/`;
+  mantidos `limit_conn perip 30`, WebSocket e o include de `proxy-params.conf`.
+  Login (zona `login`, 5r/m) e dashboard permanecem limitados.
+- **`tests/test_proxy_smoke.sh`**: nova checagem 7.4 com 60 requisições paralelas
+  (`-P 20`) em `/rest/settings` e em `/rest/workflows`, exigindo zero 429, mais
+  guardião estático no bloco `location /n8n/` do config gerado (`0,1,1`).
+- **`README.md`**: tabela de rotas e bullet documentam a exceção e o motivo.
+
+*Follow-up:* `/n8n/rest/*` fica sem limite de requisições (apenas `limit_conn`,
+que conta conexões, não requests). Se houver abuso, criar zona dedicada e
+generosa em vez de restaurar a zona `api`.
+
+*Rollback pós-commit:* `git restore --source=0950ca9^ -- setup/nginx/nginx.conf.template
+&& docker compose restart nginx`. O `git checkout -- setup/nginx/nginx.conf.template`
+só era válido antes do commit (depois dele restaura justamente a versão corrigida).
+
+### Changed — versão 1.2.2
+
+- `dashboard/package.json` e `dashboard/package-lock.json`: `1.2.1`/`1.2.0` → `1.2.2`
+  (o lockfile estava dessincronizado desde a 1.2.1; dependências intactas).
+- `.env.example` + `.env`: `DASHBOARD_VERSION=1.2.1` → `1.2.2`.
+- `README.md`: exemplo de saída `/api/health` atualizado para `1.2.2`.
+
+## [1.2.1] - 2026-11-24
+
+### Fixed — n8n editor tela branca ao acessar via nginx (/n8n/)
+
+O n8n estava configurado com `N8N_PATH=/n8n/`, mas o nginx `proxy_pass` no
+location `/n8n/` **não retirava o prefixo** antes de encaminhar para o backend.
+Isso fazia o n8n receber requisições em `/n8n/n8n/`, `/n8n/n8n/assets/...`,
+resultando em 404 nos assets estáticos (CSS/JS) e tela branca no editor.
+
+- **`setup/nginx/nginx.conf.template`**: `proxy_pass http://n8n_backend/` (com
+  barra final) no `location /n8n/` — strip do prefixo `/n8n/` no encaminhamento.
+- Ajuste secundário: `server_name` incluiu `127.0.0.1` para healthcheck interno.
+
+### Fixed — `verify-stack.sh`: robustez no parsing de `.env` e healthcheck nginx
+
+- `env_get()`: remove comentários trailing (`#...`) e whitespace final do valor.
+- `check_pgbouncer()`: usa `nc -z` (mais leve/portável) em vez de `pg_isready`.
+- `check_nginx()`: envia header `Host: ${TAILSCALE_HOSTNAME}` no healthcheck,
+  compatível com o `server_name` do nginx que bloqueia hosts desconhecidos (444).
+
+### Changed
+- `dashboard/package.json`: versão `1.2.0` → `1.2.1`.
+- `.env.example` + `.env`: `DASHBOARD_VERSION=1.2.0` → `1.2.1`.
+- `README.md`: exemplo de saída `/api/health` atualizado para `1.2.1`.
+
 ## [Unreleased] - 2026-11-19
 
 ### Fixed — a aba "Logs" ficava vazia porque nada era interceptado

@@ -181,7 +181,7 @@ services:
       DASHBOARD_TAILSCALE_URL: http://${TAILSCALE_HOSTNAME}:${DASHBOARD_PORT}
       N8N_TAILSCALE_URL: http://${TAILSCALE_HOSTNAME}:${N8N_PORT}
       PGADMIN_TAILSCALE_URL: http://${TAILSCALE_HOSTNAME}:${PGADMIN_PORT}
-      NINE_ROUTER_TAILSCALE_URL: http://${TAILSCALE_HOSTNAME}:${NINE_ROUTER_PORT}
+      LANGFUSE_TAILSCALE_URL: http://${TAILSCALE_HOSTNAME}:${LANGFUSE_PORT}
       # PgBouncer para conexão Postgres (Prisma requer ?pgbouncer=true)
       # Evolution API usa banco 'evolution' com user 'evolution' e senha do POSTGRES_PASSWORD
       DATABASE_CONNECTION_URI: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@pgbouncer:${PGBOUNCER_CONTAINER_PORT}/evolution?pgbouncer=true
@@ -208,6 +208,11 @@ services:
       - "${POSTGRES_HOST_BIND}:${POSTGRES_PORT}:${POSTGRES_CONTAINER_PORT}"
     env_file:
       - .env
+    environment:
+      # init.sql lê estas senhas via current_setting() no boot limpo. Sem elas
+      # as roles litellm/langfuse/pgbouncer_app nascem com senha placeholder e
+      # os gateways não conectam. Valores vêm somente do .env (zero hardcode).
+      PGOPTIONS: "-c app.litellm_password=${CHAVE_LITELLM_DB_PASSWORD} -c app.langfuse_password=${CHAVE_LANGFUSE_DB_PASSWORD} -c app.pgbouncer_password=${PGBOUNCER_PASSWORD}"
     volumes:
       - ./data/postgresql:/var/lib/postgresql/data
       - ./setup/postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
@@ -275,28 +280,239 @@ services:
       retries: 5
       start_period: 10s
 
-  9router:
-    image: decolua/9router:${NINE_ROUTER_VERSION}
-    container_name: 9router
+  # ============================================================================
+  # LITELLM — GATEWAY OPENAI-COMPATIBLE (substitui o antigo 9Router)
+  # ============================================================================
+  litellm:
+    image: litellm/litellm:${LITELLM_VERSION}
+    container_name: litellm
     restart: unless-stopped
     ports:
-      - "${NINE_ROUTER_HOST_BIND}:${NINE_ROUTER_PORT}:${NINE_ROUTER_CONTAINER_PORT}"
+      - "${LITELLM_HOST_BIND}:${LITELLM_PORT}:${LITELLM_CONTAINER_PORT}"
     env_file:
       - .env
     environment:
-      # A imagem lê INITIAL_PASSWORD, não NINE_ROUTER_PASSWORD (ver README §5)
-      INITIAL_PASSWORD: ${NINE_ROUTER_PASSWORD}
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
+      LITELLM_SALT_KEY: ${LITELLM_SALT_KEY}
+      STORE_MODEL_IN_DB: ${STORE_MODEL_IN_DB}
+      DATABASE_URL: postgresql://litellm:${CHAVE_LITELLM_DB_PASSWORD}@db-evolution:${POSTGRES_CONTAINER_PORT}/litellm
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
+      OR_SITE_URL: ${OR_SITE_URL}
+      OR_APP_NAME: ${OR_APP_NAME}
+      LITELLM_OTEL_V2: ${LITELLM_OTEL_V2}
+      LITELLM_OTEL_LANGFUSE_SPAN_SCOPE: ${LITELLM_OTEL_LANGFUSE_SPAN_SCOPE}
+      OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT: ${OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY}
+    command: ["--config", "/app/config.yaml", "--port", "${LITELLM_CONTAINER_PORT}"]
     volumes:
-      - ./data/9router:/app/data
+      - ./setup/litellm/config.yaml:/app/config.yaml:ro
     networks:
-      - frontend
       - data_net
+      # data_net é internal; public_net é necessária para publicar a porta no host.
+      - public_net
+    depends_on:
+      db-evolution:
+        condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:${NINE_ROUTER_CONTAINER_PORT}/api/health && wget -q --spider http://127.0.0.1:${NINE_ROUTER_CONTAINER_PORT}/v1/models || exit 1"]
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:${LITELLM_CONTAINER_PORT}/health/liveliness', timeout=3)\" || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 5
       start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 768m
+
+  # ============================================================================
+  # LANGFUSE v4 — WEB + WORKER + CLICKHOUSE + MINIO + REDIS
+  # ============================================================================
+  clickhouse:
+    image: clickhouse/clickhouse-server:${CLICKHOUSE_VERSION}
+    container_name: clickhouse
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      TZ: UTC
+    volumes:
+      - ./data/clickhouse:/var/lib/clickhouse
+      - ./setup/clickhouse/init.sql:/docker-entrypoint-initdb.d/01-grants.sql:ro
+    networks:
+      - data_net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:${CLICKHOUSE_CONTAINER_PORT}/ping || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 1536m
+
+  minio:
+    image: ${MINIO_IMAGE}@${MINIO_VERSION}
+    container_name: minio
+    restart: unless-stopped
+    # A imagem Chainguard roda como 65532; o volume bind exige o UID do host.
+    user: "${MINIO_UID}:${MINIO_GID}"
+    env_file:
+      - .env
+    environment:
+      MINIO_ROOT_USER: ${LANGFUSE_MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${LANGFUSE_MINIO_ROOT_PASSWORD}
+      # mc (healthcheck) grava config em $HOME/.mc; /tmp é writable pelo UID do host.
+      HOME: /tmp
+    # Imagem Chainguard tem ENTRYPOINT ["minio"]; precisa de sh explícito.
+    entrypoint: sh
+    command: -c "mkdir -p /data/langfuse && exec minio server --address ':9000' --console-address ':9001' /data"
+    volumes:
+      - ./data/minio:/data
+    networks:
+      - data_net
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+
+  langfuse-redis:
+    image: redis:${LANGFUSE_REDIS_VERSION}
+    container_name: langfuse-redis
+    restart: unless-stopped
+    command: >
+      redis-server
+      --requirepass ${LANGFUSE_REDIS_PASSWORD}
+      --maxmemory ${LANGFUSE_REDIS_MAXMEMORY}
+      --maxmemory-policy noeviction
+      --appendonly yes
+    env_file:
+      - .env
+    volumes:
+      - ./data/langfuse-redis:/data
+    networks:
+      - data_net
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"${LANGFUSE_REDIS_PASSWORD}\" ping | grep PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+
+  langfuse-web:
+    image: langfuse/langfuse:${LANGFUSE_VERSION}
+    container_name: langfuse-web
+    restart: unless-stopped
+    ports:
+      - "${LANGFUSE_HOST_BIND}:${LANGFUSE_PORT}:${LANGFUSE_CONTAINER_PORT}"
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://langfuse:${CHAVE_LANGFUSE_DB_PASSWORD}@db-evolution:${POSTGRES_CONTAINER_PORT}/langfuse
+      NEXTAUTH_URL: ${LANGFUSE_NEXTAUTH_URL}
+      NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET}
+      SALT: ${LANGFUSE_SALT}
+      ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY}
+      CLICKHOUSE_URL: http://clickhouse:${CLICKHOUSE_CONTAINER_PORT}
+      CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:${CLICKHOUSE_NATIVE_PORT}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      CLICKHOUSE_CLUSTER_ENABLED: ${CLICKHOUSE_CLUSTER_ENABLED}
+      REDIS_HOST: langfuse-redis
+      REDIS_PORT: ${LANGFUSE_REDIS_CONTAINER_PORT}
+      REDIS_AUTH: ${LANGFUSE_REDIS_PASSWORD}
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: ${LANGFUSE_S3_EVENT_UPLOAD_BUCKET}
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: ${LANGFUSE_S3_EVENT_UPLOAD_REGION}
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: ${LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT}
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: ${LANGFUSE_MINIO_ROOT_USER}
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${LANGFUSE_MINIO_ROOT_PASSWORD}
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: ${LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE}
+      LANGFUSE_S3_EVENT_UPLOAD_PREFIX: ${LANGFUSE_S3_EVENT_UPLOAD_PREFIX}
+    networks:
+      - data_net
+      # data_net é internal; public_net é necessária para publicar a porta no host.
+      - public_net
+    depends_on:
+      db-evolution:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      langfuse-redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:${LANGFUSE_CONTAINER_PORT}/api/public/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 1536m
+
+  langfuse-worker:
+    image: langfuse/langfuse-worker:${LANGFUSE_VERSION}
+    container_name: langfuse-worker
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://langfuse:${CHAVE_LANGFUSE_DB_PASSWORD}@db-evolution:${POSTGRES_CONTAINER_PORT}/langfuse
+      NEXTAUTH_URL: ${LANGFUSE_NEXTAUTH_URL}
+      SALT: ${LANGFUSE_SALT}
+      ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY}
+      CLICKHOUSE_URL: http://clickhouse:${CLICKHOUSE_CONTAINER_PORT}
+      CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:${CLICKHOUSE_NATIVE_PORT}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      CLICKHOUSE_CLUSTER_ENABLED: ${CLICKHOUSE_CLUSTER_ENABLED}
+      REDIS_HOST: langfuse-redis
+      REDIS_PORT: ${LANGFUSE_REDIS_CONTAINER_PORT}
+      REDIS_AUTH: ${LANGFUSE_REDIS_PASSWORD}
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: ${LANGFUSE_S3_EVENT_UPLOAD_BUCKET}
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: ${LANGFUSE_S3_EVENT_UPLOAD_REGION}
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: ${LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT}
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: ${LANGFUSE_MINIO_ROOT_USER}
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${LANGFUSE_MINIO_ROOT_PASSWORD}
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: ${LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE}
+      LANGFUSE_S3_EVENT_UPLOAD_PREFIX: ${LANGFUSE_S3_EVENT_UPLOAD_PREFIX}
+    networks:
+      - data_net
+    depends_on:
+      db-evolution:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      langfuse-redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:${LANGFUSE_WORKER_CONTAINER_PORT}/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 768m
 
   pgadmin:
     image: dpage/pgadmin4:${PGADMIN_VERSION}
@@ -342,6 +558,7 @@ services:
       EVOLUTION_API_URL: http://evolution-api:${SERVER_PORT}
       EVOLUTION_API_KEY: ${AUTHENTICATION_API_KEY}
       DATABASE_URL: postgresql://pgbouncer_app:${CHAVE_PGBOUNCER_PASSWORD}@pgbouncer:${PGBOUNCER_CONTAINER_PORT}/anneia
+      LITELLM_DATABASE_URL: postgresql://pgbouncer_app:${CHAVE_PGBOUNCER_PASSWORD}@pgbouncer:${PGBOUNCER_CONTAINER_PORT}/litellm
       # Revisão em execução (gravada no .env pelo update.sh). Em runtime, para que
       # /api/health sempre reflita o HEAD aplicado — inclusive em updates que só
       # tocaram documentação e por isso não reconstroem a imagem.
@@ -350,8 +567,12 @@ services:
       DASHBOARD_AUTH_ENABLED: ${DASHBOARD_AUTH_ENABLED}
       DASHBOARD_USERNAME: ${DASHBOARD_USERNAME}
       DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD}
-      NINE_ROUTER_URL: http://9router:${NINE_ROUTER_CONTAINER_PORT}/v1
-      NINE_ROUTER_API_KEY: ${NINE_ROUTER_API_KEY:-${NINE_ROUTER_PASSWORD}}
+      # URL interna do gateway; a master key NÃO é enviada ao navegador.
+      LITELLM_URL: ${LITELLM_URL}
+      LITELLM_API_KEY: ${LITELLM_MASTER_KEY}
+      LANGFUSE_HOST: ${LANGFUSE_HOST}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY}
       # Rate limit distribuído (db 7 é exclusivo do Dashboard; 6 é do n8n)
       REDIS_URL: redis://:${CHAVE_REDIS_PASSWORD}@redis:${REDIS_CONTAINER_PORT}/7
       # Observabilidade: retenção de system_logs e ingestão externa de eventos
@@ -364,7 +585,7 @@ services:
       DASHBOARD_TAILSCALE_URL: http://${TAILSCALE_HOSTNAME}:${DASHBOARD_PORT}
       N8N_TAILSCALE_URL: http://${TAILSCALE_HOSTNAME}:${N8N_PORT}
       PGADMIN_TAILSCALE_URL: http://${TAILSCALE_HOSTNAME}:${PGADMIN_PORT}
-      NINE_ROUTER_TAILSCALE_URL: http://${TAILSCALE_HOSTNAME}:${NINE_ROUTER_PORT}
+      LANGFUSE_TAILSCALE_URL: http://${TAILSCALE_HOSTNAME}:${LANGFUSE_PORT}
       # Trust proxy IP para Nginx (quando ativo) — IP do container nginx na rede frontend
       # Se não definido, usa 'loopback' (compatibilidade acesso direto)
       NGINX_TRUST_PROXY_IP: ${NGINX_TRUST_PROXY_IP:-loopback}
@@ -479,8 +700,12 @@ services:
         condition: service_healthy
       pgadmin:
         condition: service_started
-      9router:
-        condition: service_healthy
+      # Sem rota no Nginx: esperar apenas o start evita travar o proxy se o
+      # Langfuse estiver indisponível até o primeiro login (chaves do projeto).
+      litellm:
+        condition: service_started
+      langfuse-web:
+        condition: service_started
       rabbitmq:
         condition: service_healthy
     healthcheck:

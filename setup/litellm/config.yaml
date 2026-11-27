@@ -1,0 +1,19 @@
+# ==============================================================================
+# ANNE IA — CONFIGURAÇÃO DO LITELLM (gateway OpenAI-compatible)
+# ==============================================================================
+# A provider key NUNCA entra neste arquivo: vem de OPENROUTER_API_KEY (.env).
+# Modelos são gerenciados na aba Modelos de IA do Dashboard e replicados por API;
+# não editar modelos nas UIs do LiteLLM/Langfuse.
+# ==============================================================================
+
+general_settings:
+  # Admin local criado via /user/new (anneia-admin) com senha própria em
+  # LITELLM_ADMIN_PASSWORD. Sem isto, a master key é aceita no login da UI.
+  disable_env_credential_login: true
+  # Catálogo gerenciado pelo Dashboard; UI do LiteLLM em modo somente leitura.
+  store_model_in_db: true
+  ui_access_mode: "admin_only"
+
+litellm_settings:
+  # Preset oficial de OTel v2 → Langfuse (llm_only vem da .env).
+  callbacks: ["langfuse_otel"]

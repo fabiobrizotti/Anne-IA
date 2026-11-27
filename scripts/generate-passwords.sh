@@ -32,7 +32,6 @@ PASSWORD_FIELDS=(
   "REDIS_PASSWORD"
   "REDIS_N8N_QUEUE_PASSWORD"
   "RABBITMQ_DEFAULT_PASS"
-  "NINE_ROUTER_PASSWORD"
   "N8N_ENCRYPTION_KEY"
   "AUTHENTICATION_API_KEY"
   "PGADMIN_DEFAULT_PASSWORD"
@@ -40,6 +39,26 @@ PASSWORD_FIELDS=(
   "AUTH_SECRET_KEY"
   "PGBOUNCER_PASSWORD"
   "PGBOUNCER_ADMIN_PASSWORD"
+  "LITELLM_MASTER_KEY"
+  "LITELLM_SALT_KEY"
+  "LITELLM_DB_PASSWORD"
+  "LANGFUSE_DB_PASSWORD"
+  "LANGFUSE_NEXTAUTH_SECRET"
+  "LANGFUSE_SALT"
+  "LANGFUSE_MINIO_ROOT_PASSWORD"
+  "CLICKHOUSE_PASSWORD"
+  "LANGFUSE_REDIS_PASSWORD"
+)
+
+# Senhas de login (não usadas em URIs) cuja política exige caractere especial.
+# Formato: "NOME_VARIAVEL:SUFIXO" — gera 31 chars Base62 + sufixo (32 no total).
+SPECIAL_SUFFIX_FIELDS=(
+  "LITELLM_ADMIN_PASSWORD:!"
+)
+
+# Campos hex (chaves criptográficas do Langfuse): "NOME:QUANTIDADE_DE_BYTES"
+HEX_FIELDS=(
+  "LANGFUSE_ENCRYPTION_KEY:32"
 )
 
 # Pares de variáveis espelhadas que devem possuir o mesmo valor.
@@ -48,7 +67,8 @@ SYNC_PAIRS=(
   "CHAVE_POSTGRES_PASSWORD:POSTGRES_PASSWORD"
   "CHAVE_REDIS_PASSWORD:REDIS_PASSWORD"
   "CHAVE_RABBITMQ_DEFAULT_PASS:RABBITMQ_DEFAULT_PASS"
-  "CHAVE_NINE_ROUTER_PASSWORD:NINE_ROUTER_PASSWORD"
+  "CHAVE_LITELLM_DB_PASSWORD:LITELLM_DB_PASSWORD"
+  "CHAVE_LANGFUSE_DB_PASSWORD:LANGFUSE_DB_PASSWORD"
   "CHAVE_PGBOUNCER_PASSWORD:PGBOUNCER_PASSWORD"
   "CHAVE_PGBOUNCER_ADMIN_PASSWORD:PGBOUNCER_ADMIN_PASSWORD"
 )
@@ -63,6 +83,12 @@ generate_password() {
   # LC_ALL=C garante leitura correta de bytes em /dev/urandom sem falha de locale
   # '|| true' evita encerramento precoce por SIGPIPE (código 141) sob pipefail quando head fecha o pipe
   (LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom || true) | head -c "${len}"
+}
+
+# Gera string hexadecimal com bytes criptograficamente seguros (2 chars por byte).
+generate_hex() {
+  local bytes="${1:-32}"
+  openssl rand -hex "${bytes}"
 }
 
 # Obtém o valor atual de uma variável no arquivo .env
@@ -156,6 +182,43 @@ for entry in "${PASSWORD_FIELDS[@]}"; do
     new_pass=$(generate_password "${var_len}")
     set_env_val "${var_name}" "${new_pass}" "${ENV_FILE}"
     echo "[gerada]  ${var_name} (${var_len} chars)"
+    count_generated=$((count_generated + 1))
+  else
+    echo "[mantida] ${var_name} (já preenchida)"
+    count_preserved=$((count_preserved + 1))
+  fi
+done
+
+# 2.1. Campos hex (chaves de criptografia — não podem ser Base62)
+for entry in "${HEX_FIELDS[@]}"; do
+  var_name="${entry%%:*}"
+  var_bytes="${entry##*:}"
+
+  current_val=$(get_env_val "${var_name}" "${ENV_FILE}")
+
+  if [[ -z "${current_val}" ]]; then
+    new_hex=$(generate_hex "${var_bytes}")
+    set_env_val "${var_name}" "${new_hex}" "${ENV_FILE}"
+    echo "[gerada]  ${var_name} (hex de ${var_bytes} bytes)"
+    count_generated=$((count_generated + 1))
+  else
+    echo "[mantida] ${var_name} (já preenchida)"
+    count_preserved=$((count_preserved + 1))
+  fi
+done
+
+# 2.2. Senhas de login que exigem caractere especial na política do LiteLLM.
+for entry in "${SPECIAL_SUFFIX_FIELDS[@]}"; do
+  var_name="${entry%%:*}"
+  suffix="${entry##*:}"
+  base_len=$((DEFAULT_LENGTH - ${#suffix}))
+
+  current_val=$(get_env_val "${var_name}" "${ENV_FILE}")
+
+  if [[ -z "${current_val}" ]]; then
+    new_pass="$(generate_password "${base_len}")${suffix}"
+    set_env_val "${var_name}" "${new_pass}" "${ENV_FILE}"
+    echo "[gerada]  ${var_name} (${DEFAULT_LENGTH} chars, com sufixo de política)"
     count_generated=$((count_generated + 1))
   else
     echo "[mantida] ${var_name} (já preenchida)"

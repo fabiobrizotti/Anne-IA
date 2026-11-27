@@ -44,8 +44,10 @@ jobs:
           # SC2317 em funções chamadas apenas via `trap`, que a 0.11 não emite.
           # Usar a mesma versão do ambiente de desenvolvimento evita "passa aqui,
           # falha no CI".
+          # -S warning: achados SC2015/SC2016/SC2329 são informativos e
+          # intencionais em regex/heredocs e funções chamadas via trap.
           docker run --rm -v "$PWD:/mnt:ro" koalaman/shellcheck:v0.11.0 \
-            scripts/*.sh tests/*.sh
+            -S warning scripts/*.sh tests/*.sh
 
       - name: Validação de Sintaxe Python (py_compile)
         run: |
@@ -156,14 +158,16 @@ jobs:
           echo "CPF_ENC_KEY=$(node -e 'console.log(require("crypto").randomBytes(32).toString("hex"))')" >> .env
           echo "CPF_HMAC_KEY=$(node -e 'console.log(require("crypto").randomBytes(32).toString("hex"))')" >> .env
 
-      - name: Subir Infraestrutura Mínima para Pentest (Postgres & Dashboard)
+      - name: Subir Infraestrutura Mínima para Pentest (Postgres, PgBouncer & Dashboard)
         run: |
           # Serviço correto: db-evolution (o nome "postgres" não existe no compose)
-          docker compose up -d db-evolution dashboard
-          # Aguarda healthy do banco e o dashboard respondendo na porta do host
+          # PgBouncer é obrigatório: Dashboard conecta via PgBouncer (DATABASE_URL)
+          docker compose up -d db-evolution pgbouncer dashboard
+          # Aguarda healthy do banco, pgbouncer e o dashboard respondendo na porta do host
           # (DASHBOARD_PORT, não a 3000 que é interna do container)
           DASH_PORT="$(grep '^DASHBOARD_PORT=' .env | cut -d= -f2)"
           timeout 180 bash -c 'until docker compose ps db-evolution | grep -q "(healthy)"; do sleep 2; done'
+          timeout 180 bash -c 'until docker compose ps pgbouncer | grep -q "(healthy)"; do sleep 2; done'
           timeout 180 bash -c "until curl -s http://127.0.0.1:${DASH_PORT}/api/health | grep -q 'ok'; do sleep 2; done"
 
       - name: Injetar Fixtures Sintéticas Multi-Tenant
@@ -171,7 +175,30 @@ jobs:
           # Tabelas de negócio vivem no banco anneia (criado pelo init.sql),
           # não em POSTGRES_DB (evolution, controlado pelo Prisma da Evolution API)
           PG_USER="$(grep '^POSTGRES_USER=' .env | cut -d= -f2)"
-          docker compose exec -T db-evolution psql -U "${PG_USER}" -d anneia < setup/postgres/fixtures-test.sql
+          docker compose exec -T db-evolution psql -U "${PG_USER}" -d anneia \
+            -v ON_ERROR_STOP=1 < setup/postgres/fixtures-test.sql
+
+      - name: Injetar Fixture Sintética do Spend do Gateway
+        run: |
+          # O DAST não sobe o serviço litellm; sem o spend log o financeiro
+          # responde 503 (fail-closed) e o pentest perde casos de vazamento/RBAC.
+          PG_USER="$(grep '^POSTGRES_USER=' .env | cut -d= -f2)"
+          docker compose exec -T db-evolution psql -U "${PG_USER}" -d anneia \
+            -v ON_ERROR_STOP=1 < setup/postgres/fixtures-test-gateway.sql
+
+      - name: Gate de runtime do financeiro (primeiro acesso, pool frio)
+        run: |
+          # Prova a causa raiz do 503 do DAST, não apenas o literal do timeout:
+          # esta é a PRIMEIRA consulta ao gateway após o boot do Dashboard,
+          # quando o gatewayPool ainda está frio e o handshake do PgBouncer
+          # demorava mais que 2s. O pentest repete a checagem no teste 1.3.
+          DASH_PORT="$(grep '^DASHBOARD_PORT=' .env | cut -d= -f2)"
+          DASH_USER="$(grep '^DASHBOARD_USERNAME=' .env | cut -d= -f2)"
+          DASH_PASS="$(grep '^DASHBOARD_PASSWORD=' .env | cut -d= -f2)"
+          HTTP_CODE="$(curl -s -o /dev/null -w '%{http_code}' -u "${DASH_USER}:${DASH_PASS}" \
+            "http://127.0.0.1:${DASH_PORT}/api/v1/financeiro")"
+          echo "financeiro (pool frio): HTTP ${HTTP_CODE}"
+          test "${HTTP_CODE}" = "200"
 
       - name: Executar Bateria DAST / Pentest Automatizado
         run: |

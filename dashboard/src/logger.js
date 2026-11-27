@@ -109,7 +109,7 @@ function deriveOrigin(rota) {
   const path = String(rota || '');
   const known = [
     'auth', 'instances', 'financeiro', 'modelos', 'conhecimento',
-    'prompts-padrao', 'usuarios', 'permissoes', 'logs', '9router'
+    'prompts-padrao', 'usuarios', 'permissoes', 'logs', 'litellm'
   ];
   for (const prefix of known) {
     if (path.startsWith(`/api/v1/${prefix}`)) return prefix;

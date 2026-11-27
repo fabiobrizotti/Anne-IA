@@ -3,6 +3,10 @@
 .claude
 .vscode
 .taste-skill/
+.superpowers/
+# Planejamento/specs locais e grafo gerado por ferramenta (não versionar)
+docs/superpowers/
+graphify-out/
 docker-compose.override.txt
 docker-compose.override.yml
 .dockerignore
@@ -12,18 +16,24 @@ docker-compose.override.yml
 .env.*
 !.env.example
 
+# PgBouncer: userlist é gerado no boot em /run/pgbouncer a partir do .env.
+# Nunca versionar credenciais (o arquivo antigo foi removido do índice).
+setup/pgbouncer/userlist.txt
+
 # =============================================================================
 # DADOS E VOLUMES (EFÊMEROS - NUNCA VERSIONAR)
 # =============================================================================
 # A pasta setup/ (configuração/infra de init) É VERSIONADA.
-# Volumes de persistência e runtime dos 7 serviços:
+# Volumes de persistência e runtime dos serviços:
 data/
 data/n8n/
 data/rabbitmq/
 data/evolution-api/
 data/redis/
 data/postgresql/
-data/9router/
+data/clickhouse/
+data/minio/
+data/langfuse-redis/
 data/pgadmin/
 
 # Backups / exportações de workflows (não são o fonte dos workflows)

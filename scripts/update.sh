@@ -314,8 +314,16 @@ fi
 # SCHEMA
 # ------------------------------------------------------------------------------
 step "[6/8] Schema do banco (anneia)"
+# init.sql cria as roles dos gateways lendo current_setting() do PGOPTIONS.
+# O compose já injeta no boot; aqui repetimos para reaplicações manuais/forçadas.
+PGBOUNCER_APP_PASSWORD="$(env_get PGBOUNCER_PASSWORD)"
+PGBOUNCER_ADMIN_PASSWORD="$(env_get PGBOUNCER_ADMIN_PASSWORD)"
+LITELLM_DB_PASSWORD="$(env_get CHAVE_LITELLM_DB_PASSWORD)"
+LANGFUSE_DB_PASSWORD="$(env_get CHAVE_LANGFUSE_DB_PASSWORD)"
+SQL_PGOPTIONS="-c app.litellm_password=${LITELLM_DB_PASSWORD} -c app.langfuse_password=${LANGFUSE_DB_PASSWORD} -c app.pgbouncer_password=${PGBOUNCER_APP_PASSWORD}"
+
 if [[ "${FORCE_SCHEMA}" -eq 1 ]] || grep -qx 'setup/postgres/init.sql' <<< "${CHANGED}"; then
-  if docker compose exec -T db-evolution psql -U "${PG_USER}" -d anneia -v ON_ERROR_STOP=1 \
+  if docker compose exec -e "PGOPTIONS=${SQL_PGOPTIONS}" -T db-evolution psql -U "${PG_USER}" -d anneia -v ON_ERROR_STOP=1 \
        < setup/postgres/init.sql > "${LOG_DIR}/schema-${TS}.log" 2>&1; then
     ok "init.sql reaplicado sem erros (idempotente)"
   else
@@ -327,19 +335,43 @@ else
   ok "init.sql sem mudanças — schema não reaplicado"
 fi
 
+# Bancos restaurados sem rodar o init.sql (ex.: data dir preservado sem as roles)
+# chegam aqui sem pgbouncer_app: o ALTER ROLE falhava e o login do dashboard dava 500.
+role_count="$(docker compose exec -T db-evolution psql -U "${PG_USER}" -d anneia -tAc \
+  "SELECT count(*) FROM pg_roles WHERE rolname IN ('pgbouncer_app', 'pgbouncer_admin', 'litellm', 'langfuse')" | tr -d '[:space:]' || true)"
+if [[ "${role_count:-0}" != "4" ]]; then
+  warn "Roles do PgBouncer/gateways ausentes — reaplicando setup/postgres/init.sql"
+  docker compose exec -e "PGOPTIONS=${SQL_PGOPTIONS}" -T db-evolution psql -U "${PG_USER}" -d anneia -v ON_ERROR_STOP=1 \
+    < setup/postgres/init.sql > "${LOG_DIR}/schema-roles-${TS}.log" 2>&1 ||
+    die "falha ao provisionar roles; detalhes em logs/schema-roles-${TS}.log"
+fi
+
 # Atualiza senhas das roles pgbouncer_app e pgbouncer_admin no banco anneia
 # (init.sql cria as roles com senha placeholder; aqui definimos as reais do .env)
-PGBOUNCER_APP_PASSWORD="$(env_get PGBOUNCER_PASSWORD)"
-PGBOUNCER_ADMIN_PASSWORD="$(env_get PGBOUNCER_ADMIN_PASSWORD)"
 if [[ -n "${PGBOUNCER_APP_PASSWORD}" && -n "${PGBOUNCER_ADMIN_PASSWORD}" ]]; then
   if docker compose exec -T db-evolution psql -U "${PG_USER}" -d anneia -v ON_ERROR_STOP=1 \
     -c "ALTER ROLE pgbouncer_app PASSWORD '${PGBOUNCER_APP_PASSWORD}'; ALTER ROLE pgbouncer_admin PASSWORD '${PGBOUNCER_ADMIN_PASSWORD}';" >/dev/null 2>&1; then
     ok "Senhas das roles PgBouncer atualizadas no banco anneia"
   else
-    warn "Falha ao atualizar senhas das roles PgBouncer (continuando)"
+    # Divergência entre .env e banco é exatamente o modo de falha desta release:
+    # health check com conexões antigas pode esconder a role desatualizada.
+    die "falha ao atualizar senhas das roles PgBouncer; abortando deploy (roles e senha não exibidas)"
   fi
 else
-  warn "PGBOUNCER_PASSWORD ou PGBOUNCER_ADMIN_PASSWORD não definidos — roles com senha placeholder"
+  die "PGBOUNCER_PASSWORD ou PGBOUNCER_ADMIN_PASSWORD não definidos — abortando deploy com roles placeholder"
+fi
+
+# init.sql NÃO altera senha de role existente (preserva dados). Em volumes
+# anteriores aos gateways as roles litellm/langfuse podem ter 'changeme'.
+if [[ -n "${LITELLM_DB_PASSWORD}" && -n "${LANGFUSE_DB_PASSWORD}" ]]; then
+  if docker compose exec -T db-evolution psql -U "${PG_USER}" -d anneia -v ON_ERROR_STOP=1 \
+    -c "ALTER ROLE litellm PASSWORD '${LITELLM_DB_PASSWORD}'; ALTER ROLE langfuse PASSWORD '${LANGFUSE_DB_PASSWORD}';" >/dev/null 2>&1; then
+    ok "Senhas das roles litellm/langfuse sincronizadas com o .env"
+  else
+    die "falha ao sincronizar senhas das roles litellm/langfuse; abortando deploy (roles e senha não exibidas)"
+  fi
+else
+  die "CHAVE_LITELLM_DB_PASSWORD/CHAVE_LANGFUSE_DB_PASSWORD não definidos — abortando deploy com roles dos gateways desatualizadas"
 fi
 
 # ------------------------------------------------------------------------------

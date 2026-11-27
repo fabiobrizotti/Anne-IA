@@ -17,9 +17,12 @@ events {
 
 http {
     # WebSocket upgrade mapping
+    # '' (sem Upgrade) => header Connection vazio => o nginx NÃO envia Connection
+    # ao upstream (HTTP/1.1 default = keep-alive), habilitando os blocos
+    # `keepalive` dos upstreams. NÃO usar `close` aqui: isso desliga o pool.
     map $http_upgrade $connection_upgrade {
         default upgrade;
-        ''      close;
+        ''      '';
     }
     # Básico
     sendfile on;
@@ -47,24 +50,33 @@ http {
     # Rate limiting zones (definidos em snippets/rate-limits.conf)
     include /tmp/nginx/snippets/rate-limits.conf;
 
+    # DNS embutido do Docker: `resolve` abaixo reaplica o IP dos backends em
+    # runtime. Sem isso o nginx congela o IP na carga da config e devolve 502
+    # quando um container é recriado com outro IP na rede.
+    resolver 127.0.0.11 valid=10s ipv6=off;
+
     # Upstreams (serviços backend)
     upstream dashboard_backend {
-        server dashboard:3000;
+        zone dashboard_backend 64k;
+        server dashboard:3000 resolve;
         keepalive 32;
     }
 
     upstream n8n_backend {
-        server n8n:${N8N_PORT};
+        zone n8n_backend 64k;
+        server n8n:${N8N_PORT} resolve;
         keepalive 32;
     }
 
     upstream pgadmin_backend {
-        server pgadmin:80;
+        zone pgadmin_backend 64k;
+        server pgadmin:80 resolve;
         keepalive 16;
     }
 
     upstream rabbitmq_mgmt_backend {
-        server rabbitmq:15672;
+        zone rabbitmq_mgmt_backend 64k;
+        server rabbitmq:15672 resolve;
         keepalive 16;
     }
 
@@ -79,7 +91,7 @@ http {
     # Main server — bind no IP Tailscale (definido via variável de ambiente)
     server {
         listen ${NGINX_CONTAINER_PORT};
-        server_name ${TAILSCALE_HOSTNAME} localhost;
+        server_name ${TAILSCALE_HOSTNAME} localhost 127.0.0.1;
 
         # Security headers (snippet)
         include /tmp/nginx/snippets/security-headers.conf;
@@ -133,16 +145,31 @@ http {
         }
 
         # n8n — WebSocket/SSE support para editor
+        # N8N_PATH=/n8n/ está configurado no n8n; o proxy deve retirar o prefixo /n8n/
+        # ao encaminhar para o backend (proxy_pass COM barra final).
         location /n8n/ {
-            # WebSocket upgrade
-            proxy_http_version 1.1;
-            proxy_set_header Upgrade $http_upgrade;
-            proxy_set_header Connection "upgrade";
+            # WebSocket upgrade (handshake de /rest/push).
+            # ATENÇÃO: NÃO declarar proxy_set_header Upgrade/Connection aqui.
+            # O snippet proxy-params.conf (incluído abaixo) já define ambos via
+            # $connection_upgrade (e proxy_http_version 1.1). Declarar de novo NO
+            # MESMO location faz o nginx enviar o header duas vezes
+            # ("upgrade: websocket, websocket"); o Node concatena headers
+            # repetidos com ", " e a lib ws do n8n rejeita o handshake com
+            # 400 "Invalid Upgrade header" (editor: "Lost connection to the
+            # server" / "Problem running workflow").
 
-            limit_req zone=api burst=${NGINX_RATE_LIMIT_BURST_API} nodelay;
+            # WebSocket/SSE: sem buffer, timeout longo
+            proxy_buffering off;
+            proxy_cache off;
+            proxy_read_timeout 1h;
+            proxy_send_timeout 1h;
+
+            # Sem limit_req aqui: o editor dispara >100 assets + REST em paralelo
+            # e estourava a zona `api` (10r/s, burst 20), causando 429 em
+            # workflows/settings. Proteção residual: limit_conn + auth do n8n.
             limit_conn perip 30;
             include /tmp/nginx/snippets/proxy-params.conf;
-            proxy_pass http://n8n_backend;
+            proxy_pass http://n8n_backend/;
         }
 
         # pgAdmin — o header X-Script-Name faz o app gerar links com o prefixo

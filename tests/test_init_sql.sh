@@ -27,6 +27,8 @@ PG_IMAGE="pgvector/pgvector:${PGVECTOR_VERSION}"
 
 # Credenciais efêmeras do container de teste (nunca são de produção)
 TEST_PWD="testonly_$(openssl rand -hex 12 2>/dev/null || echo "fallback$$")"
+TEST_LITELLM_PWD="testlitellm_$(openssl rand -hex 8 2>/dev/null || echo "fallback$$")"
+TEST_LANGFUSE_PWD="testlangfuse_$(openssl rand -hex 8 2>/dev/null || echo "fallback$$")"
 TEST_USER="evolution"
 TEST_DB="evolution"
 
@@ -48,6 +50,7 @@ bad() { printf '  \033[31m[FALHA]\033[0m %s\n' "$*"; FAILS=$((FAILS + 1)); }
 
 require() {
   command -v docker >/dev/null 2>&1 || { say "[erro] docker não encontrado"; exit 1; }
+  command -v python3 >/dev/null 2>&1 || { say "[erro] python3 não encontrado"; exit 1; }
   [[ -f "${INIT_SQL}" ]] || { say "[erro] ${INIT_SQL} não encontrado"; exit 1; }
   docker info >/dev/null 2>&1 || { say "[erro] daemon Docker indisponível"; exit 1; }
 }
@@ -89,6 +92,7 @@ docker run -d --name "${CONTAINER}" \
   -e POSTGRES_PASSWORD="${TEST_PWD}" \
   -e POSTGRES_USER="${TEST_USER}" \
   -e POSTGRES_DB="${TEST_DB}" \
+  -e PGOPTIONS="-c app.litellm_password=${TEST_LITELLM_PWD} -c app.langfuse_password=${TEST_LANGFUSE_PWD} -c app.pgbouncer_password=${TEST_PWD}" \
   "${PG_IMAGE}" >/dev/null
 
 if ! wait_ready; then
@@ -171,6 +175,94 @@ assert_ge "UPDATE auditado com dados_antigos + dados_novos (pareamento)" 1 "${AU
 
 AUD_CLI="$(psql_q "SELECT count(*) FROM auditoria_geral WHERE tabela='clientes' AND operacao='U'")"
 assert_ge "UPDATE em clientes auditado (tabela com PK id)" 1 "${AUD_CLI}"
+
+# Gateway: bancos lógicos e roles dedicados precisam existir antes do docker compose up.
+# Aceita nome de banco (legado) ou uma consulta SELECT count(...) contra `anneia`.
+db_count() { # datname|consulta SQL
+  if [[ "$1" == SELECT* ]]; then
+    docker exec "${CONTAINER}" psql -U "${TEST_USER}" -d anneia -tAc "$1" 2>/dev/null | tr -d '[:space:]'
+    return
+  fi
+  docker exec "${CONTAINER}" psql -U "${TEST_USER}" -d "${TEST_DB}" -tAc \
+    "SELECT count(*) FROM pg_database WHERE datname='$1'" 2>/dev/null | tr -d '[:space:]'
+}
+assert_eq "Banco litellm criado" "1" "$(db_count litellm)"
+assert_eq "Banco langfuse criado" "1" "$(db_count langfuse)"
+
+ROLES_GATEWAY="$(psql_q "SELECT count(*) FROM pg_roles WHERE rolname IN ('litellm', 'langfuse')")"
+assert_eq "Roles litellm/langfuse criados" "2" "${ROLES_GATEWAY}"
+
+# Fallback ativo do contábil de tokens passa a ser litellm; '9router_sync' segue só no CHECK.
+FALLBACK_PROV="$(psql_q "SELECT fn_registrar_uso_tokens('tenant-teste-idempotencia', 'wf-fallback', 'exec-fallback', NULL, 'modelo-sem-preco-teste', 1, 1)->>'provedor'")"
+assert_eq "Fallback de provedor em fn_registrar_uso_tokens" "litellm" "${FALLBACK_PROV}"
+
+# SSOT do catálogo: estado de sincronização e seeds do config.yaml do gateway.
+assert_eq "tabela modelos_sync_estado existe" "1" \
+  "$(db_count "SELECT count(*) FROM information_schema.tables WHERE table_name='modelos_sync_estado'")"
+assert_eq "enum de status inclui nao_aplicavel" "1" \
+  "$(db_count "SELECT count(*) FROM pg_constraint WHERE conname='modelos_sync_estado_status_check' AND pg_get_constraintdef(oid) LIKE '%nao_aplicavel%'")"
+assert_eq "seeds dos 3 modelos do config.yaml" "3" \
+  "$(db_count "SELECT count(*) FROM precos_modelos WHERE provedor='openrouter' AND vigente_de='2026-11-26T00:00:00Z'")"
+
+# psql_q consulta `anneia`; o grant vive no banco `litellm`.
+# defaclacl é aclitem[]: cast para name[] retorna 0 — usar LIKE no texto.
+litellm_q() {
+  docker exec "${CONTAINER}" psql -U "${TEST_USER}" -d litellm -tAc "$1" 2>/dev/null | tr -d '[:space:]'
+}
+BROAD_DEFAULT="$(litellm_q "SELECT count(*) FROM pg_default_acl d JOIN pg_roles r ON r.oid=d.defaclrole WHERE r.rolname='litellm' AND d.defaclobjtype='r' AND d.defaclacl::text LIKE '%pgbouncer_app=r%'")"
+assert_eq "Sem default privileges amplos para pgbouncer_app em litellm" "0" "${BROAD_DEFAULT}"
+assert_eq "Event trigger do spend log presente" "1" \
+  "$(litellm_q "SELECT count(*) FROM pg_event_trigger WHERE evtname='grant_spend_log_select'")"
+
+# Simula o boot real: o LiteLLM cria as tabelas DEPOIS do init.sql. O event
+# trigger deve conceder SELECT somente em LiteLLM_SpendLogs — nunca em tabelas
+# de tokens/usuários do gateway.
+if docker exec -i "${CONTAINER}" psql -U "${TEST_USER}" -d litellm -v ON_ERROR_STOP=1 \
+     > "${LOG_DIR}/spend-grants.log" 2>&1 <<'SQL'
+SET ROLE litellm;
+CREATE TABLE public."LiteLLM_SpendLogs" (request_id text PRIMARY KEY);
+CREATE TABLE public."LiteLLM_ProxyTokens" (token text PRIMARY KEY);
+RESET ROLE;
+SQL
+then
+  ok "Tabelas simuladas do LiteLLM criadas após o init.sql"
+else
+  bad "Falha ao simular tabelas do LiteLLM:"
+  grep -nE 'ERROR|DETAIL|HINT' "${LOG_DIR}/spend-grants.log" | head -10
+fi
+read_grant() { # tabela -> 1 se pgbouncer_app tem SELECT
+  litellm_q "SELECT count(*) FROM information_schema.role_table_grants WHERE grantee='pgbouncer_app' AND table_schema='public' AND table_name='$1' AND privilege_type='SELECT'"
+}
+assert_eq "SELECT concedido em LiteLLM_SpendLogs" "1" "$(read_grant 'LiteLLM_SpendLogs')"
+assert_eq "Sem SELECT em tabela de tokens do LiteLLM (menor privilégio)" "0" "$(read_grant 'LiteLLM_ProxyTokens')"
+
+# Prova que PGOPTIONS chegou ao init.sql comparando o verifier SCRAM gravado
+# em pg_authid. A imagem pgvector usa `trust` para 127.0.0.1, então um teste
+# via TCP aceitaria qualquer senha e daria falso positivo.
+password_matches() { # role senha -> 1 se o hash SCRAM corresponder
+  local verifier
+  verifier="$(docker exec "${CONTAINER}" psql -U "${TEST_USER}" -d anneia -tAc \
+    "SELECT rolpassword FROM pg_authid WHERE rolname='$1'" 2>/dev/null | tr -d '[:space:]')"
+  [[ -n "${verifier}" && "${verifier}" == SCRAM-SHA-256* ]] || { printf '0'; return; }
+  python3 - "${verifier}" "$2" <<'PY'
+import base64, hashlib, hmac, sys
+verifier, password = sys.argv[1], sys.argv[2].encode()
+_, params = verifier.split('$', 1)
+iters_s, keys = params.split(':', 1)
+salt_b64, keys_b64 = keys.split('$', 1)
+stored_b64, server_b64 = keys_b64.split(':', 1)
+salted = hashlib.pbkdf2_hmac('sha256', password, base64.b64decode(salt_b64), int(iters_s))
+client_key = hmac.new(salted, b'Client Key', hashlib.sha256).digest()
+stored = base64.b64encode(hashlib.sha256(client_key).digest()).decode()
+server = base64.b64encode(hmac.new(salted, b'Server Key', hashlib.sha256).digest()).decode()
+print('1' if stored == stored_b64 and server == server_b64 else '0')
+PY
+}
+assert_eq "Role litellm usa a senha do PGOPTIONS" "1" "$(password_matches litellm "${TEST_LITELLM_PWD}")"
+assert_eq "Role langfuse usa a senha do PGOPTIONS" "1" "$(password_matches langfuse "${TEST_LANGFUSE_PWD}")"
+assert_eq "Role pgbouncer_app usa a senha do PGOPTIONS" "1" "$(password_matches pgbouncer_app "${TEST_PWD}")"
+assert_eq "Fallback 'changeme' não aceito para litellm" "0" "$(password_matches litellm changeme)"
+assert_eq "Fallback 'changeme' não aceito para langfuse" "0" "$(password_matches langfuse changeme)"
 
 say "[7/7] Resultado final..."
 if [[ ${FAILS} -eq 0 ]]; then

@@ -30,7 +30,6 @@ env_get() {
 NGINX_HOST_PORT="$(env_get NGINX_PORT 80)"
 # Container port for docker exec tests
 NGINX_CONTAINER_PORT="$(env_get NGINX_CONTAINER_PORT 8080)"
-DASHBOARD_PORT="$(env_get DASHBOARD_PORT 41283)"
 N8N_PORT="$(env_get N8N_PORT 34567)"
 PGBOUNCER_CONTAINER_PORT="$(env_get PGBOUNCER_CONTAINER_PORT 6432)"
 
@@ -67,7 +66,7 @@ fi
 echo "--- Rate Limit Login ---"
 login_url="http://127.0.0.1:${NGINX_HOST_PORT}/api/v1/auth/login"
 blocked=0
-for i in {1..7}; do
+for _ in {1..7}; do
   code=$(curl -s -o /dev/null -w '%{http_code}' -m 5 -X POST \
     -H "Content-Type: application/json" \
     -H "Host: ${TAILSCALE_HOSTNAME}" \
@@ -91,7 +90,7 @@ echo "--- Rate Limit API Geral ---"
 api_url="http://127.0.0.1:${NGINX_HOST_PORT}/api/health"
 # Deve permitir burst inicial
 success=0
-for i in {1..5}; do
+for _ in {1..5}; do
   code=$(curl -s -o /dev/null -w '%{http_code}' -m 5 \
     -H "Host: ${TAILSCALE_HOSTNAME}" \
     "${api_url}" 2>/dev/null || true)
@@ -164,17 +163,123 @@ code=$(curl -s -o /dev/null -w '%{http_code}' -m 8 \
 if [[ "${code}" == "200" ]]; then
   ok "n8n ${N8N_BASE_PATH}/healthz acessível via Nginx (HTTP 200)"
 else
-  warn "n8n ${N8N_BASE_PATH}/healthz retornou HTTP ${code} (esperado 200)"
+  fail "n8n ${N8N_BASE_PATH}/healthz via Nginx falhou (HTTP ${code}) — verificar error.log: connect() failed ao IP do upstream"
+fi
+
+# 7.1 Handshake WebSocket do editor (regressão: 400 "Invalid Upgrade header").
+# O n8n usa a lib ws, que rejeita o upgrade quando recebe "upgrade: websocket, websocket"
+# (nginx envia o header duplicado se proxy_set_header Upgrade for declarado duas vezes
+# no mesmo location). curl mantém a conexão aberta após o 101, daí o timeout esperado.
+push_code=$(curl -s -o /dev/null -w '%{http_code}' -m 3 \
+  -H "Host: ${TAILSCALE_HOSTNAME}" \
+  -H "Upgrade: websocket" \
+  -H "Connection: Upgrade" \
+  -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" \
+  -H "Sec-WebSocket-Version: 13" \
+  -H "Origin: http://${TAILSCALE_HOSTNAME}" \
+  "http://127.0.0.1:${NGINX_HOST_PORT}${N8N_BASE_PATH}/rest/push?pushRef=smoke" 2>/dev/null || true)
+if [[ "${push_code}" == "101" ]]; then
+  ok "handshake WebSocket ${N8N_BASE_PATH}/rest/push aceito (HTTP 101 Switching Protocols)"
+else
+  fail "handshake ${N8N_BASE_PATH}/rest/push retornou HTTP ${push_code} (esperado 101; verifique proxy_set_header Upgrade duplicado no location)"
+fi
+
+# 7.2 Guarda estática: Upgrade/Connection vêm SÓ do snippet proxy-params.conf.
+# O include não é expandido no arquivo gerado, então o location não deve redeclarar
+# os headers (redeclarar => nginx envia o header duas vezes => ws do n8n responde 400).
+conf_dump="$(mktemp)"
+docker compose exec -T nginx cat /tmp/nginx/nginx.conf > "${conf_dump}" 2>/dev/null || true
+loc_check=$(awk -v pat="location ${N8N_BASE_PATH}/" '
+  inblock == 0 && index($0, pat) > 0 { inblock = 1; next }
+  inblock == 1 && $1 == "}" { inblock = 0; next }
+  inblock == 1 && $1 == "proxy_set_header" && ($2 == "Upgrade" || $2 == "Connection") { count++ }
+  inblock == 1 && $1 == "include" && $2 ~ /proxy-params\.conf/ { has_include = 1 }
+  END { print (count + 0) "," (has_include + 0) }
+' "${conf_dump}")
+rm -f "${conf_dump}"
+snippet_ws=$(grep -cE '^proxy_set_header (Upgrade|Connection)' setup/nginx/snippets/proxy-params.conf || true)
+if [[ "${loc_check}" == "0,1" ]] && [[ "${snippet_ws}" == "2" ]]; then
+  ok "location ${N8N_BASE_PATH}/ herda Upgrade/Connection do snippet, sem redeclarar (sem header duplicado)"
+else
+  fail "location ${N8N_BASE_PATH}/ redeclara Upgrade/Connection ou não inclui o snippet (location:${loc_check}, snippet:${snippet_ws}) — esperado 0,1 e 2"
+fi
+
+# 7.3 Keepalive de upstream: exige HTTP/1.1 (no snippet) e map sem "close"
+# (Connection vazio => header omitido => o pool `keepalive` dos upstreams é usado).
+if grep -q '^proxy_http_version 1.1;' setup/nginx/snippets/proxy-params.conf \
+  && ! grep -qE "^[[:space:]]*''[[:space:]]+close;" setup/nginx/nginx.conf.template; then
+  ok "keepalive de upstream habilitado (proxy_http_version 1.1 + Connection vazio)"
+else
+  fail "keepalive de upstream desligado: falta 'proxy_http_version 1.1' no snippet ou o map mapeia '' para 'close'"
+fi
+
+# 7.4 Rate limit do editor: /n8n/ NÃO deve aplicar limit_req.
+# O editor dispara >100 assets + REST em paralelo; a zona `api` (10r/s, burst 20)
+# compartilhada com o dashboard devolvia 429 em workflows/settings. Concurrency
+# fixada em 20 para não confundir com `limit_conn perip 30`.
+echo "--- Rate Limit do editor n8n ---"
+probe_codes="$(mktemp)"
+workflows_probe='/rest/workflows?includeScopes=true&includeFolders=true&filter=%7B%7D&skip=0&take=50&sortBy=updatedAt%3Adesc'
+for probe_path in "/rest/settings" "${workflows_probe}"; do
+  seq 1 60 | xargs -P 20 -I{} curl -s -o /dev/null -w '%{http_code}\n' -m 10 \
+    -H "Host: ${TAILSCALE_HOSTNAME}" \
+    "http://127.0.0.1:${NGINX_HOST_PORT}${N8N_BASE_PATH}${probe_path}" > "${probe_codes}" 2>/dev/null || true
+  total=$(wc -l < "${probe_codes}" | tr -d '[:space:]')
+  blocked=$(grep -c '^429$' "${probe_codes}" || true)
+  unhealthy=$(grep -cE '^(000|5[0-9][0-9])$' "${probe_codes}" || true)
+  echo "  ${probe_path%%\?*}: ${total}/60 respostas, ${blocked} HTTP 429, ${unhealthy} HTTP 000/5xx"
+  [[ "${total}" -eq 60 ]] || fail "Sonda n8n ${probe_path%%\?*} incompleta (${total}/60 respostas)"
+  [[ "${blocked}" -eq 0 ]] || fail "location ${N8N_BASE_PATH}/ ainda aplica limit_req: ${blocked}/60 HTTP 429 em ${probe_path%%\?*}"
+  [[ "${unhealthy}" -eq 0 ]] || fail "Sonda n8n ${probe_path%%\?*} falhou: ${unhealthy}/60 respostas 000/5xx (upstream indisponível)"
+done
+rm -f "${probe_codes}"
+
+conf_dump="$(mktemp)"
+docker compose exec -T nginx cat /tmp/nginx/nginx.conf > "${conf_dump}" 2>/dev/null || true
+loc_check=$(awk -v pat="location ${N8N_BASE_PATH}/" '
+  inblock == 0 && index($0, pat) > 0 { inblock = 1; next }
+  inblock == 1 && $1 == "}" { inblock = 0; next }
+  inblock == 1 && $1 == "limit_req" { req++ }
+  inblock == 1 && $1 == "limit_conn" && $2 == "perip" && $3 == "30;" { conn++ }
+  inblock == 1 && $1 == "include" && $2 ~ /proxy-params\.conf/ { inc++ }
+  END { print (req + 0) "," (conn + 0) "," (inc + 0) }
+' "${conf_dump}")
+rm -f "${conf_dump}"
+if [[ "${loc_check}" == "0,1,1" ]]; then
+  ok "location ${N8N_BASE_PATH}/ sem limit_req; limit_conn perip 30 e proxy-params preservados"
+else
+  fail "location ${N8N_BASE_PATH}/ deve ter 0 limit_req, limit_conn perip 30 e include do snippet (atual: ${loc_check}; esperado 0,1,1)"
+fi
+
+# 7.5 DNS dinâmico do upstream n8n: sem `resolve`, o nginx congela o IP do
+# container na carga da config e devolve 502 após recriação do n8n (novo IP).
+conf_dump="$(mktemp)"
+docker compose exec -T nginx cat /tmp/nginx/nginx.conf > "${conf_dump}" 2>/dev/null || true
+upstream_conf="$(awk '/^[[:space:]]*upstream n8n_backend {/,/^[[:space:]]*}/' "${conf_dump}")"
+has_resolver="$(grep -cE '^[[:space:]]*resolver 127\.0\.0\.11' "${conf_dump}" || true)"
+rm -f "${conf_dump}"
+if [[ "${has_resolver}" -ge 1 ]] \
+  && grep -q "zone n8n_backend" <<<"${upstream_conf}" \
+  && grep -q "server n8n:${N8N_PORT} resolve;" <<<"${upstream_conf}"; then
+  ok "upstream n8n resolve DNS em runtime (resolver + zone + resolve)"
+else
+  fail "upstream n8n usa IP congelado na inicialização (faltou resolver/zone/resolve) — risco de 502 após recreate"
 fi
 
 # ------------------------------------------------------------------------------
 # 8. PGBOUNCER CONEXÃO
 # ------------------------------------------------------------------------------
 echo "--- PgBouncer Conexão ---"
-if docker compose exec -T pgbouncer nc -z 127.0.0.1 "${PGBOUNCER_CONTAINER_PORT}" >/dev/null 2>&1; then
-  ok "PgBouncer aceita conexões na porta ${PGBOUNCER_CONTAINER_PORT}"
+# O Dashboard entra por aqui: basta TCP aberto não detecta senha divergente
+# entre o userlist.txt do PgBouncer e a role do Postgres (login do painel 500).
+PGBOUNCER_APP_PASSWORD="$(env_get CHAVE_PGBOUNCER_PASSWORD)"
+[[ -n "${PGBOUNCER_APP_PASSWORD}" ]] || fail "CHAVE_PGBOUNCER_PASSWORD vazia no .env"
+if docker compose exec -T -e PGPASSWORD="${PGBOUNCER_APP_PASSWORD}" db-evolution \
+    psql -h pgbouncer -p "${PGBOUNCER_CONTAINER_PORT}" -U pgbouncer_app -d anneia \
+    -tAc 'SELECT 1' >/dev/null 2>&1; then
+  ok "PgBouncer autentica pgbouncer_app no Postgres com a senha do .env"
 else
-  fail "PgBouncer não responde na porta ${PGBOUNCER_CONTAINER_PORT}"
+  fail "PgBouncer/Postgres rejeitaram pgbouncer_app — senha da role divergente do .env"
 fi
 
 # ------------------------------------------------------------------------------
@@ -185,7 +290,7 @@ echo "  Reiniciando pgbouncer..."
 docker compose restart pgbouncer >/dev/null 2>&1
 sleep 3
 # Aguarda pgbouncer subir
-for i in {1..10}; do
+for _ in {1..10}; do
   if docker compose exec -T pgbouncer nc -z 127.0.0.1 "${PGBOUNCER_CONTAINER_PORT}" >/dev/null 2>&1; then
     break
   fi
@@ -212,6 +317,29 @@ if docker compose exec -T evolution-api wget -q --spider \
   ok "Evolution API alcança n8n internamente (sem Nginx)"
 else
   warn "Evolution API NÃO alcança n8n internamente"
+fi
+
+# CORS: o node n8n-nodes-evolution-api chama a Evolution server-side SEM Origin.
+# Se CORS_ORIGIN não contém "*", a v2.3.7 responde 500 "Not allowed by CORS"
+# (o callback faz CORS.ORIGIN.indexOf(undefined) => -1).
+# Roda de dentro do n8n para reproduzir exatamente a chamada do workflow.
+cors_probe=$(docker compose exec -T n8n node -e '
+  (async () => {
+    try {
+      const r = await fetch("http://evolution-api:8080/instance/fetchInstances", {
+        headers: { apikey: process.env.AUTHENTICATION_API_KEY },
+      });
+      const body = await r.text();
+      console.log(r.status, body.includes("Not allowed by CORS") ? "CORS_REJEITADO" : "OK");
+    } catch (err) {
+      console.log("ERRO", err.message);
+    }
+  })();
+' 2>/dev/null || true)
+if [[ "${cors_probe}" == "200 OK" ]]; then
+  ok "Evolution aceita chamada server-side sem Origin (CORS_ORIGIN='*')"
+else
+  fail "Evolution rejeitou chamada sem Origin: ${cors_probe:-sem resposta} (marcar mensagens como lidas quebra com 500)"
 fi
 
 # UIs administrativas via Nginx (subcaminho /rabbitmq e /pgadmin)
