@@ -203,6 +203,10 @@ for var in LITELLM_MASTER_KEY LITELLM_SALT_KEY LITELLM_DB_PASSWORD CLICKHOUSE_PA
   fi
 done
 
+# O pool do gateway precisa tolerar o handshake frio do PgBouncer no boot do CI.
+assert_file_has "Pool do gateway usa timeout de conexão tolerante ao boot" \
+  'connectionTimeoutMillis: 10000' "${PROJECT_ROOT}/dashboard/src/server.js"
+
 say "[5/6] Documentação operacional..."
 README="${PROJECT_ROOT}/README.md"
 assert_file_has "README documenta fail-closed do financeiro" \

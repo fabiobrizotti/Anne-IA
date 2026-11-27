@@ -21,7 +21,10 @@
   `SC2015`/`SC2016`/`SC2329` são informativos e intencionais); o job `dast`
   injeta `setup/postgres/fixtures-test-gateway.sql` para que
   `/api/v1/financeiro` não responda `503` quando o serviço LiteLLM não sobe no
-  CI.
+  CI. O pool somente-leitura do gateway passou de `connectionTimeoutMillis:
+  2000` para `10000`: a fixture sozinha não bastava, porque as duas primeiras
+  consultas ao `LiteLLM_SpendLogs` estouravam 2s no handshake frio do
+  PgBouncer e derrubavam os testes 1.3 e 2.3.
 - **Deriva de versão**: `DASHBOARD_VERSION`, `package.json`/`package-lock.json`,
   footer e cache-buster do `index.html`, example do `/api/health` no README e
   este CHANGELOG passam a usar `1.2.6`. O deploy volta a reportar a versão

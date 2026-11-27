@@ -46,7 +46,10 @@ if (LITELLM_DATABASE_URL) {
     connectionString: LITELLM_DATABASE_URL,
     max: 4,
     idleTimeoutMillis: 10000,
-    connectionTimeoutMillis: 2000
+    // O primeiro acesso após o boot pode levar >2s (DNS do PgBouncer +
+    // handshake SCRAM). Com 2s o financeiro devolvia 503 nas primeiras
+    // requisições do CI mesmo com a fixture carregada.
+    connectionTimeoutMillis: 10000
   });
   gatewayPool.on('error', (err) => {
     console.error('[db-gateway] Erro inesperado no pool do LiteLLM:', err.message);
