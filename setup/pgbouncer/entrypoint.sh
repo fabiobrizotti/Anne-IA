@@ -3,7 +3,7 @@
 # PGBOUNCER ENTRYPOINT (POSIX sh compatible)
 # ==============================================================================
 # Gera userlist.txt e pgbouncer.ini a partir de variáveis de ambiente.
-# Suporta dois pools: anneia (Dashboard) e evolution (Evolution API).
+# Suporta três pools: anneia (Dashboard), litellm (spend do gateway) e evolution (Evolution API).
 # Executa como root para escrever em /run/pgbouncer/, depois dropa privilégios.
 # ==============================================================================
 

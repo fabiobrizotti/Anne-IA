@@ -14,6 +14,9 @@ anneia = host=${POSTGRES_HOST} port=${POSTGRES_PORT} dbname=anneia pool_mode=tra
 ; pool_mode=session: keeps connection for entire session (required for prepared statements, temp tables)
 anneia_session = host=${POSTGRES_HOST} port=${POSTGRES_PORT} dbname=anneia pool_mode=session pool_size=5
 
+; Read-only pool do spend do LiteLLM para o financeiro do Dashboard
+litellm = host=${POSTGRES_HOST} port=${POSTGRES_PORT} dbname=litellm pool_mode=transaction pool_size=5
+
 ; Evolution API database pool
 evolution = host=${EVOLUTION_DB_HOST} port=${EVOLUTION_DB_PORT} dbname=${EVOLUTION_DB_NAME} pool_mode=${EVOLUTION_DB_POOL_MODE} pool_size=${EVOLUTION_DB_POOL_SIZE}
 

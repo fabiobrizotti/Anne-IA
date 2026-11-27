@@ -86,6 +86,9 @@ assert_file_has "Registry e digest do MinIO parametrizados no compose" 'image: $
 assert_no_match "Nenhuma referência ao repo removido minio/minio" 'minio/minio' "${ENV_EXAMPLE}"
 
 say "[4/6] Configuração do Compose..."
+assert_file_has "PgBouncer expõe database litellm" \
+  'litellm = host=${POSTGRES_HOST} port=${POSTGRES_PORT} dbname=litellm pool_mode=transaction pool_size=5' \
+  "${PROJECT_ROOT}/setup/pgbouncer/pgbouncer.ini.template"
 cat "${TMP_ENV}" > "${TMP_COMPOSE_ENV}"
 docker compose --env-file "${TMP_COMPOSE_ENV}" config --services > "${TMP_DIR}/services.txt" 2> "${TMP_DIR}/compose.err" ||
   { bad "docker compose config --services falhou"; head -20 "${TMP_DIR}/compose.err"; }
