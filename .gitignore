@@ -4,6 +4,9 @@
 .vscode
 .taste-skill/
 .superpowers/
+# Planejamento/specs locais e grafo gerado por ferramenta (não versionar)
+docs/superpowers/
+graphify-out/
 docker-compose.override.txt
 docker-compose.override.yml
 .dockerignore
