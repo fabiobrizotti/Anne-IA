@@ -207,6 +207,19 @@ done
 assert_file_has "Pool do gateway usa timeout de conexão tolerante ao boot" \
   'connectionTimeoutMillis: 10000' "${PROJECT_ROOT}/dashboard/src/server.js"
 
+# O userlist do PgBouncer é gerado em /run/pgbouncer no boot; versioná-lo vaza
+# as senhas reais do .env (o entrypoint aponta o auth_file para /run).
+if git -C "${PROJECT_ROOT}" ls-files --error-unmatch setup/pgbouncer/userlist.txt >/dev/null 2>&1; then
+  bad "userlist.txt do PgBouncer está versionado"
+else
+  ok "userlist.txt do PgBouncer não está versionado"
+fi
+if git -C "${PROJECT_ROOT}" check-ignore -q setup/pgbouncer/userlist.txt; then
+  ok "userlist.txt do PgBouncer é ignorado pelo git"
+else
+  bad "userlist.txt do PgBouncer não é ignorado pelo git"
+fi
+
 say "[5/6] Documentação operacional..."
 README="${PROJECT_ROOT}/README.md"
 assert_file_has "README documenta fail-closed do financeiro" \

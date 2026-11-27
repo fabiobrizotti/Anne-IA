@@ -25,6 +25,11 @@
   2000` para `10000`: a fixture sozinha não bastava, porque as duas primeiras
   consultas ao `LiteLLM_SpendLogs` estouravam 2s no handshake frio do
   PgBouncer e derrubavam os testes 1.3 e 2.3.
+- **Credenciais versionadas**: `setup/pgbouncer/userlist.txt` deixou de ser
+  rastreado e passou a ser ignorado. O arquivo continha senhas reais de três
+  roles e é redundante: `setup/pgbouncer/entrypoint.sh` gera o `userlist` em
+  `/run/pgbouncer` a partir do `.env` e redireciona o `auth_file`. As credenciais
+  expostas devem ser rotacionadas no `.env` de cada instalação.
 - **Deriva de versão**: `DASHBOARD_VERSION`, `package.json`/`package-lock.json`,
   footer e cache-buster do `index.html`, example do `/api/health` no README e
   este CHANGELOG passam a usar `1.2.6`. O deploy volta a reportar a versão

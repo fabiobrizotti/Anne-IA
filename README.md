@@ -168,6 +168,7 @@ docker compose start n8n
 - `ignore_startup_parameters = extra_float_digits, statement_timeout` — clientes que enviam `statement_timeout` no startup não são rejeitados (o Dashboard define o timeout por query, não no pool).
 - Roles `pgbouncer_app`, `pgbouncer_admin` e `pgbouncer_auth` são criadas por `setup/postgres/init.sql` com senha placeholder; `scripts/update.sh` aplica as senhas reais do `.env` via `ALTER ROLE`.
 - O container roda como UID 70 (`postgres`): `/run/pgbouncer` é `tmpfs` com `mode=1777` — sem isso o entrypoint não consegue escrever `userlist.txt` (erro `Permission denied`, container em restart loop).
+- `setup/pgbouncer/userlist.txt` não é versionado (está no `.gitignore`): o arquivo é gerado no boot. Instalações que já usaram a versão antiga devem rotacionar `POSTGRES_PASSWORD`, `PGBOUNCER_PASSWORD` e `PGBOUNCER_ADMIN_PASSWORD` no `.env` (e os pares `CHAVE_*`), depois reaplicar com `./scripts/update.sh`.
 - Evolution API usa `?pgbouncer=true` na URI (obrigatório para o Prisma em transaction mode).
 ## 3. Gestão e Sincronização de Ambiente (.env)
 A infraestrutura utiliza o `.env.example` como fonte única da verdade estrutural (schema).

@@ -16,6 +16,10 @@ docker-compose.override.yml
 .env.*
 !.env.example
 
+# PgBouncer: userlist é gerado no boot em /run/pgbouncer a partir do .env.
+# Nunca versionar credenciais (o arquivo antigo foi removido do índice).
+setup/pgbouncer/userlist.txt
+
 # =============================================================================
 # DADOS E VOLUMES (EFÊMEROS - NUNCA VERSIONAR)
 # =============================================================================
