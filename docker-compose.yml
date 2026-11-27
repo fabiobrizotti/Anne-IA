@@ -563,6 +563,9 @@ services:
       # URL interna do gateway; a master key NÃO é enviada ao navegador.
       LITELLM_URL: ${LITELLM_URL}
       LITELLM_API_KEY: ${LITELLM_API_KEY}
+      LANGFUSE_HOST: ${LANGFUSE_HOST}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY}
       # Rate limit distribuído (db 7 é exclusivo do Dashboard; 6 é do n8n)
       REDIS_URL: redis://:${CHAVE_REDIS_PASSWORD}@redis:${REDIS_CONTAINER_PORT}/7
       # Observabilidade: retenção de system_logs e ingestão externa de eventos
