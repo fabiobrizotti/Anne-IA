@@ -1,0 +1,12 @@
+# Falsos positivos confirmados — valores publicos de exemplo, nao credenciais.
+# Formato: <commit>:<arquivo>:<regra>:<linha> (gitleaks 8.24.3).
+# Cada entrada foi revisada; nenhuma contem segredo real.
+
+# RFC 6455 Sec-WebSocket-Key de exemplo ("the sample nonce" em base64) em doc.
+39670702ac91ff608b5288a8bbe46d97c860db37:README.md:generic-api-key:148
+
+# Mesmo nonce RFC 6455 em teste de smoke do proxy WebSocket.
+39670702ac91ff608b5288a8bbe46d97c860db37:tests/test_proxy_smoke.sh:generic-api-key:177
+
+# URL interna de teste (host:porta do servico), nao uma chave de API.
+552b9818fd5150cd92c904c50ce687d3c32e01d2:tests/test_proxy_smoke.sh:generic-api-key:270
