@@ -353,10 +353,12 @@ if [[ -n "${PGBOUNCER_APP_PASSWORD}" && -n "${PGBOUNCER_ADMIN_PASSWORD}" ]]; the
     -c "ALTER ROLE pgbouncer_app PASSWORD '${PGBOUNCER_APP_PASSWORD}'; ALTER ROLE pgbouncer_admin PASSWORD '${PGBOUNCER_ADMIN_PASSWORD}';" >/dev/null 2>&1; then
     ok "Senhas das roles PgBouncer atualizadas no banco anneia"
   else
-    warn "Falha ao atualizar senhas das roles PgBouncer (continuando)"
+    # Divergência entre .env e banco é exatamente o modo de falha desta release:
+    # health check com conexões antigas pode esconder a role desatualizada.
+    die "falha ao atualizar senhas das roles PgBouncer; abortando deploy (roles e senha não exibidas)"
   fi
 else
-  warn "PGBOUNCER_PASSWORD ou PGBOUNCER_ADMIN_PASSWORD não definidos — roles com senha placeholder"
+  die "PGBOUNCER_PASSWORD ou PGBOUNCER_ADMIN_PASSWORD não definidos — abortando deploy com roles placeholder"
 fi
 
 # init.sql NÃO altera senha de role existente (preserva dados). Em volumes
@@ -366,10 +368,10 @@ if [[ -n "${LITELLM_DB_PASSWORD}" && -n "${LANGFUSE_DB_PASSWORD}" ]]; then
     -c "ALTER ROLE litellm PASSWORD '${LITELLM_DB_PASSWORD}'; ALTER ROLE langfuse PASSWORD '${LANGFUSE_DB_PASSWORD}';" >/dev/null 2>&1; then
     ok "Senhas das roles litellm/langfuse sincronizadas com o .env"
   else
-    warn "Falha ao sincronizar senhas das roles litellm/langfuse (continuando)"
+    die "falha ao sincronizar senhas das roles litellm/langfuse; abortando deploy (roles e senha não exibidas)"
   fi
 else
-  warn "CHAVE_LITELLM_DB_PASSWORD/CHAVE_LANGFUSE_DB_PASSWORD não definidos — roles dos gateways com senha anterior"
+  die "CHAVE_LITELLM_DB_PASSWORD/CHAVE_LANGFUSE_DB_PASSWORD não definidos — abortando deploy com roles dos gateways desatualizadas"
 fi
 
 # ------------------------------------------------------------------------------

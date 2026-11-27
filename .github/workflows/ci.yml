@@ -186,6 +186,20 @@ jobs:
           docker compose exec -T db-evolution psql -U "${PG_USER}" -d anneia \
             -v ON_ERROR_STOP=1 < setup/postgres/fixtures-test-gateway.sql
 
+      - name: Gate de runtime do financeiro (primeiro acesso, pool frio)
+        run: |
+          # Prova a causa raiz do 503 do DAST, não apenas o literal do timeout:
+          # esta é a PRIMEIRA consulta ao gateway após o boot do Dashboard,
+          # quando o gatewayPool ainda está frio e o handshake do PgBouncer
+          # demorava mais que 2s. O pentest repete a checagem no teste 1.3.
+          DASH_PORT="$(grep '^DASHBOARD_PORT=' .env | cut -d= -f2)"
+          DASH_USER="$(grep '^DASHBOARD_USERNAME=' .env | cut -d= -f2)"
+          DASH_PASS="$(grep '^DASHBOARD_PASSWORD=' .env | cut -d= -f2)"
+          HTTP_CODE="$(curl -s -o /dev/null -w '%{http_code}' -u "${DASH_USER}:${DASH_PASS}" \
+            "http://127.0.0.1:${DASH_PORT}/api/v1/financeiro")"
+          echo "financeiro (pool frio): HTTP ${HTTP_CODE}"
+          test "${HTTP_CODE}" = "200"
+
       - name: Executar Bateria DAST / Pentest Automatizado
         run: |
           chmod +x tests/pentest_dashboard.sh

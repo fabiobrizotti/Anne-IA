@@ -41,6 +41,24 @@
 - `docs/superpowers/` deixou de ser rastreado (já coberto pelo `.gitignore`);
   os dois artefatos de planejamento versionados anteriormente foram removidos
   do índice, sem apagar os arquivos locais.
+- **Menor privilégio no banco `litellm`**: `pgbouncer_app` passa a ler somente
+  `"LiteLLM_SpendLogs"`; o grant amplo em todas as tabelas e o
+  `ALTER DEFAULT PRIVILEGES` foram revogados. Um event trigger concede o SELECT
+  quando o LiteLLM cria a tabela após o boot do Postgres.
+- `scripts/update.sh` agora aborta o deploy se a sincronização das senhas das
+  roles falhar, em vez de apenas avisar — health check com conexões antigas
+  poderia mascarar `.env` e banco divergentes. Nenhuma senha é logada.
+- O job `dast` passou a exigir HTTP 200 autenticado em `/api/v1/financeiro`
+  antes do pentest, provando por runtime a regressão do handshake frio (antes,
+  a checagem era só textual). O log de falha de login do pentest registra apenas
+  o status, nunca o corpo da resposta.
+
+### Exceção de release
+
+- `LITELLM_VERSION=lts` permanece como tag móvel nesta versão. O pin por
+  digest está previsto para 2026-12-02; até lá, `lts` é resolvido no pull e
+  CI/produção podem receber imagens diferentes. Registrado como exceção
+  consciente — não é uma release reproduzível bit a bit.
 
 > `v1.2.5` permanece intacta no commit `add0c46`. Esta versão é a que segue
 > para `main` via PR.

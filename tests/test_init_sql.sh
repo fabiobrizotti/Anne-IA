@@ -209,8 +209,32 @@ assert_eq "seeds dos 3 modelos do config.yaml" "3" \
 litellm_q() {
   docker exec "${CONTAINER}" psql -U "${TEST_USER}" -d litellm -tAc "$1" 2>/dev/null | tr -d '[:space:]'
 }
-ADMIN_PRIV="$(litellm_q "SELECT count(*) FROM pg_default_acl d JOIN pg_roles r ON r.oid=d.defaclrole WHERE r.rolname='litellm' AND d.defaclobjtype='r' AND d.defaclacl::text LIKE '%pgbouncer_app=r%'")"
-assert_ge "Default privileges de leitura para pgbouncer_app em litellm" 1 "${ADMIN_PRIV}"
+BROAD_DEFAULT="$(litellm_q "SELECT count(*) FROM pg_default_acl d JOIN pg_roles r ON r.oid=d.defaclrole WHERE r.rolname='litellm' AND d.defaclobjtype='r' AND d.defaclacl::text LIKE '%pgbouncer_app=r%'")"
+assert_eq "Sem default privileges amplos para pgbouncer_app em litellm" "0" "${BROAD_DEFAULT}"
+assert_eq "Event trigger do spend log presente" "1" \
+  "$(litellm_q "SELECT count(*) FROM pg_event_trigger WHERE evtname='grant_spend_log_select'")"
+
+# Simula o boot real: o LiteLLM cria as tabelas DEPOIS do init.sql. O event
+# trigger deve conceder SELECT somente em LiteLLM_SpendLogs — nunca em tabelas
+# de tokens/usuários do gateway.
+if docker exec -i "${CONTAINER}" psql -U "${TEST_USER}" -d litellm -v ON_ERROR_STOP=1 \
+     > "${LOG_DIR}/spend-grants.log" 2>&1 <<'SQL'
+SET ROLE litellm;
+CREATE TABLE public."LiteLLM_SpendLogs" (request_id text PRIMARY KEY);
+CREATE TABLE public."LiteLLM_ProxyTokens" (token text PRIMARY KEY);
+RESET ROLE;
+SQL
+then
+  ok "Tabelas simuladas do LiteLLM criadas após o init.sql"
+else
+  bad "Falha ao simular tabelas do LiteLLM:"
+  grep -nE 'ERROR|DETAIL|HINT' "${LOG_DIR}/spend-grants.log" | head -10
+fi
+read_grant() { # tabela -> 1 se pgbouncer_app tem SELECT
+  litellm_q "SELECT count(*) FROM information_schema.role_table_grants WHERE grantee='pgbouncer_app' AND table_schema='public' AND table_name='$1' AND privilege_type='SELECT'"
+}
+assert_eq "SELECT concedido em LiteLLM_SpendLogs" "1" "$(read_grant 'LiteLLM_SpendLogs')"
+assert_eq "Sem SELECT em tabela de tokens do LiteLLM (menor privilégio)" "0" "$(read_grant 'LiteLLM_ProxyTokens')"
 
 # Prova que PGOPTIONS chegou ao init.sql comparando o verifier SCRAM gravado
 # em pg_authid. A imagem pgvector usa `trust` para 127.0.0.1, então um teste

@@ -1263,12 +1263,45 @@ COMMENT ON ROLE pgbouncer_auth IS 'Role para auth_query (opcional, não usada co
 COMMENT ON FUNCTION pgbouncer.get_auth(TEXT) IS 'Retorna credenciais SCRAM para auth_query do PgBouncer';
 
 -- 10. Leitura do spend do gateway pelo Dashboard (banco lógico litellm).
--- O ALTER DEFAULT PRIVILEGES cobre o boot limpo: o LiteLLM cria
--- LiteLLM_SpendLogs DEPOIS do entrypoint do Postgres.
+-- MENOR PRIVILÉGIO: pgbouncer_app lê SOMENTE "LiteLLM_SpendLogs". O LiteLLM
+-- cria essa tabela DEPOIS do entrypoint do Postgres, então um event trigger
+-- concede o SELECT no instante da criação. A cláusula condicional cobre volumes
+-- onde a tabela já existe e a reaplicação do init.sql.
 \connect litellm
 GRANT USAGE ON SCHEMA public TO pgbouncer_app;
-GRANT SELECT ON ALL TABLES IN SCHEMA public TO pgbouncer_app;
-ALTER DEFAULT PRIVILEGES FOR ROLE litellm IN SCHEMA public GRANT SELECT ON TABLES TO pgbouncer_app;
+
+-- Remove o grant amplo de versões anteriores (tabelas atuais e futuras).
+REVOKE SELECT ON ALL TABLES IN SCHEMA public FROM pgbouncer_app;
+ALTER DEFAULT PRIVILEGES FOR ROLE litellm IN SCHEMA public REVOKE SELECT ON TABLES FROM pgbouncer_app;
+
+CREATE OR REPLACE FUNCTION public.fn_grant_spend_log_select()
+RETURNS event_trigger
+LANGUAGE plpgsql
+AS $fn$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM pg_event_trigger_ddl_commands()
+    WHERE object_type = 'table'
+      AND object_identity = 'public."LiteLLM_SpendLogs"'
+  ) THEN
+    EXECUTE 'GRANT SELECT ON TABLE public."LiteLLM_SpendLogs" TO pgbouncer_app';
+  END IF;
+END;
+$fn$;
+
+DO $do$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_event_trigger WHERE evtname = 'grant_spend_log_select') THEN
+    CREATE EVENT TRIGGER grant_spend_log_select ON ddl_command_end
+      WHEN TAG IN ('CREATE TABLE')
+      EXECUTE FUNCTION public.fn_grant_spend_log_select();
+  END IF;
+  IF to_regclass('public."LiteLLM_SpendLogs"') IS NOT NULL THEN
+    EXECUTE 'GRANT SELECT ON TABLE public."LiteLLM_SpendLogs" TO pgbouncer_app';
+  END IF;
+END;
+$do$;
 
 
 
