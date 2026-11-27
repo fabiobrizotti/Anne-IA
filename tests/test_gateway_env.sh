@@ -99,6 +99,17 @@ assert_match "MinIO pinado por digest" '^sha256:[0-9a-f]{64}$' "$(get_val MINIO_
 assert_file_has "Registry e digest do MinIO parametrizados no compose" 'image: ${MINIO_IMAGE}@${MINIO_VERSION}' "${PROJECT_ROOT}/docker-compose.yml"
 assert_no_match "Nenhuma referência ao repo removido minio/minio" 'minio/minio' "${ENV_EXAMPLE}"
 
+# Uma única versão em todo o artefato: .env (imagem + /api/health), package.json,
+# footer/cache-buster do HTML e CHANGELOG. Deriva impedem o deploy de reportar
+# uma versão antiga e reaproveitar JS em cache.
+DASH_VERSION="$(get_val DASHBOARD_VERSION "${ENV_EXAMPLE}")"
+PKG_VERSION="$(node -p "require('${PROJECT_ROOT}/dashboard/package.json').version" 2>/dev/null || true)"
+assert_eq "DASHBOARD_VERSION = package.json" "${DASH_VERSION}" "${PKG_VERSION}"
+assert_file_has "Footer do dashboard usa a versão atual" "Anne-IA v${DASH_VERSION}" "${PROJECT_ROOT}/dashboard/public/index.html"
+assert_file_has "Cache-buster do app.js usa a versão atual" "app.js?v=${DASH_VERSION}" "${PROJECT_ROOT}/dashboard/public/index.html"
+assert_file_has "README documenta a versão atual em /api/health" "\"version\": \"${DASH_VERSION}\"" "${PROJECT_ROOT}/README.md"
+assert_file_has "CHANGELOG registra a versão atual" "## [${DASH_VERSION}]" "${PROJECT_ROOT}/CHANGELOG.md"
+
 say "[4/6] Configuração do Compose..."
 assert_file_has "PgBouncer expõe database litellm" \
   'litellm = host=${POSTGRES_HOST} port=${POSTGRES_PORT} dbname=litellm pool_mode=transaction pool_size=5' \
@@ -141,6 +152,12 @@ assert_file_has_quiet "Dashboard usa a master key como LITELLM_API_KEY" \
 assert_file_has "Dashboard lê o spend via pgbouncer/litellm" \
   'LITELLM_DATABASE_URL: postgresql://pgbouncer_app:${CHAVE_PGBOUNCER_PASSWORD}@pgbouncer:${PGBOUNCER_CONTAINER_PORT}/litellm' \
   "${PROJECT_ROOT}/docker-compose.yml"
+# Sem PGOPTIONS no db-evolution, init.sql cria litellm/langfuse/pgbouncer_app com
+# 'changeme' no boot limpo e os gateways não conectam.
+assert_file_has "db-evolution recebe PGOPTIONS com as 3 senhas do .env" \
+  'PGOPTIONS: "-c app.litellm_password=${CHAVE_LITELLM_DB_PASSWORD} -c app.langfuse_password=${CHAVE_LANGFUSE_DB_PASSWORD} -c app.pgbouncer_password=${PGBOUNCER_PASSWORD}"' \
+  "${PROJECT_ROOT}/docker-compose.yml"
+assert_no_match "Nenhuma senha 'changeme' no compose" 'changeme' "${PROJECT_ROOT}/docker-compose.yml"
 assert_file_has ".env.example documenta a URL derivada do gateway" \
   'LITELLM_DATABASE_URL' "${ENV_EXAMPLE}"
 

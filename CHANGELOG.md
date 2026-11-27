@@ -1,5 +1,42 @@
 # CHANGELOG - Anne-IA Dashboard
 
+## [1.2.6] - 2026-11-26
+
+### Fixed — bootstrap dos gateways, CI de merge e versão reportada
+
+- **Credenciais dos roles no boot limpo**: `docker-compose.yml` agora injeta
+  `PGOPTIONS` no `db-evolution` com `CHAVE_LITELLM_DB_PASSWORD`,
+  `CHAVE_LANGFUSE_DB_PASSWORD` e `PGBOUNCER_PASSWORD`. Antes, o `init.sql`
+  criava `litellm`, `langfuse` e `pgbouncer_app` com senha placeholder e os
+  gateways não conseguiam conectar em volume novo. `scripts/update.sh` passou
+  a reaplicar o schema com o mesmo `PGOPTIONS` e a sincronizar as senhas das
+  roles já existentes (o `init.sql` preserva senhas para não destruir dados).
+- **Teste de idempotência**: `tests/test_init_sql.sh` usa senhas efêmeras via
+  `PGOPTIONS` e compara o verifier SCRAM gravado em `pg_authid` — a imagem
+  `pgvector` confia em `127.0.0.1`, então um teste TCP aceitaria qualquer senha.
+  O teste prova que as roles usam a senha configurada e rejeitam o placeholder.
+  `tests/test_gateway_env.sh` valida a presença do `PGOPTIONS` no compose sem
+  imprimir segredos.
+- **CI do merge**: o job `lint-and-sast` usa ShellCheck `-S warning` (os achados
+  `SC2015`/`SC2016`/`SC2329` são informativos e intencionais); o job `dast`
+  injeta `setup/postgres/fixtures-test-gateway.sql` para que
+  `/api/v1/financeiro` não responda `503` quando o serviço LiteLLM não sobe no
+  CI.
+- **Deriva de versão**: `DASHBOARD_VERSION`, `package.json`/`package-lock.json`,
+  footer e cache-buster do `index.html`, example do `/api/health` no README e
+  este CHANGELOG passam a usar `1.2.6`. O deploy volta a reportar a versão
+  realmente publicada e a invalidar o JS em cache. Uma asserção em
+  `test_gateway_env.sh` impede nova divergência.
+
+### Changed
+
+- `docs/superpowers/` deixou de ser rastreado (já coberto pelo `.gitignore`);
+  os dois artefatos de planejamento versionados anteriormente foram removidos
+  do índice, sem apagar os arquivos locais.
+
+> `v1.2.5` permanece intacta no commit `add0c46`. Esta versão é a que segue
+> para `main` via PR.
+
 ## [1.2.5] - 2026-11-26
 
 ### Fixed — boot da stack: URLs aninhadas, n8n 2.49.7 e login do LiteLLM

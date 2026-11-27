@@ -484,12 +484,12 @@ docker exec -i db-evolution psql -v ON_ERROR_STOP=1 -U evolution -d anneia < set
 > **Não precisa fazer isso à mão:** `./scripts/update.sh` reaplica o `init.sql`
 > automaticamente quando ele muda entre revisões (ver §12).
 
-Quando a mudança inclui os bancos `litellm`/`langfuse`, as senhas dos roles vêm do `.env` via `PGOPTIONS` (o SQL usa `current_setting('app.litellm_password')` e `app.langfuse_password`):
+As senhas dos roles `litellm`, `langfuse` e `pgbouncer_app` vêm do `.env` via `PGOPTIONS` (o SQL usa `current_setting('app.litellm_password')`, `app.langfuse_password` e `app.pgbouncer_password`). O `docker-compose.yml` injeta essas variáveis no `db-evolution` no boot limpo e `scripts/update.sh` reaplica o `init.sql` com o mesmo `PGOPTIONS`, além de sincronizar as senhas das roles já existentes. O comando manual abaixo é apenas para recuperação excepcional:
 
 ```bash
 set -a; . ./.env; set +a
 docker exec -i \
-  -e PGOPTIONS="-c app.litellm_password=${CHAVE_LITELLM_DB_PASSWORD} -c app.langfuse_password=${CHAVE_LANGFUSE_DB_PASSWORD}" \
+  -e PGOPTIONS="-c app.litellm_password=${CHAVE_LITELLM_DB_PASSWORD} -c app.langfuse_password=${CHAVE_LANGFUSE_DB_PASSWORD} -c app.pgbouncer_password=${PGBOUNCER_PASSWORD}" \
   db-evolution psql -v ON_ERROR_STOP=1 -U "${POSTGRES_USER}" -d anneia < setup/postgres/init.sql
 ```
 
@@ -689,7 +689,7 @@ O `/api/health` devolve a revisão em execução:
 curl -s http://127.0.0.1:${DASHBOARD_PORT:-41283}/api/health | jq
 # {
 #   "status": "ok",
-#   "version": "1.2.2",      <- DASHBOARD_VERSION do .env
+#   "version": "1.2.6",      <- DASHBOARD_VERSION do .env
 #   "sha": "abbdf62",        <- commit aplicado pelo update.sh
 #   "uptime": 42,
 #   "timestamp": "..."

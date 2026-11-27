@@ -27,6 +27,8 @@ PG_IMAGE="pgvector/pgvector:${PGVECTOR_VERSION}"
 
 # Credenciais efêmeras do container de teste (nunca são de produção)
 TEST_PWD="testonly_$(openssl rand -hex 12 2>/dev/null || echo "fallback$$")"
+TEST_LITELLM_PWD="testlitellm_$(openssl rand -hex 8 2>/dev/null || echo "fallback$$")"
+TEST_LANGFUSE_PWD="testlangfuse_$(openssl rand -hex 8 2>/dev/null || echo "fallback$$")"
 TEST_USER="evolution"
 TEST_DB="evolution"
 
@@ -48,6 +50,7 @@ bad() { printf '  \033[31m[FALHA]\033[0m %s\n' "$*"; FAILS=$((FAILS + 1)); }
 
 require() {
   command -v docker >/dev/null 2>&1 || { say "[erro] docker não encontrado"; exit 1; }
+  command -v python3 >/dev/null 2>&1 || { say "[erro] python3 não encontrado"; exit 1; }
   [[ -f "${INIT_SQL}" ]] || { say "[erro] ${INIT_SQL} não encontrado"; exit 1; }
   docker info >/dev/null 2>&1 || { say "[erro] daemon Docker indisponível"; exit 1; }
 }
@@ -89,6 +92,7 @@ docker run -d --name "${CONTAINER}" \
   -e POSTGRES_PASSWORD="${TEST_PWD}" \
   -e POSTGRES_USER="${TEST_USER}" \
   -e POSTGRES_DB="${TEST_DB}" \
+  -e PGOPTIONS="-c app.litellm_password=${TEST_LITELLM_PWD} -c app.langfuse_password=${TEST_LANGFUSE_PWD} -c app.pgbouncer_password=${TEST_PWD}" \
   "${PG_IMAGE}" >/dev/null
 
 if ! wait_ready; then
@@ -207,6 +211,34 @@ litellm_q() {
 }
 ADMIN_PRIV="$(litellm_q "SELECT count(*) FROM pg_default_acl d JOIN pg_roles r ON r.oid=d.defaclrole WHERE r.rolname='litellm' AND d.defaclobjtype='r' AND d.defaclacl::text LIKE '%pgbouncer_app=r%'")"
 assert_ge "Default privileges de leitura para pgbouncer_app em litellm" 1 "${ADMIN_PRIV}"
+
+# Prova que PGOPTIONS chegou ao init.sql comparando o verifier SCRAM gravado
+# em pg_authid. A imagem pgvector usa `trust` para 127.0.0.1, então um teste
+# via TCP aceitaria qualquer senha e daria falso positivo.
+password_matches() { # role senha -> 1 se o hash SCRAM corresponder
+  local verifier
+  verifier="$(docker exec "${CONTAINER}" psql -U "${TEST_USER}" -d anneia -tAc \
+    "SELECT rolpassword FROM pg_authid WHERE rolname='$1'" 2>/dev/null | tr -d '[:space:]')"
+  [[ -n "${verifier}" && "${verifier}" == SCRAM-SHA-256* ]] || { printf '0'; return; }
+  python3 - "${verifier}" "$2" <<'PY'
+import base64, hashlib, hmac, sys
+verifier, password = sys.argv[1], sys.argv[2].encode()
+_, params = verifier.split('$', 1)
+iters_s, keys = params.split(':', 1)
+salt_b64, keys_b64 = keys.split('$', 1)
+stored_b64, server_b64 = keys_b64.split(':', 1)
+salted = hashlib.pbkdf2_hmac('sha256', password, base64.b64decode(salt_b64), int(iters_s))
+client_key = hmac.new(salted, b'Client Key', hashlib.sha256).digest()
+stored = base64.b64encode(hashlib.sha256(client_key).digest()).decode()
+server = base64.b64encode(hmac.new(salted, b'Server Key', hashlib.sha256).digest()).decode()
+print('1' if stored == stored_b64 and server == server_b64 else '0')
+PY
+}
+assert_eq "Role litellm usa a senha do PGOPTIONS" "1" "$(password_matches litellm "${TEST_LITELLM_PWD}")"
+assert_eq "Role langfuse usa a senha do PGOPTIONS" "1" "$(password_matches langfuse "${TEST_LANGFUSE_PWD}")"
+assert_eq "Role pgbouncer_app usa a senha do PGOPTIONS" "1" "$(password_matches pgbouncer_app "${TEST_PWD}")"
+assert_eq "Fallback 'changeme' não aceito para litellm" "0" "$(password_matches litellm changeme)"
+assert_eq "Fallback 'changeme' não aceito para langfuse" "0" "$(password_matches langfuse changeme)"
 
 say "[7/7] Resultado final..."
 if [[ ${FAILS} -eq 0 ]]; then

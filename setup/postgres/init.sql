@@ -11,7 +11,9 @@
 -- ============================================================================
 
 -- Roles dos gateways (LiteLLM e Langfuse). As senhas vêm de PGOPTIONS
--- (app.litellm_password / app.langfuse_password) no container db-evolution.
+-- (app.litellm_password / app.langfuse_password / app.pgbouncer_password) no
+-- container db-evolution. Nomes com ponto são obrigatórios: um GUC custom
+-- sem ponto (ex.: PGBOUNCER_PASSWORD) é rejeitado com "unrecognized parameter".
 -- Reaplicar o SQL em volume existente NÃO altera senha já definida.
 DO $$
 DECLARE
@@ -1141,7 +1143,7 @@ END $$;
 -- Se a var env não estiver definida, mantém 'changeme' como fallback.
 DO $$
 DECLARE
-  v_password TEXT := COALESCE(current_setting('PGBOUNCER_PASSWORD', true), 'changeme');
+  v_password TEXT := COALESCE(current_setting('app.pgbouncer_password', true), 'changeme');
 BEGIN
   -- CREATE/ALTER ROLE exigem literal de string: a variável é interpolada via
   -- format(%L), que também escapa aspas. Sem EXECUTE, o parser vê um

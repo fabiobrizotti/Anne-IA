@@ -208,6 +208,11 @@ services:
       - "${POSTGRES_HOST_BIND}:${POSTGRES_PORT}:${POSTGRES_CONTAINER_PORT}"
     env_file:
       - .env
+    environment:
+      # init.sql lê estas senhas via current_setting() no boot limpo. Sem elas
+      # as roles litellm/langfuse/pgbouncer_app nascem com senha placeholder e
+      # os gateways não conectam. Valores vêm somente do .env (zero hardcode).
+      PGOPTIONS: "-c app.litellm_password=${CHAVE_LITELLM_DB_PASSWORD} -c app.langfuse_password=${CHAVE_LANGFUSE_DB_PASSWORD} -c app.pgbouncer_password=${PGBOUNCER_PASSWORD}"
     volumes:
       - ./data/postgresql:/var/lib/postgresql/data
       - ./setup/postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
