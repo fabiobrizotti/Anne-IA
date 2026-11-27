@@ -44,11 +44,23 @@ assert_no_match() { # descricao regex arquivo
   if grep -qE "$2" "$3" 2>/dev/null; then bad "$1"; else ok "$1"; fi
 }
 
+# Para valores secretos: nao imprime a needle mesmo quando a checagem falha.
+assert_file_has_quiet() { # descricao needle arquivo
+  if grep -qF -- "$2" "$3" 2>/dev/null; then ok "$1"; else bad "$1 (trecho ausente, não exibido)"; fi
+}
+
 say "==================================================================="
 say " Anne-IA — Teste de configuração LiteLLM + Langfuse"
 say "==================================================================="
 
 [[ -f "${ENV_EXAMPLE}" ]] || { say "[erro] ${ENV_EXAMPLE} não encontrado"; exit 1; }
+
+# Variáveis exportadas no shell têm precedência sobre `--env-file` no Compose.
+# Sem isto, um override local (ex.: N8N_VERSION=2.47.7) invalida o teste.
+while IFS='=' read -r env_key _; do
+  case "${env_key}" in ''|\#*) continue ;; esac
+  unset "${env_key}"
+done < "${ENV_EXAMPLE}"
 
 say "[1/6] Gerando segredos em .env temporário..."
 TMP_ENV="${TMP_DIR}/.env"
@@ -69,6 +81,8 @@ do
   assert_match "Segredo Base62 de 32 chars: ${var}" '^[A-Za-z0-9]{32}$' "$(get_val "${var}")"
 done
 assert_match "LANGFUSE_ENCRYPTION_KEY em hex de 32 bytes" '^[0-9a-f]{64}$' "$(get_val LANGFUSE_ENCRYPTION_KEY)"
+# Política do LiteLLM exige caractere especial; senha não vai em URI.
+assert_match "LITELLM_ADMIN_PASSWORD Base62+special" '^[A-Za-z0-9]{31}!$' "$(get_val LITELLM_ADMIN_PASSWORD)"
 
 say "[2/6] Verificando remoção do 9Router..."
 assert_no_match "Nenhuma chave NINE_ROUTER_ no .env.example" '^NINE_ROUTER_' "${ENV_EXAMPLE}"
@@ -118,12 +132,17 @@ else
   bad "Langfuse web com memória insuficiente (< 1536m)"
 fi
 assert_file_has "LITELLM_URL resolvido no compose" 'LITELLM_URL: http://litellm:4000/v1' "${TMP_DIR}/compose.config"
+# Compara sem imprimir a master key (mesmo em caso de falha).
+expected_master="$(get_val LITELLM_MASTER_KEY)"
+assert_file_has_quiet "Master key resolvida no compose" \
+  "LITELLM_MASTER_KEY: ${expected_master}" "${TMP_DIR}/compose.config"
+assert_file_has_quiet "Dashboard usa a master key como LITELLM_API_KEY" \
+  "LITELLM_API_KEY: ${expected_master}" "${TMP_DIR}/compose.config"
 assert_file_has "Dashboard lê o spend via pgbouncer/litellm" \
   'LITELLM_DATABASE_URL: postgresql://pgbouncer_app:${CHAVE_PGBOUNCER_PASSWORD}@pgbouncer:${PGBOUNCER_CONTAINER_PORT}/litellm' \
   "${PROJECT_ROOT}/docker-compose.yml"
 assert_file_has ".env.example documenta a URL derivada do gateway" \
   'LITELLM_DATABASE_URL' "${ENV_EXAMPLE}"
-assert_file_has "Master key resolvida no compose" "LITELLM_MASTER_KEY: $(get_val LITELLM_MASTER_KEY)" "${TMP_DIR}/compose.config"
 
 # Variáveis exportadas no shell têm precedência sobre o .env na interpolação do
 # Compose. Se LANGFUSE_HOST vier poluído (placeholder literal), o LiteLLM monta
@@ -137,6 +156,26 @@ resolved_host="$(
 assert_eq "LiteLLM resolve LANGFUSE_HOST do .env mesmo com override no shell" \
   "$(get_val LANGFUSE_HOST "${TMP_ENV}")" "${resolved_host}"
 
+# Compose não expande placeholder aninhado em valor lido do .env.
+assert_no_match "Nenhum placeholder aninhado no compose resolvido" '\$\$\{' "${TMP_DIR}/compose.config"
+for var in LITELLM_URL LANGFUSE_HOST LANGFUSE_NEXTAUTH_URL LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT; do
+  assert_no_match "Valor literal em .env.example: ${var}" "^${var}=.*\\\$\\{" "${ENV_EXAMPLE}"
+done
+assert_eq "n8n pinado em versão compatível com configVersion=2" '2.49.7' "$(get_val N8N_VERSION "${ENV_EXAMPLE}")"
+assert_file_has "Imagem do n8n resolvida para 2.49.7" 'n8nio/n8n:2.49.7' "${TMP_DIR}/compose.config"
+assert_file_has "Fallback de credenciais do LiteLLM desativado" 'disable_env_credential_login: true' "${PROJECT_ROOT}/setup/litellm/config.yaml"
+assert_file_has "LiteLLM persiste modelos no banco" 'store_model_in_db: true' "${PROJECT_ROOT}/setup/litellm/config.yaml"
+assert_file_has "UI do LiteLLM em modo somente leitura" 'ui_access_mode: "admin_only"' "${PROJECT_ROOT}/setup/litellm/config.yaml"
+assert_file_has "Bootstrap cria o admin como proxy_admin_viewer" 'user_role:"proxy_admin_viewer"' "${PROJECT_ROOT}/scripts/bootstrap-litellm-admin.sh"
+assert_no_match "Bootstrap não concede proxy_admin com permissão total" 'user_role:"proxy_admin"' "${PROJECT_ROOT}/scripts/bootstrap-litellm-admin.sh"
+if [[ -x "${PROJECT_ROOT}/scripts/bootstrap-litellm-admin.sh" ]] \
+  && grep -q '/user/new' "${PROJECT_ROOT}/scripts/bootstrap-litellm-admin.sh" \
+  && grep -q '/user/update' "${PROJECT_ROOT}/scripts/bootstrap-litellm-admin.sh"; then
+  ok "Bootstrap idempotente do admin do LiteLLM presente e executável"
+else
+  bad "Bootstrap do admin do LiteLLM ausente ou incompleto"
+fi
+
 # O compose versionado e o resultado interpolado não podem conter segredos literais.
 for var in LITELLM_MASTER_KEY LITELLM_SALT_KEY LITELLM_DB_PASSWORD CLICKHOUSE_PASSWORD LANGFUSE_REDIS_PASSWORD; do
   secret="$(get_val "${var}")"
@@ -146,11 +185,6 @@ for var in LITELLM_MASTER_KEY LITELLM_SALT_KEY LITELLM_DB_PASSWORD CLICKHOUSE_PA
     ok "Segredo ${var} ausente no docker-compose.yml"
   fi
 done
-
-assert_file_has "LiteLLM persiste modelos no banco" 'store_model_in_db: true' "${PROJECT_ROOT}/setup/litellm/config.yaml"
-assert_file_has "UI do LiteLLM em modo somente leitura" 'ui_access_mode: "admin_only"' "${PROJECT_ROOT}/setup/litellm/config.yaml"
-assert_file_has "Bootstrap cria o admin como proxy_admin_viewer" 'user_role:"proxy_admin_viewer"' "${PROJECT_ROOT}/scripts/bootstrap-litellm-admin.sh"
-assert_no_match "Bootstrap não concede proxy_admin com permissão total" 'user_role:"proxy_admin"' "${PROJECT_ROOT}/scripts/bootstrap-litellm-admin.sh"
 
 say "[5/6] Documentação operacional..."
 README="${PROJECT_ROOT}/README.md"

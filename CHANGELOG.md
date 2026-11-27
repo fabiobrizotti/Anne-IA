@@ -1,5 +1,56 @@
 # CHANGELOG - Anne-IA Dashboard
 
+## [1.2.5] - 2026-11-26
+
+### Fixed — boot da stack: URLs aninhadas, n8n 2.49.7 e login do LiteLLM
+
+Quatro falhas independentes impediam/degradavam o `docker compose up`:
+
+1. **Langfuse (`ZodError: Invalid URL` em `NEXTAUTH_URL`)**: o `.env` continha
+   `http://127.0.0.1:${LANGFUSE_PORT}`. O Compose **não expande placeholders
+   dentro de valores lidos do `.env`**, então a env chegava como
+   `http://127.0.0.1:$${LANGFUSE_PORT}` e o Next.js 16 rejeitava a URL no boot.
+   O mesmo padrão quebrava `LANGFUSE_HOST`, `LITELLM_URL`,
+   `LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT` e `LITELLM_API_KEY`.
+2. **n8n em crash-loop**: `ZodError invalid_union_discriminator ... Expected 1`
+   no `SystemTrustedSourceSeeder`. O `data/n8n/database.sqlite` registra
+   `trusted_source.configVersion=2`, mas a imagem pinada era `2.47.7`
+   (a `2.47.8` anunciada nunca foi publicada no Docker Hub).
+3. **Alerta "Environment-credential login is enabled" do LiteLLM**: sem
+   usuário admin com senha própria, a master key funcionava como login da UI.
+4. **OTLP do LiteLLM**: apontar o exporter global para o Langfuse sem projeto
+   criado/devido retorno 401; até as chaves serem configuradas, o exporter
+   permanece no `console` padrão (spans de DB no stdout são informativos).
+
+- **`.env` / `.env.example`**: URLs derivadas viraram literais
+  (`http://langfuse-web:3000`, `http://litellm:4000/v1`,
+  `http://minio:9000`, `http://127.0.0.1:40193`); `LITELLM_API_KEY` deixou de
+  existir como variável e é injetada pelo Compose a partir de
+  `LITELLM_MASTER_KEY`. `N8N_VERSION=2.49.7`. Nova `LITELLM_ADMIN_PASSWORD`.
+- **`docker-compose.yml`**: `LITELLM_API_KEY: ${LITELLM_MASTER_KEY}`;
+  reforço documental contra placeholders aninhados.
+- **`scripts/generate-passwords.sh`**: gera `LITELLM_ADMIN_PASSWORD` em Base62
+  + `!` (a política do LiteLLM exige caractere especial e senha não entra em
+  URI). Idempotente: nunca sobrescreve valor existente.
+- **`setup/litellm/config.yaml`**: `general_settings.disable_env_credential_login:
+  true`. Usuário `anneia-admin` criado via `/user/new` (`user_role: proxy_admin_viewer`,
+  `auto_create_key: false`) com senha definida via `/user/update`.
+- **`scripts/bootstrap-litellm-admin.sh` (novo)**: bootstrap idempotente do admin
+  para deploy limpo — cria o usuário e define a senha a partir do `.env`;
+  `--force` redefine. Sem segredos em stdout, logs ou commits.
+- **`tests/test_gateway_env.sh`**: o teste agora limpa overrides de shell
+  (que venciam `--env-file`) e valida literais, ausência de `$${`, imagem do
+  n8n, mapeamento da master key e o toggle de login.
+- **`README.md`**: documenta o login administrativo, a armadilha das URLs
+  derivadas e o comportamento do exporter antes do primeiro projeto Langfuse.
+
+Verificado: `tests/test_gateway_env.sh` verde; `docker compose ps` com
+`n8n`, `n8n-worker`, `langfuse-web`, `langfuse-worker`, `litellm` e `dashboard`
+em `running/healthy` e `RestartCount=0`; login `anneia-admin` → 303 com sessão,
+master key na UI → 401; `docker compose config` sem placeholder residual (com os overrides de shell do ambiente limpos, como o teste faz). Também validado: `bash -n` nos 4 hooks e no bootstrap; `upstream n8n_backend` com `zone`/`resolve` e `resolver 127.0.0.11` presentes no nginx em execução (1.27.5).
+
+- **Hooks/merge driver**: `post-commit`, `post-checkout`, `post-merge` e `post-rewrite` versionados; o bloco graphify antes inalcançável (`exec` no `post-merge`, `exit 0` no `post-rewrite`) agora é executado; `.gitattributes` registra `graphify-out/graph.json merge=graphify`. `graphify-out/` permanece gerado/ignorado.
+
 ## [1.2.4] - 2026-11-26
 
 ### Added — Dashboard como fonte única do catálogo de IAs

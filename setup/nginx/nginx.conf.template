@@ -50,24 +50,33 @@ http {
     # Rate limiting zones (definidos em snippets/rate-limits.conf)
     include /tmp/nginx/snippets/rate-limits.conf;
 
+    # DNS embutido do Docker: `resolve` abaixo reaplica o IP dos backends em
+    # runtime. Sem isso o nginx congela o IP na carga da config e devolve 502
+    # quando um container é recriado com outro IP na rede.
+    resolver 127.0.0.11 valid=10s ipv6=off;
+
     # Upstreams (serviços backend)
     upstream dashboard_backend {
-        server dashboard:3000;
+        zone dashboard_backend 64k;
+        server dashboard:3000 resolve;
         keepalive 32;
     }
 
     upstream n8n_backend {
-        server n8n:${N8N_PORT};
+        zone n8n_backend 64k;
+        server n8n:${N8N_PORT} resolve;
         keepalive 32;
     }
 
     upstream pgadmin_backend {
-        server pgadmin:80;
+        zone pgadmin_backend 64k;
+        server pgadmin:80 resolve;
         keepalive 16;
     }
 
     upstream rabbitmq_mgmt_backend {
-        server rabbitmq:15672;
+        zone rabbitmq_mgmt_backend 64k;
+        server rabbitmq:15672 resolve;
         keepalive 16;
     }
 

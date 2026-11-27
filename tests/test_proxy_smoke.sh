@@ -163,7 +163,7 @@ code=$(curl -s -o /dev/null -w '%{http_code}' -m 8 \
 if [[ "${code}" == "200" ]]; then
   ok "n8n ${N8N_BASE_PATH}/healthz acessível via Nginx (HTTP 200)"
 else
-  warn "n8n ${N8N_BASE_PATH}/healthz retornou HTTP ${code} (esperado 200)"
+  fail "n8n ${N8N_BASE_PATH}/healthz via Nginx falhou (HTTP ${code}) — verificar error.log: connect() failed ao IP do upstream"
 fi
 
 # 7.1 Handshake WebSocket do editor (regressão: 400 "Invalid Upgrade header").
@@ -251,14 +251,35 @@ else
   fail "location ${N8N_BASE_PATH}/ deve ter 0 limit_req, limit_conn perip 30 e include do snippet (atual: ${loc_check}; esperado 0,1,1)"
 fi
 
+# 7.5 DNS dinâmico do upstream n8n: sem `resolve`, o nginx congela o IP do
+# container na carga da config e devolve 502 após recriação do n8n (novo IP).
+conf_dump="$(mktemp)"
+docker compose exec -T nginx cat /tmp/nginx/nginx.conf > "${conf_dump}" 2>/dev/null || true
+upstream_conf="$(awk '/^[[:space:]]*upstream n8n_backend {/,/^[[:space:]]*}/' "${conf_dump}")"
+has_resolver="$(grep -cE '^[[:space:]]*resolver 127\.0\.0\.11' "${conf_dump}" || true)"
+rm -f "${conf_dump}"
+if [[ "${has_resolver}" -ge 1 ]] \
+  && grep -q "zone n8n_backend" <<<"${upstream_conf}" \
+  && grep -q "server n8n:${N8N_PORT} resolve;" <<<"${upstream_conf}"; then
+  ok "upstream n8n resolve DNS em runtime (resolver + zone + resolve)"
+else
+  fail "upstream n8n usa IP congelado na inicialização (faltou resolver/zone/resolve) — risco de 502 após recreate"
+fi
+
 # ------------------------------------------------------------------------------
 # 8. PGBOUNCER CONEXÃO
 # ------------------------------------------------------------------------------
 echo "--- PgBouncer Conexão ---"
-if docker compose exec -T pgbouncer nc -z 127.0.0.1 "${PGBOUNCER_CONTAINER_PORT}" >/dev/null 2>&1; then
-  ok "PgBouncer aceita conexões na porta ${PGBOUNCER_CONTAINER_PORT}"
+# O Dashboard entra por aqui: basta TCP aberto não detecta senha divergente
+# entre o userlist.txt do PgBouncer e a role do Postgres (login do painel 500).
+PGBOUNCER_APP_PASSWORD="$(env_get CHAVE_PGBOUNCER_PASSWORD)"
+[[ -n "${PGBOUNCER_APP_PASSWORD}" ]] || fail "CHAVE_PGBOUNCER_PASSWORD vazia no .env"
+if docker compose exec -T -e PGPASSWORD="${PGBOUNCER_APP_PASSWORD}" db-evolution \
+    psql -h pgbouncer -p "${PGBOUNCER_CONTAINER_PORT}" -U pgbouncer_app -d anneia \
+    -tAc 'SELECT 1' >/dev/null 2>&1; then
+  ok "PgBouncer autentica pgbouncer_app no Postgres com a senha do .env"
 else
-  fail "PgBouncer não responde na porta ${PGBOUNCER_CONTAINER_PORT}"
+  fail "PgBouncer/Postgres rejeitaram pgbouncer_app — senha da role divergente do .env"
 fi
 
 # ------------------------------------------------------------------------------

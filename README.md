@@ -153,9 +153,9 @@ docker compose start n8n
 - **n8n sob subpath**: `N8N_PATH=/n8n/` e `N8N_WEBHOOK_URL=http://${TAILSCALE_HOSTNAME}/n8n/` (valor interpolado pelo Compose). Consequência: webhooks internos passam a viver em `/n8n/webhook/...`.
 - **WebSocket do editor (`/n8n/rest/push`)**: `Upgrade`/`Connection` são definidos **exclusivamente** no snippet `setup/nginx/snippets/proxy-params.conf` (via `$connection_upgrade`). Não redeclare `proxy_set_header Upgrade` dentro do `location /n8n/`: o nginx acumula as diretivas do mesmo nível e envia o header duas vezes (`upgrade: websocket, websocket`); o Node concatena headers repetidos com `", "` e a lib `ws` do n8n rejeita o handshake com **400 "Invalid Upgrade header"** (no editor: *Lost connection to the server*). Diagnóstico: `curl -i -H 'Upgrade: websocket' -H 'Connection: Upgrade' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' -H 'Sec-WebSocket-Version: 13' http://127.0.0.1/n8n/rest/push?pushRef=x` deve responder `101 Switching Protocols`.
 - **Trust proxy**: `NGINX_TRUST_PROXY_IP` é preenchido pelo `scripts/update.sh` com o IP real do container Nginx na rede `frontend` (log de auditoria do Dashboard registra o IP do cliente, não o do proxy).
-- **DNS de upstream**: o Nginx resolve os nomes no boot. Depois de recriar um backend, `docker compose restart nginx` (o `update.sh` já faz isso) — sem isso o serviço recriado fica em `502`.
+- **DNS de upstream**: `resolver 127.0.0.11 valid=10s ipv6=off` + `zone`/`resolve` em todos os upstreams (Nginx ≥ 1.27.3). O proxy reaplica o IP do backend em até 10s após recriação do container — sem isso o IP ficava congelado no boot e o serviço recriado respondia `502` até `docker compose restart nginx`.
 - **Keepalive de upstream**: `proxy_http_version 1.1` + `Connection` vazio (map `$http_upgrade` → `''`) fazem os blocos `upstream { keepalive N }` valerem de fato — com `Connection: close` cada request abria uma conexão TCP nova. Verificado contando conexões `ESTABLISHED` com `docker exec nginx netstat -tn`.
-- **Testes de fumaça**: `./tests/test_proxy_smoke.sh` valida healthcheck, rate limits, `client_max_body_size`, host desconhecido, n8n, PgBouncer e reconexão do Dashboard após restart do pooler.
+- **Testes de fumaça**: `./tests/test_proxy_smoke.sh` valida healthcheck, rate limits, `client_max_body_size`, host desconhecido, n8n (health, WebSocket e DNS dinâmico do upstream), PgBouncer e reconexão do Dashboard após restart do pooler.
 
 **PgBouncer** (`setup/pgbouncer/`, `auth_type=plain` com `userlist.txt` gerado no boot):
 
@@ -175,13 +175,15 @@ A infraestrutura utiliza o `.env.example` como fonte única da verdade estrutura
 - **Sincronizar variáveis e gerar senhas**: Execute `./scripts/sync-env.sh` (ou `./scripts/generate-passwords.sh`). Ele insere novas variáveis adicionadas ao `.env.example`, preserva todos os valores e senhas locais já configurados, cria backup atômico (`.env.bak`) e gera senhas Base62 (32 caracteres alfanuméricos) para credenciais vazias.
 - **Auditoria de divergências (Diff)**: Execute `./scripts/sync-env.sh --diff` para visualizar chaves ausentes, chaves órfãs e valores customizados localmente vs defaults do `.env.example` (com máscara automática em credenciais).
 - **Automação pós-`git pull`**: Execute `git config core.hooksPath .githooks` uma única vez. Sempre que um `git pull` trouxer alterações no `.env.example`, o `.env` local será sincronizado automaticamente.
+- **Hooks de commit/checkout (grafo de código)**: os hooks `post-commit`, `post-checkout`, `post-merge` e `post-rewrite` em `.githooks/` reconstróem o grafo do `graphify-out/` em segundo plano após mudanças de código. O `.gitattributes` registra o merge driver `merge=graphify` para `graphify-out/graph.json`. O diretório é gerado e permanece fora do Git; use `GRAPHIFY_SKIP_HOOK=1` para suprimir o rebuild quando necessário.
 - **Ordem das variáveis**: o parser dotenv do Compose resolve `${VARIAVEL}` na ordem em que as linhas aparecem no `.env`. Variáveis referenciadas por outras (ex.: `TAILSCALE_HOSTNAME`, usada por `N8N_EDITOR_BASE_URL` e `N8N_WEBHOOK_URL`) devem ser definidas **antes** das primeiras referências — caso contrário o Compose emite `The "VARIAVEL" variable is not set. Defaulting to a blank string.` mesmo com a chave preenchida corretamente no arquivo.
 
 ### Variáveis Críticas de Autenticação:
 - `RABBITMQ_DEFAULT_PASS`: Senha admin do RabbitMQ (sincronizada em `CHAVE_RABBITMQ_DEFAULT_PASS`).
 - `POSTGRES_PASSWORD`: Senha do PostgreSQL (sincronizada em `CHAVE_POSTGRES_PASSWORD`).
 - `REDIS_PASSWORD`: Senha do Redis (sincronizada em `CHAVE_REDIS_PASSWORD`).
-- `LITELLM_MASTER_KEY`: Master key do gateway (gerada pelo `scripts/generate-passwords.sh`); o Dashboard recebe `LITELLM_API_KEY` por `.env` e nunca expõe a chave ao navegador.
+- `LITELLM_MASTER_KEY`: Master key do gateway (gerada pelo `scripts/generate-passwords.sh`); o Compose a injeta no Dashboard como `LITELLM_API_KEY`, sem expor a chave ao navegador. **Não serve mais para login na UI** do LiteLLM.
+- `LITELLM_ADMIN_PASSWORD`: senha do usuário local `anneia-admin` (`proxy_admin_viewer`, e-mail `admin@anneia.local`), gerada em Base62 + `!` para satisfazer a política do LiteLLM. Após subir a stack, rode `./scripts/bootstrap-litellm-admin.sh` (idempotente; `--force` redefine a senha) antes de manter `disable_env_credential_login: true` em `setup/litellm/config.yaml`.
 - `OPENROUTER_API_KEY`: Credencial do provedor usada pelo LiteLLM; entra apenas no `.env`, nunca no `config.yaml`.
 - `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY`: Chaves do projeto criadas no primeiro login no Langfuse; aponte o LiteLLM para elas e recrie o container após preenchê-las.
 - `N8N_ENCRYPTION_KEY`: Chave para criptografia de credenciais internas do n8n.
@@ -204,13 +206,15 @@ A infraestrutura utiliza o `.env.example` como fonte única da verdade estrutura
 
 O LiteLLM é o gateway OpenAI-compatible usado pelo Dashboard (catálogo e teste de modelos) e pelo Strix (`LLM_API_BASE`). O Agente nativo do n8n **continua** chamando a OpenRouter direto pelo nó `LLM: OpenRouter` — memória Postgres, tools e filas `anne.direct.work`/`costs.telemetry` permanecem intactos; limite de gasto por cliente no Agente segue pendente.
 
-- **Endpoint interno (Dashboard)**: `http://litellm:4000/v1` (`LITELLM_URL`). A master key vem de `LITELLM_MASTER_KEY`/`LITELLM_API_KEY` no `.env`; `config.yaml` não contém segredos.
+- **Endpoint interno (Dashboard)**: `http://litellm:4000/v1` (`LITELLM_URL`). O Compose injeta a master key de `LITELLM_MASTER_KEY` em `LITELLM_API_KEY`; `config.yaml` não contém segredos.
+- **URLs derivadas são literais**: o Compose não expande `${...}` dentro de valores lidos do `.env`. `LITELLM_URL`, `LANGFUSE_HOST`, `LANGFUSE_NEXTAUTH_URL` e `LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT` usam portas fixas no texto (ex.: `http://langfuse-web:3000`); um placeholder aninhado vira `$${...}` e derruba o boot do Langfuse (`NEXTAUTH_URL` inválido). `tests/test_gateway_env.sh` barra regressões.
+- **Login da UI do LiteLLM**: `general_settings.disable_env_credential_login: true` remove o aviso "Environment-credential login is enabled". Use `anneia-admin` / `LITELLM_ADMIN_PASSWORD`; a master key continua válida apenas como Bearer da API. Em deploy limpo, rode `./scripts/bootstrap-litellm-admin.sh` logo após o primeiro `up` (a API aceita a master key como Bearer mesmo com o fallback de UI desativado).
 - **Custeio por cliente (Dashboard)**: `LITELLM_DATABASE_URL` deriva de `CHAVE_PGBOUNCER_PASSWORD` e lê `LiteLLM_SpendLogs` via `pgbouncer` (db `litellm`).
 - **Fail-closed do financeiro**: `/api/v1/financeiro` retorna `503` se o banco `litellm` estiver indisponível.
 - **Endpoint no host (Strix/CLI)**: `http://127.0.0.1:${LITELLM_PORT}/v1` (OpenAI-compatible). Use uma chave virtual do LiteLLM em `LLM_API_KEY`/`Authorization: Bearer ...`; a master key fica restrita ao Dashboard dentro do container.
 - **Modelos**: IDs `openrouter/<provider>/<model>` são gerenciados na aba **Modelos de IA** do Dashboard (`precos_modelos` é a SSOT) e replicados por API para LiteLLM e Langfuse; não editar modelos nas UIs desses serviços. `OPENROUTER_API_KEY` entra somente pelo `.env`. A chave de teste do Dashboard usa esse mesmo endpoint.
 - **Langfuse v4**: UI em `http://127.0.0.1:${LANGFUSE_PORT}` (web + worker + ClickHouse 25.12 + MinIO + Redis). No primeiro login, crie o projeto e copie `pk-lf-*`/`sk-lf-*` para `LANGFUSE_PUBLIC_KEY`/`LANGFUSE_SECRET_KEY` no `.env`; depois rode `docker compose up -d --force-recreate litellm langfuse-web langfuse-worker` para o gateway passar a publicar spans.
-- **Observabilidade**: preset `langfuse_otel` com `LITELLM_OTEL_V2=true` e `LITELLM_OTEL_LANGFUSE_SPAN_SCOPE=llm_only`. `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=NO_CONTENT` registra modelo, tokens, custo e latência **sem** prompt/resposta; mudar para `SPAN_ONLY` exige avaliação LGPD prévia.
+- **Observabilidade**: preset `langfuse_otel` com `LITELLM_OTEL_V2=true` e `LITELLM_OTEL_LANGFUSE_SPAN_SCOPE=llm_only`. `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=NO_CONTENT` registra modelo, tokens, custo e latência **sem** prompt/resposta; mudar para `SPAN_ONLY` exige avaliação LGPD prévia. Antes de criar o projeto no Langfuse, o exporter global do LiteLLM permanece no `console` padrão e imprime spans de DB no stdout — são informativos, não erros; para silenciá-los é preciso configurar as chaves e redirecionar o exporter.
 - **Agente → Langfuse (opcional)**: configurar *Observability → Broadcast* na conta OpenRouter apontando para o Langfuse. É uma decisão externa ao repositório; não há código para isso.
 - **Nginx**: não há rota proxy para LiteLLM/Langfuse; o `depends_on` usa `condition: service_started` apenas para ordem de boot (o health do Langfuse depende do primeiro login).
 - **Versões**: `LITELLM_VERSION=lts` foi escolhido explicitamente, mas é tag móvel — revisar e pinar até **2026-12-02**. O repositório `minio/minio` foi removido do Docker Hub; o compose usa a imagem Chainguard oficial do Langfuse (`MINIO_IMAGE`) fixada por digest em `MINIO_VERSION`.
@@ -741,7 +745,7 @@ Logs completos de cada execução: `logs/update-<AAAAmmdd-HHMMSS>.log`.
 | Rodar o update duas vezes seguidas | exit 0, "NADA A FAZER — revisão já aplicada" |
 | Remoto divergente (`git pull` sem fast-forward) | abortado com exit 1, nada aplicado |
 | Gate falhando (healthcheck sabotado) | **rollback**: código e `.env` restaurados, stack saudável, exit 2 |
-| Bump de `N8N_VERSION` no `.env.example` | `[atualizada] 2.47.7 -> 2.48.x` no `.env` |
+| Bump de `N8N_VERSION` no `.env.example` | `[atualizada] 2.47.7 -> 2.49.7` no `.env` (a `2.47.8` nunca foi publicada; `2.49.7` lê o `configVersion=2` do SQLite) |
 | `sync-env.sh` sobre `.env` preenchido | sha256 dos 12 segredos idêntico antes/depois |
 
 ### 12.5. Quando algo dá errado

@@ -50,6 +50,12 @@ PASSWORD_FIELDS=(
   "LANGFUSE_REDIS_PASSWORD"
 )
 
+# Senhas de login (não usadas em URIs) cuja política exige caractere especial.
+# Formato: "NOME_VARIAVEL:SUFIXO" — gera 31 chars Base62 + sufixo (32 no total).
+SPECIAL_SUFFIX_FIELDS=(
+  "LITELLM_ADMIN_PASSWORD:!"
+)
+
 # Campos hex (chaves criptográficas do Langfuse): "NOME:QUANTIDADE_DE_BYTES"
 HEX_FIELDS=(
   "LANGFUSE_ENCRYPTION_KEY:32"
@@ -194,6 +200,25 @@ for entry in "${HEX_FIELDS[@]}"; do
     new_hex=$(generate_hex "${var_bytes}")
     set_env_val "${var_name}" "${new_hex}" "${ENV_FILE}"
     echo "[gerada]  ${var_name} (hex de ${var_bytes} bytes)"
+    count_generated=$((count_generated + 1))
+  else
+    echo "[mantida] ${var_name} (já preenchida)"
+    count_preserved=$((count_preserved + 1))
+  fi
+done
+
+# 2.2. Senhas de login que exigem caractere especial na política do LiteLLM.
+for entry in "${SPECIAL_SUFFIX_FIELDS[@]}"; do
+  var_name="${entry%%:*}"
+  suffix="${entry##*:}"
+  base_len=$((DEFAULT_LENGTH - ${#suffix}))
+
+  current_val=$(get_env_val "${var_name}" "${ENV_FILE}")
+
+  if [[ -z "${current_val}" ]]; then
+    new_pass="$(generate_password "${base_len}")${suffix}"
+    set_env_val "${var_name}" "${new_pass}" "${ENV_FILE}"
+    echo "[gerada]  ${var_name} (${DEFAULT_LENGTH} chars, com sufixo de política)"
     count_generated=$((count_generated + 1))
   else
     echo "[mantida] ${var_name} (já preenchida)"
