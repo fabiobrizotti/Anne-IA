@@ -22,6 +22,11 @@ model_list:
       model: openrouter/recursive/flint-v1.0:free
       api_key: os.environ/OPENROUTER_API_KEY
 
+general_settings:
+  # Catálogo gerenciado pelo Dashboard; UI do LiteLLM em modo somente leitura.
+  store_model_in_db: true
+  ui_access_mode: "admin_only"
+
 litellm_settings:
   # Preset oficial de OTel v2 → Langfuse (llm_only vem da .env).
   callbacks: ["langfuse_otel"]

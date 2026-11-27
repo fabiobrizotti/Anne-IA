@@ -139,6 +139,11 @@ for var in LITELLM_MASTER_KEY LITELLM_SALT_KEY LITELLM_DB_PASSWORD CLICKHOUSE_PA
   fi
 done
 
+assert_file_has "LiteLLM persiste modelos no banco" 'store_model_in_db: true' "${PROJECT_ROOT}/setup/litellm/config.yaml"
+assert_file_has "UI do LiteLLM em modo somente leitura" 'ui_access_mode: "admin_only"' "${PROJECT_ROOT}/setup/litellm/config.yaml"
+assert_file_has "Bootstrap cria o admin como proxy_admin_viewer" 'user_role:"proxy_admin_viewer"' "${PROJECT_ROOT}/scripts/bootstrap-litellm-admin.sh"
+assert_no_match "Bootstrap não concede proxy_admin com permissão total" 'user_role:"proxy_admin"' "${PROJECT_ROOT}/scripts/bootstrap-litellm-admin.sh"
+
 say "[5/6] Documentação operacional..."
 README="${PROJECT_ROOT}/README.md"
 assert_file_has "README documenta o gateway para o Strix no host" \
